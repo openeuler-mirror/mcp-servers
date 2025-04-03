@@ -1,10 +1,35 @@
 import subprocess
 import json
+import argparse
+from typing import Optional
 from pydantic import Field
 from mcp.server.fastmcp import FastMCP
 from git import Repo, Remote
 
+# 在mcp初始化前添加参数解析
+parser = argparse.ArgumentParser()
+parser.add_argument('--token', help='oegitext访问Gitee令牌')
+args, _ = parser.parse_known_args() 
+
 mcp = FastMCP("管理openEuler社区的issue,repos,pr,以及我的project")
+
+# 初始化oeGitExt，配置gitee私人令牌
+def configure_oegitext(token: Optional[str] = None):
+    """自动配置oegitext工具"""
+    try:
+        if token:
+            print(f"token: {token}")
+            subprocess.run(
+                ['oegitext', 'config', '-token', token],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+        else:
+            print("未检测到token参数，请确保本地已预先配置")
+    except subprocess.CalledProcessError as e:
+        print(f"Token配置失败: {e.stderr.decode()}")
+
 
 @mcp.tool()
 def get_my_openeuler_issue() -> dict:
@@ -25,16 +50,19 @@ def get_my_openeuler_issue() -> dict:
 def get_my_openeuler_project() -> dict:
     """查找我在openEuler社区的项目"""
     try:
-        # 执行oegitext命令并解析JSON结果
-        result = subprocess.check_output(['oegitext', 'show', 'proj', '-p'], 
-                                        text=True, 
+        # 先配置token
+        configure_oegitext(args.token)
+        
+        # 执行oegitext命令并获取结果
+        result = subprocess.check_output(['oegitext', 'show', 'proj', '-p'],
+                                        text=True,
                                         stderr=subprocess.STDOUT)
         
         return result
     except subprocess.CalledProcessError as e:
-        return e
+        return {"error": e.output}
     except Exception as e:
-        return e
+        return {"error": str(e)}
 
 @mcp.tool()
 def get_my_openeuler_pr(repo_type:str = Field(description="仓库属性，有两种：制品仓：src-openeuler，源码仓：openeuler"), 
@@ -99,7 +127,9 @@ def create_openeuler_pr(
     except Exception as e:
         return {"error": str(e)}
 
-
 if __name__ == "__main__":
+    # 配置oegitext的token，用于访问Gitee
+    configure_oegitext(args.token)
+    
     # Initialize and run the server
     mcp.run()
