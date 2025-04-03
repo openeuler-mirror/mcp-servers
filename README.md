@@ -1,5 +1,28 @@
 # openEuler MCP Servers仓库，欢迎大家贡献
 
+<div align="center">
+
+<strong>openEuler MCP Servers 仓库</strong>
+
+[![PyPI][pypi-badge]][pypi-url]
+[![Python Version][python-badge]][python-url]
+[![Documentation][docs-badge]][docs-url]
+[![Specification][spec-badge]][spec-url]
+
+
+
+</div>
+
+
+[pypi-badge]: https://img.shields.io/pypi/v/mcp.svg
+[pypi-url]: https://pypi.org/project/mcp/
+[python-badge]: https://img.shields.io/pypi/pyversions/mcp.svg
+[python-url]: https://www.python.org/downloads/
+[docs-badge]: https://img.shields.io/badge/docs-modelcontextprotocol.io-blue.svg
+[docs-url]: https://modelcontextprotocol.io
+[spec-badge]: https://img.shields.io/badge/spec-spec.modelcontextprotocol.io-blue.svg
+[spec-url]: https://spec.modelcontextprotocol.io
+
 ## 介绍
 
 MCP是Model Context Protocol的缩写，旨在提供一个通用的大模型上下文协议，用来调用各种应用，拓展大模型能力，openEuler的mcp-servers仓库用来存放各种MCP Server，聚焦于操作系统领域，结合Devstation，EulerCopilot改善openEuler交互体验
@@ -34,14 +57,46 @@ mcp-servers/
 
 2、将MCP Server的配置文件写入到MCP客户端
 
-### 未来openEuler 430版本：
-openEuler社区会将每个MCP Server构建为一个个RPM包，用户直接yum install安装即可使用
+### 使用yum自动安装（推荐）：
+openEuler社区会将每个MCP Server构建为一个个RPM包，用户直接yum install安装即可使用，即将上线
 
 ## 快速开始：如何使用MCP Python-SDK编写一个自己的MCP Server服务器
+### MCP环境搭建（当前手动搭建，后续使用yum一键安装）
+### 1、安装 `uv` Python管理工具
+```shell 
+pip3 install uv
+```
+安装完成之后，需要看下 `uv` 工具在哪个目录，在DevStation上会在 `/home/xxx/.local/bin/uv`下面，可以手动添加到环境变量，也可以绝对路径引用 
+
+### 2、使用 `uv` 创建项目目录
+```shell
+uv init oegitext_mcp
+cd oegitext_mcp
+```
+
+### 3、使用 `uv` 创建虚环境,并进入
+```shell
+uv venv
+source .venv/bin/activate
+```
+
+### 4、安装MCP依赖
+```shell
+uv add "mcp[cli]" httpx
+```
+
+### 实战编码
 ### 1、挑选一个小工具oegitext
 oegitext是一个用来和gitee交互的小工具，可以用来查询在gitee上面的一些仓库和issue，查询一些PR信息：
+该工具在DevStation上预安装，如果没有安装，可以在配置openEuler-25.03 EPOL仓库后使用 `yum install oegitext安装`
+安装完成之后，使用如下命令配置gitee令牌：
+```shell
+oegitext config -token ${access_token}
+```
+之后使用`oegitext show issue -p`查询当前issue：
 ![oegitext的使用方式](oegitext_show_issue_demo.png)
 ### 2、使用python-sdk进行一个改造
+在上面使用uv创建的虚拟环境中，新建一个oegitext_mcp.py文件
 下面是代码的一个简单示例：
 ```python
 import subprocess
@@ -69,7 +124,37 @@ if __name__ == "__main__":
     mcp.run()
 ```
 ### 3、openEuler MCP环境搭建
-待补充，后续使用yum安装即可
+打开DevStation预安装的vscodium软件，在插件市场里安装Roo Code（后续也可以使用EulerCopilot实现）
+在设置当中配置大模型，我们使用的是DeepSeeK V3的API：
+```json
+API提供商：OpenAI Compatible
+OpenAI基础URL：https://api.siliconflow.cn
+密钥：对应的密钥
+模型：Pro/deepseek-ai/DeepSeek-V3   #可以自己选择合适的模型
+```
+在Roo Code插件上方的选项卡里选择MCP服务器
+点击编辑全局MCP
+```json
+{
+  "mcpServers": {
+    "oegitext_mcp": {
+      "command": "/home/xxx/.local/bin/uv",
+      "args": [
+        "--directory",
+        "/home/xxx/oegitext_mcp",
+        "run",
+        "oegitext_mcp.py"
+      ],
+      "disabled": false,
+      "autoApprove": [],
+      "alwaysAllow": []
+    },
+  }
+}
+```
+上面的路径修改成正确的实际路径，之后保存，点击完成
+
 ### 4、MCP Client调用效果
+
 ![oegitext使用MCP服务后效果](oegitext_mcp_demo.png)
 
