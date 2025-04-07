@@ -1,18 +1,18 @@
 {
-    "mcpServers": {
-      "管理openEuler社区的issue,repos,pr,以及我的project": {
-        "command": "uv",
-        "args": [
-          "--directory",
-          "/home/dev/mcp-servers/servers/oeGitExt/src",
-          "run",
-          "oegitext_mcp.py"
-        ],
-        "disabled": false,
-        "autoApprove": [],
-        "alwaysAllow": [
-          "get_my_openeuler_project"
-        ]
-      }
+  "mcpServers": {
+    "管理openEuler社区的issue,repos,pr,以及我的project": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "YOUR_PATH/mcp-servers/servers/oeGitExt/src",
+        "run",
+        "oegitext_mcp.py",
+        "--token=YOUR_GITEE_TOKEN"
+      ],
+      "disabled": false,
+      "alwaysAllow": [
+        "get_my_openeuler_project"
+      ]
     }
   }
+}
