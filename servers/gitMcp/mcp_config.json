@@ -1,0 +1,23 @@
+{
+    "mcpServers": {
+        "gitMcp": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "YOUR_PATH/mcp-servers/servers/gitMcp/src",
+                "run",
+                "git_mcp.py"
+            ],
+            "disabled": false,
+            "alwaysAllow": [
+                "git_status",
+                "get_git_config",
+                "git_diff_unstaged",
+                "git_diff_staged",
+                "git_diff",
+                "git_show",
+                "list_branches"
+            ]
+        }
+    }
+}
