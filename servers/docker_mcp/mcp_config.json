@@ -1,0 +1,16 @@
+{
+    "mcpServers": {
+      "docker": {
+        "command": "/home/ysc/.local/bin/uv",
+        "args": [
+          "--directory",
+          "/YOUR_PATH/docker_mcp",
+          "run",
+          "server.py"
+        ],
+        "disabled": false,
+        "autoApprove": [],
+        "alwaysAllow": []
+      }
+    }
+}
