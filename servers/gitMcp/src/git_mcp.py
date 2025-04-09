@@ -15,23 +15,29 @@ def add_commit_and_push(
     repo_path: str = Field(default=None, description="仓库路径"),
     files: Optional[List[str]] = Field(default=None, description="要添加的文件列表。如果未指定，则添加所有修改")
 ) -> str:
-    """添加本地修改（可选择文件），提交并推送到远程仓库"""
+    """添加本地修改（可选择文件），提交并推送到远程仓库。如果没有文件需要提交，则直接推送"""
     try:
         if not os.path.exists(repo_path):
             return f"错误: 路径 '{repo_path}' 不存在"
         
         repo = Repo(repo_path)
 
-        # 检查现有配置
-        with repo.config_reader() as config:
-            current_name = config.get_value("user", "name", None)
-            current_email = config.get_value("user", "email", None)
+        # 尝试读取现有配置
+        try:
+            with repo.config_reader() as config:
+                current_name = config.get_value("user", "name", None)
+                current_email = config.get_value("user", "email", None)
+        except Exception as e:
+            if "No section" in str(e):
+                return "错误: 本地Git用户信息未配置，请提供user_name和user_email参数"
+            current_name = None
+            current_email = None
 
         # 验证用户信息配置
         if not (user_name or current_name):
-            return "错误: 本地未配置Git用户名且未提供user_name参数"
+            return "错误: 本地未配置Git用户名(user.name)且未提供user_name参数"
         if not (user_email or current_email):
-            return "错误: 本地未配置Git邮箱且未提供user_email参数"
+            return "错误: 本地未配置Git邮箱(user.email)且未提供user_email参数"
 
         # 设置用户信息（如果提供了新参数）
         if user_name or user_email:
@@ -41,19 +47,24 @@ def add_commit_and_push(
                 if user_email:
                     config.set_value("user", "email", user_email)
 
-        # 添加文件
-        if files:
-            repo.index.add(files)
-            staged_files = files
+        # 检查是否有变更
+        changed_files = repo.git.status('--porcelain').splitlines()
+        if not changed_files:
+            print("没有文件需要提交，直接推送")
         else:
-            repo.git.add('-A')
-            staged_files = repo.git.diff('--cached', '--name-only').splitlines()
+            # 添加文件
+            if files:
+                repo.index.add(files)
+                staged_files = files
+            else:
+                repo.git.add('-A')
+                staged_files = repo.git.diff('--cached', '--name-only').splitlines()
 
-        print("成功添加以下文件:\n" + "\n".join(staged_files))
+            print("成功添加以下文件:\n" + "\n".join(staged_files))
 
-        # 提交修改
-        repo.git.commit('-m', commit_message)
-        print(f"提交成功，commit信息为: {commit_message}")
+            # 提交修改
+            repo.git.commit('-m', commit_message)
+            print(f"提交成功，commit信息为: {commit_message}")
 
         # 推送修改（自动处理上游分支）
         try:
@@ -64,7 +75,7 @@ def add_commit_and_push(
             else:
                 raise
 
-        return "成功: 已添加、提交并推送修改"
+        return "成功: 操作已完成"
     except InvalidGitRepositoryError:
         return f"错误: 路径 '{repo_path}' 不是有效的Git仓库"
     except GitCommandError as e:
@@ -189,19 +200,23 @@ def get_git_config(repo_path: str = Field(default=None, description="仓库路�
     """获取当前配置的git用户信息"""
     try:
         repo = Repo(repo_path)
-        with repo.config_reader() as config:
-            name = config.get_value('user', 'name', None)
-            email = config.get_value('user', 'email', None)
+        try:
+            with repo.config_reader() as config:
+                name = config.get_value('user', 'name', None)
+                email = config.get_value('user', 'email', None)
+        except Exception:
+            return {"status": "not_configured", "message": "Git用户信息未配置"}
             
         if not name and not email:
-            return None
+            return {"status": "not_configured", "message": "Git用户信息未配置"}
             
         return {
+            "status": "ok",
             "user.name": name,
             "user.email": email
         }
     except Exception as e:
-        return {"error": str(e)}
+        return {"status": "error", "message": str(e)}
 
 @mcp.tool()
 def git_init(repo_path: str = Field(description="仓库路径")) -> str:
