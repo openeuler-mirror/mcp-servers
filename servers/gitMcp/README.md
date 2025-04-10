@@ -4,13 +4,33 @@ gitMcp 提供了Git相关操作的MCP服务，包括仓库管理、分支操作�
 
 ## 1. 环境准备
 
-安装 python 依赖。推荐使用 `uv` 安装到虚拟环境。
+### 1.1 安装Python依赖
+
+推荐使用 `uv` 安装到虚拟环境：
 
 ```bash
-pip install pydantic mcp gitpython --trusted-host mirrors.huaweicloud.com -i https://mirrors.huaweicloud.com/repository/pypi/simple
+sudo pip3 install uv --trusted-host mirrors.huaweicloud.com -i https://mirrors.huaweicloud.com/repository/pypi/simple
 ```
 
-确保已安装Git并配置好用户信息。
+安装其他必要依赖：
+
+```bash
+sudo pip install pydantic mcp gitpython inquirer --trusted-host mirrors.huaweicloud.com -i https://mirrors.huaweicloud.com/repository/pypi/simple
+```
+
+### 1.2 配置Git认证
+
+确保已安装Git并配置好用户认证信息，且具备推送代码的权限。
+
+如果使用SSH密钥认证，建议添加以下配置，避免首次连接时的交互式确认：
+
+添加到 ~/.ssh/config（示例使用gitee.com）：
+
+```plaintext
+Host gitee.com
+    StrictHostKeyChecking no
+    UserKnownHostsFile=/dev/null
+```
 
 ## 2. MCP 配置
 
