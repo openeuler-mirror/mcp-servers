@@ -227,5 +227,57 @@ def git_init(repo_path: str = Field(description="仓库路径")) -> str:
     except Exception as e:
         return f"错误：{str(e)}"
 
+@mcp.tool()
+def add_remote(
+    remote_name: str = Field(description="远程仓库名称"),
+    remote_url: str = Field(description="远程仓库URL"),
+    repo_path: str = Field(default=None, description="仓库路径")
+) -> str:
+    """添加远程Git仓库"""
+    try:
+        if not remote_name or not remote_url:
+            return "错误: 必须提供远程仓库名称和URL"
+            
+        repo = Repo(repo_path)
+        remote = repo.create_remote(remote_name, remote_url)
+        return f"成功添加远程仓库: {remote_name} -> {remote_url}"
+    except InvalidGitRepositoryError:
+        return f"错误: 路径 '{repo_path}' 不是有效的Git仓库"
+    except GitCommandError as e:
+        if 'remote .* already exists' in str(e):
+            return f"错误: 远程仓库 '{remote_name}' 已存在"
+        return f"Git操作失败: {str(e)}"
+    except Exception as e:
+        return f"错误: {str(e)}"
+
+@mcp.tool()
+def git_pull(
+    repo_path: str = Field(default=None, description="仓库路径"),
+    remote_name: str = Field(default="origin", description="远程名称"),
+    branch_name: str = Field(default=None, description="分支名称")
+) -> str:
+    """从远程仓库拉取代码"""
+    try:
+        repo = Repo(repo_path)
+        current_branch = repo.active_branch.name
+        pull_branch = branch_name if branch_name else current_branch
+        
+        try:
+            repo.git.pull(remote_name, pull_branch)
+            return f"成功从 {remote_name}/{pull_branch} 拉取代码"
+        except GitCommandError as e:
+            if 'no tracking information' in str(e):
+                return f"错误: 分支 {pull_branch} 没有设置上游跟踪分支"
+            elif 'conflict' in str(e):
+                return "错误: 拉取时发生合并冲突，请先解决冲突"
+            elif 'Could not resolve host' in str(e):
+                return "错误: 无法连接到远程仓库，请检查网络连接"
+            raise
+            
+    except InvalidGitRepositoryError:
+        return f"错误: 路径 '{repo_path}' 不是有效的Git仓库"
+    except Exception as e:
+        return f"错误: {str(e)}"
+
 if __name__ == "__main__":
     mcp.run()

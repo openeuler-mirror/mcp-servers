@@ -70,9 +70,19 @@ gitMcp 提供以下工具函数：
    - repo_path: 仓库路径
 
 2. `git_init(repo_path)` - 初始化Git仓库
-   - repo_path: 仓库路径
+    - repo_path: 仓库路径
 
-3. `get_git_config(repo_path)` - 获取Git用户配置
+3. `add_remote(remote_name, remote_url, repo_path)` - 添加远程Git仓库
+    - remote_name: 远程仓库名称(必填)
+    - remote_url: 远程仓库URL(必填)
+    - repo_path: 仓库路径(可选)
+
+4. `git_pull(repo_path, remote_name, branch_name)` - 从远程仓库拉取代码
+    - repo_path: 仓库路径(可选)
+    - remote_name: 远程名称(可选，默认为"origin")
+    - branch_name: 分支名称(可选，默认为当前分支)
+
+5. `get_git_config(repo_path)` - 获取Git用户配置
    - repo_path: 仓库路径
 
 ### 提交管理
