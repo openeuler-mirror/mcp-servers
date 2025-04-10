@@ -4,6 +4,7 @@ from mcp.server.fastmcp import FastMCP
 from git import Repo, InvalidGitRepositoryError, GitCommandError
 import os
 import inquirer
+import random
 
 mcp = FastMCP("gitMcp")
 
@@ -80,6 +81,55 @@ def add_commit_and_push(
         return f"错误: 路径 '{repo_path}' 不是有效的Git仓库"
     except GitCommandError as e:
         return f"Git操作失败: {e.stderr.strip()}"
+    except Exception as e:
+        return f"错误: {str(e)}"
+
+@mcp.tool()
+def cherry_pick_to_patch(
+    repo_path: str = Field(description="仓库路径"),
+    commit_hash: str = Field(description="要生成patch的commit hash"),
+    patch_path: str = Field(default=".", description="生成的patch文件路径"),
+    patch_filename: str = Field(default=None, description="patch文件名(不含扩展名)")
+) -> str:
+    """为指定的单个commit生成patch文件
+    使用临时分支进行操作，确保不会污染工作区
+    """
+    try:
+        repo = Repo(repo_path)
+        
+        # 保存当前分支
+        current_branch = repo.active_branch.name
+        try:
+            # 创建并切换到临时分支
+            temp_branch = f"tmp_{random.randint(100000, 999999)}"
+            repo.git.checkout('-b', temp_branch)
+            
+            if patch_filename:
+                # 自定义文件名
+                patch_file = os.path.join(patch_path, f"{patch_filename}.patch")
+                repo.git.format_patch(commit_hash, '-1', output=patch_file)
+            else:
+                # 自动生成文件名
+                patch_file = repo.git.format_patch(
+                    commit_hash,
+                    '-1',
+                    '--output-directory',
+                    patch_path
+                ).strip()
+                patch_file = os.path.join(patch_path, patch_file)
+            
+            return f"成功生成patch文件: {patch_file}"
+            
+        except GitCommandError as e:
+            return f"生成patch失败: {str(e)}"
+            
+        finally:
+            # 确保切换回原分支并删除临时分支
+            repo.git.checkout(current_branch)
+            repo.git.branch('-D', temp_branch)
+                
+    except InvalidGitRepositoryError:
+        return f"错误: 路径 '{repo_path}' 不是有效的Git仓库"
     except Exception as e:
         return f"错误: {str(e)}"
 
@@ -226,6 +276,58 @@ def git_init(repo_path: str = Field(description="仓库路径")) -> str:
         return f"已初始化Git仓库: {repo.git_dir}"
     except Exception as e:
         return f"错误：{str(e)}"
+
+@mcp.tool()
+def add_remote(
+    remote_name: str = Field(description="远程仓库名称"),
+    remote_url: str = Field(description="远程仓库URL"),
+    repo_path: str = Field(default=None, description="仓库路径")
+) -> str:
+    """添加远程Git仓库"""
+    try:
+        if not remote_name or not remote_url:
+            return "错误: 必须提供远程仓库名称和URL"
+            
+        repo = Repo(repo_path)
+        remote = repo.create_remote(remote_name, remote_url)
+        return f"成功添加远程仓库: {remote_name} -> {remote_url}"
+    except InvalidGitRepositoryError:
+        return f"错误: 路径 '{repo_path}' 不是有效的Git仓库"
+    except GitCommandError as e:
+        if 'remote .* already exists' in str(e):
+            return f"错误: 远程仓库 '{remote_name}' 已存在"
+        return f"Git操作失败: {str(e)}"
+    except Exception as e:
+        return f"错误: {str(e)}"
+
+@mcp.tool()
+def git_pull(
+    repo_path: str = Field(default=None, description="仓库路径"),
+    remote_name: str = Field(default="origin", description="远程名称"),
+    branch_name: str = Field(default=None, description="分支名称")
+) -> str:
+    """从远程仓库拉取代码"""
+    try:
+        repo = Repo(repo_path)
+        current_branch = repo.active_branch.name
+        pull_branch = branch_name if branch_name else current_branch
+        
+        try:
+            repo.git.pull(remote_name, pull_branch)
+            return f"成功从 {remote_name}/{pull_branch} 拉取代码"
+        except GitCommandError as e:
+            if 'no tracking information' in str(e):
+                return f"错误: 分支 {pull_branch} 没有设置上游跟踪分支"
+            elif 'conflict' in str(e):
+                return "错误: 拉取时发生合并冲突，请先解决冲突"
+            elif 'Could not resolve host' in str(e):
+                return "错误: 无法连接到远程仓库，请检查网络连接"
+            raise
+            
+    except InvalidGitRepositoryError:
+        return f"错误: 路径 '{repo_path}' 不是有效的Git仓库"
+    except Exception as e:
+        return f"错误: {str(e)}"
 
 if __name__ == "__main__":
     mcp.run()
