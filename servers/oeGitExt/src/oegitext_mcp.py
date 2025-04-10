@@ -83,29 +83,65 @@ def get_my_openeuler_pr(repo_type:str = Field(description="仓库属性，有两
     except Exception as e:
         return e
 
-
 @mcp.tool()
 def create_openeuler_pr(
-    repo_type: str = Field(description="仓库属性，有两种：制品仓：src-openeuler，源码仓：openeuler"),
-    repo_name: str = Field(description="仓库名。如果未指定，则默认和本地仓库名相同"),
+    target_namespace: str = Field(default=None, description="目标仓库命名空间，有两种：制品仓：src-openeuler，源码仓：openeuler"),
+    target_repo_name: str = Field(default=None, description="目标仓库名。如果未指定，则默认和本地仓库名相同"),
+    target_branch: str = Field(default=None, description="Pull Request提交目标分支的名称。如果未指定，则默认为主仓的master分支"),
     title: str = Field(description="PR标题"),
-    namespace: str = Field(description="Pull Request提交使用的源命名空间(一般是git用户名)。如果未指定，则使用当前本地配置的git用户名"),
-    source_branch: str = Field(description="Pull Request提交的源分支。如果未指定，则使用当前分支"),
-    base: str = Field(description="Pull Request提交目标分支的名称。如果未指定，则默认为主仓的master分支"),
-    body: str = Field(default="", description="PR描述(可选)")
+    body: str = Field(default="", description="PR描述(可选)"),
+    source_namespace: str = Field(default=None, description="Pull Request提交使用的源命名空间(一般是git用户名)。如果未指定，则使用当前本地配置的git用户名"),
+    source_repo_name: str = Field(default=None, description="源仓库名。如果未指定，则默认和本地仓库名相同"),
+    source_branch: str = Field(default=None, description="Pull Request提交的源分支。如果未指定，则使用当前分支"),
+    source_combined: str = Field(default=None, description="源仓库组合格式：namespace/repo_name:branch"),
+    target_combined: str = Field(default=None, description="目标仓库组合格式：namespace/repo_name:branch")
 ) -> dict:
     """在openEuler社区仓库创建PR，默认源为本地当前仓库的当前分支，目标为主仓的master分支"""
     try:
-        head = f"{namespace}:{source_branch}"
+        # 解析组合格式参数
+        if source_combined:
+            source_parts = source_combined.split('/')
+            if len(source_parts) == 2:
+                source_namespace = source_parts[0]
+                repo_branch = source_parts[1].split(':')
+                if len(repo_branch) == 2:
+                    source_repo_name = repo_branch[0]
+                    source_branch = repo_branch[1]
+        
+        if target_combined:
+            target_parts = target_combined.split('/')
+            if len(target_parts) == 2:
+                target_namespace = target_parts[0]
+                repo_branch = target_parts[1].split(':')
+                if len(repo_branch) == 2:
+                    target_repo_name = repo_branch[0]
+                    target_branch = repo_branch[1]
+        
+        # 设置默认值
+        if not source_namespace:
+            source_namespace = subprocess.check_output(['git', 'config', 'user.name'], text=True).strip()
+        if not source_repo_name:
+            source_repo_name = Repo('.').remotes[0].url.split('/')[-1].replace('.git', '')
+        if not source_branch:
+            source_branch = Repo('.').active_branch.name
+            
+        if not target_namespace:
+            target_namespace = "openeuler"
+        if not target_repo_name:
+            target_repo_name = source_repo_name
+        if not target_branch:
+            target_branch = "master"
+            
+        head = f"{source_namespace}/{source_repo_name}:{source_branch}"
         
         # 构建命令
         cmd = [
             'oegitext', 'pull', '-cmd', 'create',
-            '-user', repo_type,
-            '-repo', repo_name,
+            '-user', target_namespace,
+            '-repo', target_repo_name,
             '-title', title,
             '-head', head,
-            '-base', base
+            '-base', target_branch
         ]
         
         if body:
@@ -116,10 +152,10 @@ def create_openeuler_pr(
         return {
             "result": result,
             "details": {
-                "source_repo": f"{namespace}/{repo_name}",
-                "target_repo": f"{repo_type}/{repo_name}",
+                "source_repo": f"{source_namespace}/{target_repo_name}",
+                "target_repo": f"{target_namespace}/{target_repo_name}",
                 "source_branch": source_branch,
-                "target_branch": base
+                "target_branch": target_branch
             }
         }
     except subprocess.CalledProcessError as e:
