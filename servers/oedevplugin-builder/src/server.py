@@ -44,6 +44,10 @@ def build_tar(ctx: Context, package_name: str) -> str:
         if not version:
             return "错误: 无法从spec文件解析版本号"
         
+        # 检查源码目录是否存在
+        if not source_dir.exists():
+            return "跳过打包: 未找到源码目录，继续RPM构建流程"
+        
         # 打包最新源码为.gz格式
         tar_name = f"{package_name}-{version}.tar.gz"
         tar_path = RPMBUILD_DIR / "SOURCES" / tar_name
