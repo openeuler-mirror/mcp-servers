@@ -1,0 +1,38 @@
+[
+  {
+    "id": "oeDeploy MCP Server",
+    "author": "",
+    "desc": {
+      "zh": "oeDeploy目前提供了两个MCP Server。mcp-oedp提供oedp基本命令的MCP调用；mcp-make-oedp-plugin自动完成一个oeDeploy插件开发。",
+      "en": "The tool oeDeploy currently provides 2 MCP Servers. Tool mcp-oedp provides MCP calls for basic oedp commands. Tool mcp-make-oedp-plugin automatically completes the development of an oeDeploy plugin."
+    },
+    "icon": "",
+    "timestamp": 1743565200000,
+    "link": "https://gitee.com/openeuler/mcp-servers/tree/master/servers/oeDeploy",
+    "featuredOrder": 1
+  },
+  {
+    "id": "gitMcp",
+    "author": "",
+    "desc": {
+      "zh": "gitMcp 提供了Git相关操作的MCP服务，包括仓库管理、分支操作、提交推送、差异比较等功能。",
+      "en": "The tool gitMcp provides MCP services for Git-related operations, including repository management, branch operations, commit push, diff comparison and other functions."
+    },
+    "icon": "",
+    "timestamp": 1744253220000,
+    "link": "https://gitee.com/openeuler/mcp-servers/tree/master/servers/gitMcp",
+    "featuredOrder": 2
+  },
+  {
+    "id": "oeGitExt MCP Server",
+    "author": "",
+    "desc": {
+      "zh": "oeGitExt 提供了管理 openEuler 社区 issue、repos、PR 和 project 的 MCP 服务。",
+      "en": "The tool oeGitExt provides MCP services for managing openEuler community issues, repos, PRs, and projects."
+    },
+    "icon": "",
+    "timestamp": 1743666360000,
+    "link": "https://gitee.com/openeuler/mcp-servers/tree/master/servers/oeGitExt",
+    "featuredOrder": 3
+  }
+]
