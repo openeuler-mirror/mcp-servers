@@ -1,10 +1,10 @@
 {
   "mcpServers": {
     "编译构建打包最新的 oeDevPlugin rpm 包": {
-      "command": "uv",
+      "command": "/opt/mcp-servers/servers/oedevplugin-builder/.venv/bin/uv",
       "args": [
         "--directory",
-        "YOUR_PATH/mcp-servers/servers/oedevplugin-builder/src",
+        "/opt/mcp-servers/servers/oedevplugin-builder/src",
         "run",
         "server.py"
       ],
