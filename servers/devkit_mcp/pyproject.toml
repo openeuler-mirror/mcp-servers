@@ -1,0 +1,10 @@
+[project]
+name = "devkit-mcp"
+version = "0.1.0"
+description = "鲲鹏DevKit工具是一款涵盖系统/应用迁移、亲和分析、编译调试和调优诊断等的工具集"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.28.1",
+    "mcp[cli]>=1.6.0",
+]
