@@ -4,6 +4,7 @@ from mcp.server.fastmcp import FastMCP
 from git import Repo, InvalidGitRepositoryError, GitCommandError
 import os
 import inquirer
+import random
 
 mcp = FastMCP("gitMcp")
 
@@ -80,6 +81,55 @@ def add_commit_and_push(
         return f"错误: 路径 '{repo_path}' 不是有效的Git仓库"
     except GitCommandError as e:
         return f"Git操作失败: {e.stderr.strip()}"
+    except Exception as e:
+        return f"错误: {str(e)}"
+
+@mcp.tool()
+def cherry_pick_to_patch(
+    repo_path: str = Field(description="仓库路径"),
+    commit_hash: str = Field(description="要生成patch的commit hash"),
+    patch_path: str = Field(default=".", description="生成的patch文件路径"),
+    patch_filename: str = Field(default=None, description="patch文件名(不含扩展名)")
+) -> str:
+    """为指定的单个commit生成patch文件
+    使用临时分支进行操作，确保不会污染工作区
+    """
+    try:
+        repo = Repo(repo_path)
+        
+        # 保存当前分支
+        current_branch = repo.active_branch.name
+        try:
+            # 创建并切换到临时分支
+            temp_branch = f"tmp_{random.randint(100000, 999999)}"
+            repo.git.checkout('-b', temp_branch)
+            
+            if patch_filename:
+                # 自定义文件名
+                patch_file = os.path.join(patch_path, f"{patch_filename}.patch")
+                repo.git.format_patch(commit_hash, '-1', output=patch_file)
+            else:
+                # 自动生成文件名
+                patch_file = repo.git.format_patch(
+                    commit_hash,
+                    '-1',
+                    '--output-directory',
+                    patch_path
+                ).strip()
+                patch_file = os.path.join(patch_path, patch_file)
+            
+            return f"成功生成patch文件: {patch_file}"
+            
+        except GitCommandError as e:
+            return f"生成patch失败: {str(e)}"
+            
+        finally:
+            # 确保切换回原分支并删除临时分支
+            repo.git.checkout(current_branch)
+            repo.git.branch('-D', temp_branch)
+                
+    except InvalidGitRepositoryError:
+        return f"错误: 路径 '{repo_path}' 不是有效的Git仓库"
     except Exception as e:
         return f"错误: {str(e)}"
 

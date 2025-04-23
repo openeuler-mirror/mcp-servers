@@ -38,7 +38,6 @@ Host gitee.com
 
 打开 MCP 配置页面，编辑 MCP 配置文件 `mcp_settings.json`，在 `mcpServers` 中新增如下内容：
 
-
 ```json
 {
   "mcpServers": {
@@ -86,42 +85,44 @@ gitMcp 提供以下工具函数：
    - repo_path: 仓库路径
 
 ### 提交管理
-4. `add_commit_and_push(commit_message, user_name, user_email, repo_path, files)` - 添加、提交并推送更改
-   - commit_message: 提交信息
+6. `add_commit_and_push(commit_message, user_name, user_email, repo_path, files)` - 添加、提交并推送更改
+   - commit_message: 提交信息(可选，默认为"auto commit")
    - user_name: Git用户名(可选)
    - user_email: Git邮箱(可选)
-   - repo_path: 仓库路径
+   - repo_path: 仓库路径(可选)
    - files: 要添加的文件列表(可选，不指定则添加所有修改)
 
-5. `git_diff_unstaged(repo_path)` - 查看未暂存的变更
+7. `git_diff_unstaged(repo_path)` - 查看未暂存的变更
    - repo_path: 仓库路径
 
-6. `git_diff_staged(repo_path)` - 查看已暂存的变更
+8. `git_diff_staged(repo_path)` - 查看已暂存的变更
    - repo_path: 仓库路径
 
-7. `git_diff(repo_path, target)` - 对比分支或提交
-   - repo_path: 仓库路径
-   - target: 对比目标分支或提交
+9. `git_diff(repo_path, target)` - 对比分支或提交
+   - repo_path: 仓库路径(必填)
+   - target: 对比目标分支或提交(必填)
 
-8. `git_reset(repo_path)` - 重置暂存区
-   - repo_path: 仓库路径
+10. `git_reset(repo_path)` - 重置暂存区
+    - repo_path: 仓库路径
+
+11. `git_show(repo_path, revision)` - 查看提交详情
+    - repo_path: 仓库路径(必填)
+    - revision: 提交hash或分支名称(必填)
 
 ### 分支管理
-9. `create_branch(branch_name, repo_path)` - 创建新分支
-   - branch_name: 新分支名称
-   - repo_path: 仓库路径
+12. `create_branch(branch_name, repo_path)` - 创建新分支
+    - branch_name: 新分支名称(必填)
+    - repo_path: 仓库路径(可选)
 
-10. `list_branches(repo_path)` - 列出所有分支
-    - repo_path: 仓库路径
+13. `list_branches(repo_path)` - 列出所有分支
+    - repo_path: 仓库路径(可选)
 
-11. `git_checkout(branch_name, repo_path)` - 切换分支
-    - branch_name: 分支名称
-    - repo_path: 仓库路径
-
-### 提交查看
-12. `git_show(repo_path, revision)` - 查看提交详情
-    - repo_path: 仓库路径
-    - revision: 提交hash或分支名称
+### Patch管理
+14. `cherry_pick_to_patch(repo_path, commit_hash, patch_path, patch_filename)` - 为指定commit生成patch文件
+    - repo_path: 仓库路径(必填)
+    - commit_hash: 要生成patch的commit hash(必填)
+    - patch_path: 生成的patch文件路径(可选，默认为当前目录)
+    - patch_filename: patch文件名(不含扩展名)(可选)
 
 ## 4. 使用示例
 
@@ -159,3 +160,19 @@ gitMcp 提供以下工具函数：
 ```
 查看最近的5个提交记录
 查看特定提交的详细信息
+```
+
+### 为指定的单个commit生成patch文件
+
+指定文件名和保存目录：
+
+```
+将/home/xxrepo仓库的commit a359xxxx打成patch文件，命名为xxx.patch，保存到/xx目录
+```
+
+不指定文件名，使用git format-patch默认生成的文件名0001-<提交信息标题>.patch，默认保存到当前目录：
+
+```
+将/home/xxrepo仓库的commit a359xxxx打成patch文件
+```
+

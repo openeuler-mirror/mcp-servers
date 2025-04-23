@@ -1,0 +1,17 @@
+{
+    "mcpServers": {
+        "patchMcp": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "${workspaceRoot}/servers/patch_mcp/src",
+                "run",
+                "patch_mcp.py"
+            ],
+            "disabled": false,
+            "alwaysAllow": [
+                "apply_patch_to_repo"
+            ]
+        }
+    }
+}
