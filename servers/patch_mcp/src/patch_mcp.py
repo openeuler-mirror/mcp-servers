@@ -158,16 +158,12 @@ def update_spec_file(spec_path: str, spec_data: dict, patch_name: str, patch_inf
         若.spec文件采用`%patch -P1 -p1`这样的命令来安装补丁，也会按照补丁分类规则，自动在对应部分生成安装新添加的补丁的命令
         生成标准化的changelog条目
     抛出:
-        ValueError: 当patch已存在且已记录时
+        ValueError: 当未获取到git用户名和邮箱配置时；当patch已存在且已记录在spec文件中时
     """
     try:
         name, email = get_git_user_info(repo_path)
     except ValueError as e:
-        return {
-            "status": "error",
-            "code": "GIT_USER_INFO_MISSING",
-            "message": str(e) + "请配置git用户名和邮箱"
-        }
+        raise ValueError("未获取到git用户名和邮箱配置")
     
     if patch_name in spec_data['patch_files']:
         raise ValueError(f"patch文件已应用到spec文件中: {patch_name}")
@@ -218,8 +214,7 @@ def update_spec_file(spec_path: str, spec_data: dict, patch_name: str, patch_inf
     return updated_content
 
 def get_git_user_info(repo_path: str) -> tuple:
-    """获取git用户信息，用户名和邮箱
-    """
+    """获取git用户信息，用户名和邮箱"""
     try:
         repo = Repo(repo_path)
         with repo.config_reader() as config:
