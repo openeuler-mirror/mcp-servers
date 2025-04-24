@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "vm-tool": {
+      "command": "python3",
+      "args": [
+        ".oedp/mcp/vm-tool.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": []
+    }
+  }
+}
