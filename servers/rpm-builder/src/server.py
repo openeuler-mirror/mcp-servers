@@ -7,7 +7,7 @@ import re
 from mcp.server.fastmcp import FastMCP, Context
 
 # 创建MCP服务器
-mcp = FastMCP("oeDevPlugin Builder")
+mcp = FastMCP("rpm Builder")
 
 # RPM构建目录
 RPMBUILD_DIR = Path.home() / "rpmbuild"
