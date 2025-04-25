@@ -1,0 +1,31 @@
+# MCP Server RPM打包配置模板
+name: "mcp-server-name"  # RPM包名(小写字母和连字符)
+summary: "Brief description of the MCP server"
+description: |
+  Detailed description of the MCP server functionality
+  and its purpose.
+
+# 依赖配置
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+  packages:
+    - git
+    - oegitext
+
+# 文件配置
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md
+
+# 安装后脚本(可选)
+post_install: |
+  # 可以添加自定义安装后脚本
+  echo "MCP server installed successfully"

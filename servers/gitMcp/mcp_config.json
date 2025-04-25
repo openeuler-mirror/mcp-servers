@@ -4,7 +4,7 @@
             "command": "uv",
             "args": [
                 "--directory",
-                "YOUR_PATH/mcp-servers/servers/gitMcp/src",
+                "/opt/mcp-servers/servers/gitMcp/src",
                 "run",
                 "git_mcp.py"
             ],

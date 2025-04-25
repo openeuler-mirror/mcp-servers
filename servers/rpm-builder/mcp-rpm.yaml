@@ -1,0 +1,21 @@
+name: "rpm-builder"
+summary: "MCP server for building rpm packages"
+description: |
+  Provides MCP tools for building and packaging rpm packages.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+  packages:
+    - rpm-build
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - src/pyproject.toml

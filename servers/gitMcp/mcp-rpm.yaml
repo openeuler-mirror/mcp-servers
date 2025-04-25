@@ -1,0 +1,23 @@
+name: "git-mcp"
+summary: "MCP server for Git repository operations"
+description: |
+  Provides MCP tools for interacting with Git repositories,
+  including clone, pull, push and branch management.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+  packages:
+    - git
+    - oegitext
+
+files:
+  required:
+    - mcp_config.json
+    - src/git_mcp.py
+  optional:
+    - src/requirements.txt
+    - README.md
