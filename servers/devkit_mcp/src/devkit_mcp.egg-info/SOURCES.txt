@@ -1,0 +1,6 @@
+README.md
+pyproject.toml
+src/devkit_mcp.py
+src/devkit_mcp.egg-info/PKG-INFO
+src/devkit_mcp.egg-info/SOURCES.txt
+src/devkit_mcp.egg-info/requires.txt

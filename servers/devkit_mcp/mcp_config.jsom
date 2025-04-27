@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "devkit_mcp": {
+      "command": "/usr/local/bin/uv",
+      "args": [
+        "--directory",
+        "/home/porting/mcp-servers/servers/devkit_mcp",
+        "run",
+        "src/devkit_mcp.py"
+      ],
+      "disabled": false,
+      "autoApprove": [],
+      "alwaysAllow": [],
+    }
+  }
+}

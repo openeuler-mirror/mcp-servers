@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: devkit-mcp
+Version: 0.1.0
+Summary: 鲲鹏DevKit工具是一款涵盖系统/应用迁移、亲和分析、编译调试和调优诊断等的工具集
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: httpx>=0.28.1
+Requires-Dist: mcp[cli]>=1.6.0
