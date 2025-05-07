@@ -61,28 +61,15 @@ mcp-servers/
 openEuler社区会将每个MCP Server构建为一个个RPM包，用户直接yum install安装即可使用，即将上线
 
 ## 快速开始：如何使用MCP Python-SDK编写一个自己的MCP Server服务器
-### MCP环境搭建（当前手动搭建，后续使用yum一键安装）
+### MCP环境搭建
 ### 1、安装 `uv` Python管理工具
 ```shell 
-pip3 install uv
-```
-安装完成之后，需要看下 `uv` 工具在哪个目录，在DevStation上会在 `/home/xxx/.local/bin/uv`下面，可以手动添加到环境变量，也可以绝对路径引用 
-
-### 2、使用 `uv` 创建项目目录
-```shell
-uv init oegitext_mcp
-cd oegitext_mcp
+yum install -y uv
 ```
 
-### 3、使用 `uv` 创建虚环境,并进入
+### 2、安装MCP
 ```shell
-uv venv
-source .venv/bin/activate
-```
-
-### 4、安装MCP依赖
-```shell
-uv add "mcp[cli]" httpx
+yum install -y python3-mcp
 ```
 
 ### 实战编码
@@ -138,11 +125,13 @@ OpenAI基础URL：https://api.siliconflow.cn
 {
   "mcpServers": {
     "oegitext_mcp": {
-      "command": "/home/xxx/.local/bin/uv",
+      "command": "/usr/bin/uv",
       "args": [
         "--directory",
         "/home/xxx/oegitext_mcp",
         "run",
+        "--python",
+        "/usr/bin/python3",
         "oegitext_mcp.py"
       ],
       "disabled": false,
