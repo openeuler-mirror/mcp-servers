@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "codeReview_mcp": {
+      "command": "python3",
+      "args": [
+        "~/src/mcpservers/codeReview_mcp/src/codeReview_mcp.py"
+      ],
+      "disabled": false,
+      "autoApprove": [
+        "*"
+      ]
+    }
+  }
+}
