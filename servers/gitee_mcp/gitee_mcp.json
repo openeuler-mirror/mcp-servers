@@ -3,7 +3,7 @@
     "gitee_mcp": {
       "command": "python3",
       "args": [
-        "~/src/mcpservers/gitee_mcp/src/gitee_mcp.py"
+        "~/src/mcp-servers/servers/gitee_mcp/src/gitee_mcp.py"
       ],
       "disabled": false,
       "autoApprove": [
