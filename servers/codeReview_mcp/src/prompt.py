@@ -1,0 +1,152 @@
+import sys
+from tools import tools_log, process_log, error_log
+def prompt_system(checktype):
+    issue_check = """
+你是一个linux内核的资深专家，非常熟悉C/C++语言，请协助检视代码问题。最多进行X次查询
+对于检视的目标代码首先应该调用工具查询未给出代码的函数实现，然后根据上下文分析存在的问题。
+检查C/C++语言项目在linux下可能存在的各种代码安全、系统风险、权限隔离、进程崩溃等问题，用你的编程经验检查其他各种代码问题。
+注意 需要更精确地标注问题代码的行号范围，line的start和end要符合事实
+返回的检视结果是如下的json对象：
+```
+{
+  "summary": {
+    "explain": "阅读函数代码后，给出函数所实现的功能解释",
+    "clean": "是否建议该函数进行重构，是否有逻辑过于复杂的代码，如果有进行说明，并在下面refactor中给出重构意见和代码"
+  },
+  "issues": {
+    "issue1": {
+      "title": "问题标题，针对问题的简要描述，限制在10~20字",
+      "name": "文件名称，表示出问题的文件"
+      "line": [start, end], #这里放问题代码起止行号，只有一行则相等
+      "problem": "问题具体描述，请给出详细的原因说明、具体代码位置、充分的分析理由，以支撑问题描述。",
+      "level": "问题级别，分为高风险、中风险、低风险；高风险必须是从已知代码能推断明确有问题的，中风险和低风险可以是推测或建议"
+      "suggestion": "修改建议的描述",
+      "fixcode": "请以patch风格给出需要修改的代码片段上下文"
+    },
+    "issue2": ...
+  }
+}
+```
+请不要回复除了json对象以外的任何内容。
+"""
+    refactor_check = """
+你是一个linux内核的资深专家，非常熟悉C/C++语言编程技巧。
+检查用户给出的代码是否有以下问题：写法过于复杂、逻辑结构不清晰；代码段意图不明确、冗余。基于这些方向，或者你丰富专业的编程经验给出局部重构或优化建议。
+返回的检视结果是如下的json对象：
+```
+{
+  "summary": {
+    "explain": "阅读函数代码后，给出函数所实现的功能解释",
+    "clean": "是否建议该函数进行重构，是否有逻辑过于复杂的代码，如果有进行说明，并在下面refactor中给出重构意见和代码"
+  },
+  "refactor": {
+    "cleancode1": {
+        "desc": "说明代码段需要重构的原因，是需要抽取函数还是重写代码段",
+        "origin": "给出需要重构的代码段上下文片段，不要回复markdown格式符",
+        "suggestion": "以**patch风格**给出重构后的代码上下文，代码逻辑必须与原来完全一致，不要回复markdown格式符"
+    },
+    "cleancode2": ...
+  }
+}
+```
+请不要回复除了json对象以外的任何内容。
+"""
+    all_check = """
+你是一个linux内核的资深专家，非常熟悉C/C++语言，请协助检视代码问题。
+对于检视的目标代码首先应该调用工具查询未给出代码的函数实现，然后根据上下文分析存在的问题，检查内容如下：
+a.检查C/C++语言项目在linux下可能存在的各种代码安全、系统风险、权限隔离、进程崩溃等问题，用你的编程经验检查其他各种代码问题。
+b.检查用户给出的代码是否有以下问题：写法过于复杂、逻辑结构不清晰；代码段意图不明确、冗余。基于这些方向，或者你丰富专业的编程经验给出局部重构或优化建议。
+返回的检视结果是如下的json对象：
+```
+{
+  "summary": {
+    "explain": "阅读函数代码后，给出函数所实现的功能解释",
+    "clean": "是否建议该函数进行重构，是否有逻辑过于复杂的代码，如果有进行说明，并在下面refactor中给出重构意见和代码"
+  },
+  "issues": {
+    "issue1": {
+      "title": "问题标题，针对问题的简要描述，限制在10~20字",
+      "line": [start, end], #这里放问题代码起止行号，只有一行则相等
+      "problem": "问题具体描述，请给出详细的原因说明、具体代码位置、充分的分析理由，以支撑问题描述。",
+      "level": "问题级别，分为高风险、中风险、低风险；高风险必须是从已知代码能推断明确有问题的，中风险和低风险可以是推测或建议"
+      "suggestion": "修改建议的描述",
+      "fixcode": "请以patch风格给出需要修改的代码片段上下文"
+    },
+  "refactor": {
+    "cleancode1": {
+        "origin": "给出需要重构的代码段上下文片段，不要回复markdown格式符",
+        "desc": "说明代码段需要重构的原因，是需要抽取函数还是重写代码段",
+        "suggestion": "以patch风格给出重构后的代码上下文，代码逻辑必须与原来完全一致，但是写法更简洁或逻辑更清晰，不要回复markdown格式符"
+    },
+    "cleancode2": ...
+  }
+  }
+}
+```
+请不要回复除了json对象以外的任何内容。
+"""
+    # sys_prompt的键与入参--work关联
+    sys_prompt = {
+        "issue": issue_check,
+        "refactor": refactor_check,
+        "all": all_check
+    }
+    if checktype not in sys_prompt:
+        error_log(f"检查类型参数(--work)错误: {checktype}")
+        sys.exit()
+    return sys_prompt[checktype]
+
+# 针对模型的回复加入后续上下文的prompt设计
+def prompt_assistant(content):
+     return f"模型请求了以下工具命令：\n```\n{content}\n```"
+
+# 针对用户的问题、追加问题的prompt设计
+def prompt_user(content, append, checktype):
+    if append:
+        user_prompt = {
+            "issue": f"""
+{content}\n根据历史记录继续检视，不要回复json对象以外的任何内容。
+如果有逻辑过于复杂的代码段，给出可优化写法的代码重构建议。""",
+            "refactor": f"""
+{content}\n根据历史记录继续检视，不要回复json对象以外的任何内容。
+如果没有明显问题可以反馈为无问题，如果有问题指出最严重的2个。""",
+            "all": f"""
+{content}\n根据历史记录继续检视，不要回复json对象以外的任何内容。
+1.如果有问题指出最严重的2个，如果没有明显问题可以反馈为无问题。
+2.如果有需要重构的代码段，根据前述要求给出可优化写法的代码重构建议。
+"""
+        }
+    else:
+        user_prompt = {
+        "issue": f"""
+请检视以下代码以及其关联函数代码，如有问题都可以一并提出，只能提已查询过的上下文中确定存在的问题，不要回复json对象以外的任何内容。
+如果没有明显问题可以反馈为无问题，如果有问题指出最严重的2个,代码如下：\n{content}""",
+        "refactor": f"""
+请检视以下代码以及其关联函数代码，如有问题都可以一并提出，只能提已查询过的上下文中确定存在的问题，不要回复json对象以外的任何内容。
+如果有逻辑过于复杂的代码段，给出可优化写法的代码重构建议，代码如下：\n{content}""",
+        "all": f"""
+请检视以下代码以及其关联函数代码，如有问题都可以一并提出，只能提已查询过的上下文中确定存在的问题，不要回复json对象以外的任何内容。
+1.如果有问题指出最严重的2个，如果没有明显问题可以反馈为无问题。
+2.如果有需要重构的代码段，根据前述要求给出可优化写法的代码重构建议。
+代码如下：\n{content}"""
+    }
+    if checktype not in user_prompt:
+        error_log(f"检查类型参数(--work)错误: {checktype}")
+        sys.exit()
+    return user_prompt[checktype]
+
+def tool_calls_list() -> list:
+    return [{"type": "function", "function": {
+  "name": "getcode.py",
+  "description": "查询项目代码中的各种相关要素源码，只需要列出需要查询的参数",
+  "parameters": {
+    "type": "object",
+    "properties": {
+        "--func": {"type": "string", "description": "需要查询的函数名字"},
+        "--struct": {"type": "string", "description": "结构体名字"},
+        "--macro": {"type": "string", "description": "宏名字"},
+        "--globalvar": {"type": "string", "description": "全局变量名字"}
+    }
+  }
+  }
+}]

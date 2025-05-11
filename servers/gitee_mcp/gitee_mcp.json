@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "gitee_mcp": {
+      "command": "python3",
+      "args": [
+        "~/src/mcp-servers/servers/gitee_mcp/src/gitee_mcp.py"
+      ],
+      "disabled": false,
+      "autoApprove": [
+        "*"
+      ],
+      "env": {
+        "GITEE_PERSONAL_ACCESS_TOKEN": "xxx"
+      }
+    }
+  }
+}
