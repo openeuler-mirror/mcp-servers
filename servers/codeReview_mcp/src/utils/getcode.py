@@ -218,7 +218,7 @@ def load_from_json(json_file: str) -> Dict[str, Any]:
         return json.load(f)
 
 def gen_project_rag(path: str, json: str):
-    extractor = CCodeExtractor
+    extractor = CCodeExtractor()
     print(f"Scanning directory: {path}")
     extractor.scan_directory(path)
     data = extractor.to_dict()

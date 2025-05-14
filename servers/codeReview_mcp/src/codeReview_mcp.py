@@ -28,14 +28,14 @@ def gen_project_json(project_path: str) -> bool:
 def call_getcode(args: dict, json_file: str) -> str:
     """调用getcode.py工具查询代码信息"""
     result_json = get_project_rag(json=json_file,
-                                  func=args.get("func"),
-                                  struct=args.get("struct"),
-                                  macro=args.get("macro"),
-                                  globalvar=args.get("globalvar"))
+                                  func=args.get("--func"),
+                                  struct=args.get("--struct"),
+                                  macro=args.get("--macro"),
+                                  globalvar=args.get("--globalvar"))
 
-    if 'notfound' in result_json:
+    if 'notfound' in result_json[0]:
         print(f"所请求的符号不存在：{args}")
-    return result_json
+    return result_json[0]
 
 
 mcp = FastMCP("CodeReview")
@@ -69,7 +69,7 @@ def review_code(
     # 查看项目json是否存在，如果存在则创建
     project_json_file = gen_project_json(project_path)
 
-    query_func = call_getcode({query_type: query_name}, project_json_file)[0]
+    query_func = call_getcode({query_type: query_name}, project_json_file)
 
     if "notfound" in query_func:
         print(f"查询的函数不存在：{query_name}")
