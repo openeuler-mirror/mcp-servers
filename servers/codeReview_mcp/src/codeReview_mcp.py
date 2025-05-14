@@ -69,10 +69,11 @@ def review_code(
 
     query_func = call_getcode({query_type: query_name}, project_json_file)
 
-    if "notfound" in query_func:
-        return f"查询的内存不存在：{query_type}, {query_name}"
-
     code_content = f"Type: {query_func['type']}\nCode:\n```c\n{query_func['code']}\n```"
+    
+    if "notfound" in query_func:
+        code_content = f"查询的内存不存在：{query_type}, {query_name}"
+
     messages = [
         {"role": "system", "content": prompt_system(checktype="issue")},
         {"role": "user", "content": prompt_user(code_content, append=False, checktype="issue")},
