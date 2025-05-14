@@ -4,26 +4,16 @@ codeReview Mcp提供对C语言项目的代码读取，并触发大模型进行�
 
 ## Tools
 
-1. create_issues
-   - 解析content内容，并在gitee上创建issue
+1. review_code
+
+   - 查询项目代码中的各种相关要素源码，只需要列出需要查询的
    - input:
-     - content: json,  include the issue content
+     - project_path : 需要被检视的项目路径，使用绝对路径, 注意是项目路径, 不是包含type_name的文件路径
+     - query_type: one of [--func, --struct, --macro, --globalvar]
+     ​            "--func": {"type": "string", "description": "需要查询的函数名字"},
+     ​            "--struct": {"type": "string", "description": "结构体名字"},
+     ​            "--macro": {"type": "string", "description": "宏名字"},
+     ​            "--globalvar": {"type": "string", "description": "全局变量名字"}
+     - query_name: the name that need to check
+   - Returns: list, code content and Review prompt
 
-       ```json
-       {
-           "issues": {
-               "issue1": {
-                   "name": "函数名",
-                   "line": "line no", # [10,30]
-                   "problem": "问题描述",
-                   "level": "问题等级", # 高，中，低 
-                   "suggestion": "修改建议",
-                   "fixcode": "修复代码示例"
-               }
-           }
-       }
-       ```
-
-     - owner: string, the gitee repo owner
-     - repo: string, the gitee repo name
-   - Returns: list, issue_urls
