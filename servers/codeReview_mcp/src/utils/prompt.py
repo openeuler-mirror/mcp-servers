@@ -1,5 +1,5 @@
 import sys
-from tools import tools_log, process_log, error_log
+
 def prompt_system(checktype):
     issue_check = """
 你是一个linux内核的资深专家，非常熟悉C/C++语言，请协助检视代码问题。最多进行X次查询
@@ -92,8 +92,8 @@ b.检查用户给出的代码是否有以下问题：写法过于复杂、逻辑
         "all": all_check
     }
     if checktype not in sys_prompt:
-        error_log(f"检查类型参数(--work)错误: {checktype}")
-        sys.exit()
+        return f"检查类型参数(--work)错误: {checktype}"
+    
     return sys_prompt[checktype]
 
 # 针对模型的回复加入后续上下文的prompt设计
@@ -131,22 +131,6 @@ def prompt_user(content, append, checktype):
 代码如下：\n{content}"""
     }
     if checktype not in user_prompt:
-        error_log(f"检查类型参数(--work)错误: {checktype}")
+        return f"检查类型参数(--work)错误: {checktype}"
         sys.exit()
     return user_prompt[checktype]
-
-def tool_calls_list() -> list:
-    return [{"type": "function", "function": {
-  "name": "getcode.py",
-  "description": "查询项目代码中的各种相关要素源码，只需要列出需要查询的参数",
-  "parameters": {
-    "type": "object",
-    "properties": {
-        "--func": {"type": "string", "description": "需要查询的函数名字"},
-        "--struct": {"type": "string", "description": "结构体名字"},
-        "--macro": {"type": "string", "description": "宏名字"},
-        "--globalvar": {"type": "string", "description": "全局变量名字"}
-    }
-  }
-  }
-}]

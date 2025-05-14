@@ -39,6 +39,7 @@ mcp-servers/
 |           └── src
 |      |──oeGitExt 
 |      └──xxxxx
+├── scripts
 └── doc
 ```
 

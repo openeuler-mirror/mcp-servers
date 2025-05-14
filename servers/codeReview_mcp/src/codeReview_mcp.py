@@ -1,24 +1,30 @@
-from pydantic import Field
 import json
-from typing import Optional
 import subprocess
 import os
+import hashlib
+from typing import Optional
+from pydantic import Field
+
 from mcp.server.fastmcp import FastMCP
-from prompt import prompt_system, prompt_user
+
+from utils.prompt import prompt_system, prompt_user
 
 # 设置当前路径为工作路径
 current_path = os.path.dirname(os.path.abspath(__file__))
 get_code_file = os.path.join(current_path, "getcode.py")
 
-def gen_json(codefile: str) -> bool:
+def gen_json(project_path: str) -> bool:
     """生成json文件"""
-    codefile = codefile.strip()
-    json_file = os.path.join(codefile.strip(), "rag/code.json")
-    
-    if not os.path.exists(json_file):
+    project_path = project_path.strip()
+    project_path_hash = hashlib.md5(project_path.encode('utf-8')).hexdigest()
+    project_name = os.path.basename(project_path)
+    project_json_file = f"/tmp/.rag/{project_path_hash}_{project_name}.json"
+
+    if not os.path.exists(project_json_file):
         # 如果文件不存在创建一个空文件
-        os.makedirs(os.path.dirname(json_file), exist_ok=True)
-        cmd = ['python3', get_code_file, '--path', codefile, '--output', json_file]
+        os.makedirs(os.path.dirname(project_json_file), exist_ok=True)
+        # TODO 改为函数调用
+        cmd = ['python3', get_code_file, '--path', project_path, '--output', project_json_file]
         result = subprocess.run(cmd, capture_output=True, text=True)
         print(result.stderr)
         if result.returncode != 0:
