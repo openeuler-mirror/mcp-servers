@@ -1,5 +1,4 @@
 import json
-import subprocess
 import os
 import hashlib
 from typing import Optional
@@ -8,6 +7,7 @@ from pydantic import Field
 from mcp.server.fastmcp import FastMCP
 
 from utils.prompt import prompt_system, prompt_user
+from utils.getcode import gen_project_rag, get_project_rag
 
 # 设置当前路径为工作路径
 current_path = os.path.dirname(os.path.abspath(__file__))
@@ -21,34 +21,24 @@ def gen_project_json(project_path: str) -> bool:
     project_json_file = f"/tmp/.rag/{project_path_hash}_{project_name}.json"
 
     if not os.path.exists(project_json_file):
-        # 如果文件不存在创建一个空文件
         os.makedirs(os.path.dirname(project_json_file), exist_ok=True)
-        # TODO 改为函数调用
-        cmd = ['python3', get_code_file, '--path', project_path, '--output', project_json_file]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        print(result.stderr)
-        if result.returncode != 0:
-            raise RuntimeError(f"{result}")
+        gen_project_rag(path=project_path, json=project_json_file)
     return project_json_file
 
 def call_getcode(args: dict, json_file: str) -> str:
     """调用getcode.py工具查询代码信息"""
-    args_list = [item for pair in args.items() for item in pair]
-    cmd = ['python3', get_code_file, '--json', json_file]
-    cmd += args_list
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"getcode.py failed: {result.stderr}")
-    result_json = json.loads(result.stdout.strip())
+    result_json = get_project_rag(json=json_file,
+                                  func=args.get("func"),
+                                  struct=args.get("struct"),
+                                  macro=args.get("macro"),
+                                  globalvar=args.get("globalvar"))
 
     if 'notfound' in result_json:
         print(f"所请求的符号不存在：{args}")
     return result_json
 
 
-
 mcp = FastMCP("CodeReview")
-
 
 @mcp.tool()
 def review_code(
