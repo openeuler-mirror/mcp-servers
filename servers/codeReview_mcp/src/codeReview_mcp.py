@@ -77,7 +77,7 @@ def review_code(
     messages = [
         {"role": "system", "content": prompt_system(checktype="issue")},
         {"role": "user", "content": prompt_user(code_content, append=False, checktype="issue")},
-        {"role": "user", "content": "基于上面的内容继续进行检视，可以进一步深入查看下层的--func, --struct, --macro, --globalvar, 可以一次性进行多次调用"}
+        {"role": "user", "content": "基于上面的内容递归检视，进一步深入查看下层的 --func, --struct, --macro, --globalvar, 可以一次性进行多次调用"}
     ]
 
     return messages
