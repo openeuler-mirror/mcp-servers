@@ -69,7 +69,7 @@ def review_code(
     # 查看项目json是否存在，如果存在则创建
     project_json_file = gen_project_json(project_path)
 
-    query_func = call_getcode({query_type: query_name}, project_json_file)
+    query_func = call_getcode({query_type: query_name}, project_json_file)[0]
 
     if "notfound" in query_func:
         print(f"查询的函数不存在：{query_name}")
