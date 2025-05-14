@@ -81,7 +81,7 @@ oegitext是一个用来和gitee交互的小工具，可以用来查询在gitee�
 oegitext config -token ${access_token}
 ```
 之后使用`oegitext show issue -p`查询当前issue：
-![oegitext的使用方式](oegitext_show_issue_demo.png)
+![oegitext的使用方式](doc/pictures/oegitext_show_issue_demo.png)
 ### 2、使用python-sdk进行一个改造
 在上面使用uv创建的虚拟环境中，新建一个oegitext_mcp.py文件
 下面是代码的一个简单示例：
@@ -145,5 +145,5 @@ OpenAI基础URL：https://api.siliconflow.cn
 
 ### 4、MCP Client调用效果
 
-![oegitext使用MCP服务后效果](oegitext_mcp_demo.png)
+![oegitext使用MCP服务后效果](doc/pictures/oegitext_mcp_demo.png)
 

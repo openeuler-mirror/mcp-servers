@@ -1,9 +1,9 @@
 {
   "mcpServers": {
-    "vm-tool": {
+    "libvirt_mcp": {
       "command": "python3",
       "args": [
-        ".oedp/mcp/vm-tool.py"
+        ".oedp/mcp/libvirt_mcp.py"
       ],
       "disabled": false,
       "alwaysAllow": []

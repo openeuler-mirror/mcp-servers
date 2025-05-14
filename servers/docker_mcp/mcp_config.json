@@ -1,6 +1,6 @@
 {
     "mcpServers": {
-      "docker": {
+      "docker_mcp": {
         "command": "/home/ysc/.local/bin/uv",
         "args": [
           "--directory",

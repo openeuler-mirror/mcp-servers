@@ -1,6 +1,6 @@
 {
     "mcpServers": {
-        "patchMcp": {
+        "patch_mcp": {
             "command": "uv",
             "args": [
                 "--directory",

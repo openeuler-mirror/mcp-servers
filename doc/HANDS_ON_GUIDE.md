@@ -80,7 +80,7 @@ EOF
 
 4. 运行MCP Server
 在Roo Code/EulerCopilot(MCP 客户端)中配置MCP servers
-![alt text](image.png)
+![alt text](pictures/image_handon.png)
 
 ### 🎮 立即体验 - 试试问问AI这些问题:
 
@@ -97,7 +97,7 @@ EOF
 - 提交PR到openEuler mcp-servers(https://gitee.com/openeuler/mcp-servers)仓库分享您的创作!
 
 扫二维码可以直接关注mcp-servers代码仓
-![alt text](cef223b6a4f913e3446fdd87e8f42af8.jpg)
+![alt text](pictures/cef223b6a4f913e3446fdd87e8f42af8.jpg)
 > 💡 小贴士: 在openEuler展台,您可以现场完成这个示例并立即看到效果!
 
 ## 🌟 现有MCP服务器能力展示

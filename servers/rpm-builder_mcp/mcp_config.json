@@ -1,10 +1,10 @@
 {
   "mcpServers": {
-    "rpm-builder": {
+    "rpm-builder_mcp": {
       "command": "uv",
       "args": [
         "--directory",
-        "/opt/mcp-servers/servers/rpm-builder/src",
+        "/opt/mcp-servers/servers/rpm-builder_mcp/src",
         "run",
         "server.py"
       ],

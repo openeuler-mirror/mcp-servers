@@ -14,7 +14,7 @@ pip install pydantic mcp requests --trusted-host mirrors.huaweicloud.com -i http
 
 ```bash
 mkdir -p ~/.oedp/mcp/
-cp servers/devstation-vm/src/* ~/.oedp/mcp/
+cp servers/libvirt_mcp/src/* ~/.oedp/mcp/
 ```
 
 ## 2. MCP 配置
@@ -31,10 +31,10 @@ cp servers/devstation-vm/src/* ~/.oedp/mcp/
 
     // ...
 
-    "vm-tool": {
+    "libvirt_mcp": {
       "command": "python3",
       "args": [
-        ".oedp/mcp/vm-tool.py"
+        ".oedp/mcp/libvirt_mcp.py"
       ],
       "disabled": false,
       "alwaysAllow": []
@@ -43,9 +43,9 @@ cp servers/devstation-vm/src/* ~/.oedp/mcp/
 }
 ````
 
-配置完成后，可以在 MCP 列表上看看到 `vm-tool`，且状态正常。
+配置完成后，可以在 MCP 列表上看看到 `libvirt_mcp`，且状态正常。
 
-> 提示：如果出现报错，可以尝试执行在本地执行`python3 .oedp/mcp/vm-tool.py`来测试，无报错且进程挂起则说明启动正常。
+> 提示：如果出现报错，可以尝试执行在本地执行`python3 .oedp/mcp/libvirt_mcp.py`来测试，无报错且进程挂起则说明启动正常。
 
 ## 3. 指令示例
 
