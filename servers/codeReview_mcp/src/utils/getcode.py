@@ -217,6 +217,39 @@ def load_from_json(json_file: str) -> Dict[str, Any]:
     with open(json_file, 'r', encoding='utf-8') as f:
         return json.load(f)
 
+def gen_project_rag(path: str, json: str):
+    extractor = CCodeExtractor
+    print(f"Scanning directory: {path}")
+    extractor.scan_directory(path)
+    data = extractor.to_dict()
+    save_to_json(data, json)
+    print(f"Saved {json} with {data['stats']['files_scanned']} files scanned")
+    print(f"Found {data['stats']['functions']} functions, {data['stats']['structs']} structs, "
+            f"{data['stats']['macros']} macros, {data['stats']['globalvars']} global variables")
+
+def get_project_rag(
+    json: str,
+    func: str=None,
+    struct: str=None,
+    macro: str=None,
+    globalvar: str=None
+):
+    data = load_from_json(json)
+    result = []
+    if func:
+        element = data['function'].get(func)
+        result.append(get_result('Function', func, element))
+    if struct:
+        element = data['struct'].get(struct)
+        result.append(get_result('Struct', struct, element))
+    if macro:
+        element = data['macro'].get(macro)
+        result.append(get_result('Macro', macro, element))
+    if globalvar:
+        element = data['globalvar'].get(globalvar)
+        result.append(get_result('Global Variable', globalvar, element))
+    return result
+
 def main():
     parser = argparse.ArgumentParser(description='C语言代码要素提取与查询工具')
     parser.add_argument('--path', help='要扫描的代码目录')
@@ -230,44 +263,28 @@ def main():
 
     if args.path and args.output:
         # 扫描代码并生成JSON文件
-        extractor = CCodeExtractor()
-        print(f"Scanning directory: {args.path}")
-        extractor.scan_directory(args.path)
-        data = extractor.to_dict()
-        save_to_json(data, args.output)
-        print(f"Saved {args.output} with {data['stats']['files_scanned']} files scanned")
-        print(f"Found {data['stats']['functions']} functions, {data['stats']['structs']} structs, "
-              f"{data['stats']['macros']} macros, {data['stats']['globalvars']} global variables")
+        gen_project_json(args.path, args.output)
     elif args.json and (args.func or args.struct or args.macro or args.globalvar):
         # 从JSON文件查询
-        data = load_from_json(args.json)
-        if args.func:
-            element = data['function'].get(args.func)
-            print_result('Function', args.func, element)
-        if args.struct:
-            element = data['struct'].get(args.struct)
-            print_result('Struct', args.struct, element)
-        if args.macro:
-            element = data['macro'].get(args.macro)
-            print_result('Macro', args.macro, element)
-        if args.globalvar:
-            element = data['globalvar'].get(args.globalvar)
-            print_result('Global Variable', args.globalvar, element)
+        code = get_project_rag(args.json, func=args.func,
+                               struct=args.struct, macro=args.macro, 
+                               globalvar=args.globalvar)
+        print(code)
     else:
         parser.print_help()
 
-def print_result(element_type: str, name: str, element: Optional[Dict[str, Any]]) -> None:
+def get_result(element_type: str, name: str, element: Optional[Dict[str, Any]]) -> None:
     """打印查询结果"""
     res = {}
     if element:
-        res["code"] = element["code"]
-        res["type"] = element_type
         res["name"] = name
+        res["type"] = element_type
+        res["code"] = element["code"]
         res["line"] = element["lineno"]
     else:
         res["notfound"] = 1
         #print(f"Not found: {element_type} '{name}' in the index")
-    print(json.dumps(res))
+    return res
 
 if __name__ == '__main__':
     main()
