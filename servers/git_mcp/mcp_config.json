@@ -1,10 +1,10 @@
 {
     "mcpServers": {
-        "gitMcp": {
+        "git_mcp": {
             "command": "uv",
             "args": [
                 "--directory",
-                "/opt/mcp-servers/servers/gitMcp/src",
+                "/opt/mcp-servers/servers/git_mcp/src",
                 "run",
                 "git_mcp.py"
             ],

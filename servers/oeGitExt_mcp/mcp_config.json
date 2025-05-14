@@ -1,10 +1,10 @@
 {
   "mcpServers": {
-    "管理openEuler社区的issue,repos,pr,以及我的project": {
+    "oeGitExt_mcp": {
       "command": "uv",
       "args": [
         "--directory",
-        "YOUR_PATH/mcp-servers/servers/oeGitExt/src",
+        "YOUR_PATH/mcp-servers/servers/oeGitExt_mcp/src",
         "run",
         "oegitext_mcp.py",
         "--token=YOUR_GITEE_TOKEN"
