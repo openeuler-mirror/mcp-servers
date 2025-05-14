@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "mcp-oedp": {
+      "command": "uv",
+      "args": [
+        "--directory", "/opt/mcp-servers/servers/oeDeploy_mcp/src",
+        "run", "mcp-oedp.py",
+        "--model_url", "https://api.deepseek.com",
+        "--api_key", "<your key of deepseek api>",
+        "--model_name", "deepseek-chat"
+      ],
+      "disabled": false,
+      "timeout": 1800
+    }
+  }
+}

@@ -1,0 +1,20 @@
+name: "oeDeploy"
+summary: "MCP server for oeDeploy"
+description: |
+  Provides MCP tools for oeDeploy.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+  packages:
+    - oedp
+
+files:
+  required:
+    - mcp_config.json
+    - src/mcp-oedp.py
+  optional:
+    - src/requirements.txt
+    - src/pyproject.toml
