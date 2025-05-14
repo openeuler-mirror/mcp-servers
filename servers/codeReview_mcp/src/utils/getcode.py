@@ -64,8 +64,6 @@ class CCodeExtractor:
         
         for match in pattern.finditer(content):
             func_name = match.group(1)
-            if file_path == "/data1/codehub/obmm/obmm-core/obmm_ras.c":
-                print(func_name)
             start_line = content[:match.start()].count('\n') + 1
             try:
                 code_block, end_line = self._get_code_block(lines, start_line - 1)
@@ -125,9 +123,10 @@ class CCodeExtractor:
         """提取全局变量（只提取有定义的，忽略声明）"""
         # 匹配全局变量定义（有初始化的更可能是定义）
         pattern = re.compile(
-            r'^(?!\s*(?:static|inline|#|//|/\*|\w+$.*$\s*\{))'  # 排除局部变量和函数
+            r'^(?!\s*(?:inline|#|//|/\*|\w+$.*$\s*\{))'  # 排除局部变量和函数
             r'(?:\w+\s+)+'  # 类型
             r'(\w+)'        # 变量名
+            r'(?:\s*\[\w*\]\s*)*'
             r'\s*=[^;]*;',  # 有初始化的更可能是定义
             re.MULTILINE
         )
@@ -135,12 +134,15 @@ class CCodeExtractor:
         for match in pattern.finditer(content):
             var_name = match.group(1)
             line_num = content[:match.start()].count('\n') + 1
-            code_line = lines[line_num - 1].strip()
+            line_end = content[:match.end()].count('\n') + 1
+            code_block = ""
+            for idx in range(line_num, line_end + 1):
+                code_block += lines[idx - 1].strip()
             
             self.elements['globalvar'][var_name] = {
                 'file': file_path,
-                'lineno': [line_num, line_num],
-                'code': code_line
+                'lineno': [line_num, line_end],
+                'code': code_block
             }
 
     def _get_code_block(self, lines: List[str], start_idx: int) -> Tuple[str, int]:
@@ -263,7 +265,7 @@ def main():
 
     if args.path and args.output:
         # 扫描代码并生成JSON文件
-        gen_project_json(args.path, args.output)
+        gen_project_rag(args.path, args.output)
     elif args.json and (args.func or args.struct or args.macro or args.globalvar):
         # 从JSON文件查询
         code = get_project_rag(args.json, func=args.func,
