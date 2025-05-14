@@ -51,10 +51,7 @@ mcp-servers/
 
 3、源码
 
-
-
-
-
+其中doc中的 [MCP描述文档](./doc/mcp_suggest.md ) 给出了 MCP Servers 的描述建议，用于提升MCP Servers的易用性
 
 ## 使用说明
 
