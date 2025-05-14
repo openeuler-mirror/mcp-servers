@@ -59,7 +59,7 @@ def review_code(
         query_name: the name that need to check
 
     Returns:
-        codeReview issue
+        Returns: list, code content and Review prompt
     """
     # Check if the project_path is empty
     # if not project_path:
