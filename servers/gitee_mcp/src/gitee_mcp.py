@@ -46,6 +46,7 @@ def create_issue(
                 "issues": {
                     "issue1": {
                         "name": "函数名",
+                        "title": "问题标题，针对问题的简要描述",
                         "line": "line no", # [10,30]
                         "problem": "问题描述",
                         "level": "问题等级", # 高，中，低 
@@ -61,7 +62,7 @@ def create_issue(
     if len(content["issues"]) == 0:
         return
     issue_urls = []
-    for idx, (issue_name, details) in enumerate(content['issues'].items(), 1):
+    for idx, (_, details) in enumerate(content['issues'].items(), 1):
         file_desc = ""
         file_desc = f"  问题行：{details['line']}\n"
         file_desc += f"  描述：{details['problem']}\n"

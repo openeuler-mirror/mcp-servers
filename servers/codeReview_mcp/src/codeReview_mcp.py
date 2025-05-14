@@ -27,11 +27,13 @@ def gen_project_json(project_path: str) -> bool:
 
 def call_getcode(args: dict, json_file: str) -> str:
     """调用getcode.py工具查询代码信息"""
-    result_json = get_project_rag(json=json_file,
-                                  func=args.get("--func"),
-                                  struct=args.get("--struct"),
-                                  macro=args.get("--macro"),
-                                  globalvar=args.get("--globalvar"))
+    result_json = get_project_rag(
+        json=json_file,
+        func=args.get("--func"),
+        struct=args.get("--struct"),
+        macro=args.get("--macro"),
+        globalvar=args.get("--globalvar"),
+        enum=args.get("--enum"))
 
     return result_json[0]
 
@@ -41,7 +43,7 @@ mcp = FastMCP("CodeReview")
 @mcp.tool()
 def review_code(
     project_path: str = Field(..., description="The project_path to be reviewed"),
-    query_type: Optional[str] = Field(None, description="one of [--func, --struct, --macro, --globalvar]"),
+    query_type: Optional[str] = Field(None, description="one of [--func, --struct, --macro, --globalvar, --enum]"),
     query_name: Optional[str] = Field(None, description="type name")
 ) -> dict:
     """
@@ -53,7 +55,8 @@ def review_code(
             "--func": {"type": "string", "description": "需要查询的函数名字"},
             "--struct": {"type": "string", "description": "结构体名字"},
             "--macro": {"type": "string", "description": "宏名字"},
-            "--globalvar": {"type": "string", "description": "全局变量名字"}
+            "--globalvar": {"type": "string", "description": "全局变量名字"},
+            "--enum": {"type": "string", "description": "枚举名字"}
         query_name: the name that need to check
 
     Returns:
