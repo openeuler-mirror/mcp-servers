@@ -28,14 +28,12 @@ def gen_project_json(project_path: str) -> bool:
 def call_getcode(args: dict, json_file: str) -> str:
     """调用getcode.py工具查询代码信息"""
     result_json = get_project_rag(json=json_file,
-                                  func=args.get("func"),
-                                  struct=args.get("struct"),
-                                  macro=args.get("macro"),
-                                  globalvar=args.get("globalvar"))
+                                  func=args.get("--func"),
+                                  struct=args.get("--struct"),
+                                  macro=args.get("--macro"),
+                                  globalvar=args.get("--globalvar"))
 
-    if 'notfound' in result_json:
-        print(f"所请求的符号不存在：{args}")
-    return result_json
+    return result_json[0]
 
 
 mcp = FastMCP("CodeReview")
@@ -59,7 +57,7 @@ def review_code(
         query_name: the name that need to check
 
     Returns:
-        codeReview issue
+        Returns: list, code content and Review prompt
     """
     # Check if the project_path is empty
     # if not project_path:
@@ -71,10 +69,11 @@ def review_code(
 
     query_func = call_getcode({query_type: query_name}, project_json_file)
 
-    if "notfound" in query_func:
-        print(f"查询的函数不存在：{query_name}")
-        return
     code_content = f"Type: {query_func['type']}\nCode:\n```c\n{query_func['code']}\n```"
+    
+    if "notfound" in query_func:
+        code_content = f"查询的内存不存在：{query_type}, {query_name}"
+
     messages = [
         {"role": "system", "content": prompt_system(checktype="issue")},
         {"role": "user", "content": prompt_user(code_content, append=False, checktype="issue")},
