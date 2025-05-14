@@ -13,7 +13,8 @@ codeReview Mcp提供对C语言项目的代码读取，并触发大模型进行�
      ​            "--func": {"type": "string", "description": "需要查询的函数名字"},
      ​            "--struct": {"type": "string", "description": "结构体名字"},
      ​            "--macro": {"type": "string", "description": "宏名字"},
-     ​            "--globalvar": {"type": "string", "description": "全局变量名字"}
+     ​            "--globalvar": {"type": "string", "description": "全局变量名字"},
+                 "--enum": {"type": "string", "description": "枚举名字"}
      - query_name: the name that need to check
    - Returns: list, code content and Review prompt
 
