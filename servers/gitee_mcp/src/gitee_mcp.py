@@ -46,6 +46,7 @@ def create_issue(
                 "issues": {
                     "issue1": {
                         "name": "函数名",
+                        "title":"问题标题，针对问题的简要描述",
                         "line": "line no", # [10,30]
                         "problem": "问题描述",
                         "level": "问题等级", # 高，中，低 
