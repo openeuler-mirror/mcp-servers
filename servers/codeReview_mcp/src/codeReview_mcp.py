@@ -13,7 +13,7 @@ from utils.prompt import prompt_system, prompt_user
 current_path = os.path.dirname(os.path.abspath(__file__))
 get_code_file = os.path.join(current_path, "getcode.py")
 
-def gen_json(project_path: str) -> bool:
+def gen_project_json(project_path: str) -> bool:
     """生成json文件"""
     project_path = project_path.strip()
     project_path_hash = hashlib.md5(project_path.encode('utf-8')).hexdigest()
@@ -29,7 +29,7 @@ def gen_json(project_path: str) -> bool:
         print(result.stderr)
         if result.returncode != 0:
             raise RuntimeError(f"{result}")
-    return True
+    return project_json_file
 
 def call_getcode(args: dict, json_file: str) -> str:
     """调用getcode.py工具查询代码信息"""
@@ -77,11 +77,10 @@ def review_code(
         return f" {project_path} file is empty. Please provide a valid code file."
 
     # 查看项目json是否存在，如果存在则创建
-    if not gen_json(project_path):
-        return "rag/code.json gen failed"
+    project_json_file = gen_project_json(project_path)
 
-    json_file = os.path.join(project_path.strip(), "rag/code.json")
-    query_func = call_getcode({query_type: query_name}, json_file)
+    query_func = call_getcode({query_type: query_name}, project_json_file)
+
     if "notfound" in query_func:
         print(f"查询的函数不存在：{query_name}")
         return
