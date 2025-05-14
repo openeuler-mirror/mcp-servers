@@ -52,6 +52,10 @@ mcp-servers/
 3、源码
 
 
+
+
+
+
 ## 使用说明
 
 1、使用常用的MCP客户端完成配置如EulerCopilot，Roo Code，Cline等等
