@@ -4,7 +4,7 @@
       "command": "uv",
       "args": [
         "--directory",
-        "YOUR_PATH/mcp-servers/servers/oeGitExt_mcp/src",
+        "/opt/mcp-servers/servers/oeGitExt_mcp/src",
         "run",
         "oegitext_mcp.py",
         "--token=YOUR_GITEE_TOKEN"
