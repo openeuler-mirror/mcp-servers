@@ -1,0 +1,20 @@
+name: "oeGitExt"
+summary: "MCP server for oeGitExt"
+description: |
+  Provides MCP tools for oeGitExt.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+  packages:
+    - oegitext
+
+files:
+  required:
+    - mcp_config.json
+    - src/oegitext_mcp.py
+  optional:
+    - src/requirements.txt
+    - src/pyproject.toml
