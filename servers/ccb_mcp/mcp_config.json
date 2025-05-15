@@ -4,7 +4,7 @@
       "command": "python3",
       "args": [
         "/opt/mcp-servers/servers/ccb_mcp/src/ccb_mcp.py",
-        "--HOME_DIR=/home/dev",
+        "--HOME_DIR=${your_home_directory}",
         "--SRV_HTTP_REPOSITORIES_HOST=123.249.10.3",
         "--SRV_HTTP_REPOSITORIES_PORT=30108",
         "--SRV_HTTP_REPOSITORIES_PROTOCOL=http://",
@@ -15,10 +15,10 @@
         "--DAG_PORT=30108",
         "--GATEWAY_IP=123.249.10.3",
         "--GATEWAY_PORT=30108",
-        "--GITEE_ID=your_gitee_id",
-        "--GITEE_PASSWORD=your_gitee_password",
-        "--ACCOUNT=your_account",
-        "--PASSWORD=your_password",
+        "--GITEE_ID=${your_gitee_id}",
+        "--GITEE_PASSWORD=${your_gitee_password}",
+        "--ACCOUNT=${your_account}",
+        "--PASSWORD=${your_password}",
         "--OAUTH_TOKEN_URL=https://omapi.osinfra.cn/oneid/oidc/token",
         "--OAUTH_REDIRECT_URL=https://eulermaker.compass-ci.openeuler.openatom.cn/oauth/",
         "--PUBLIC_KEY_URL=https://omapi.osinfra.cn/oneid/public/key?community=openeuler"
