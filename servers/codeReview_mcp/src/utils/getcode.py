@@ -19,7 +19,8 @@ class CCodeExtractor:
             'function': {},
             'struct': {},
             'macro': {},
-            'globalvar': {}
+            'globalvar': {},
+            'enum': {}
         }
         self.files_scanned = 0
 
@@ -44,6 +45,7 @@ class CCodeExtractor:
                 self._extract_structs(file_path, content, lines)
                 self._extract_macros(file_path, content, lines)
                 self._extract_global_vars(file_path, content, lines)
+                self._extract_enums(file_path, content, lines)
 
         except UnicodeDecodeError:
             print(f"Warning: Could not read file {file_path} (encoding issue)")
@@ -145,6 +147,27 @@ class CCodeExtractor:
                 'code': code_block
             }
 
+    def _extract_enums(self, file_path: str, content: str, lines: List[str]) -> None:
+        """提取枚举定义"""
+        # 匹配枚举定义
+        pattern = re.compile(
+            r'^\s*(?:typedef\s+)?(?:enum)\s+(\w+)\s*\{',
+            re.MULTILINE
+        )
+
+        for match in pattern.finditer(content):
+            enum_name = match.group(1)
+            start_line = content[:match.start()].count('\n') + 1
+            code_block, end_line = self._get_code_block(lines, start_line - 1)
+            
+            # 确保是定义而不是声明
+            if '{' in code_block and '}' in code_block:
+                self.elements['enum'][enum_name] = {
+                    'file': file_path,
+                    'lineno': [start_line, end_line],
+                    'code': code_block
+                }
+    
     def _get_code_block(self, lines: List[str], start_idx: int) -> Tuple[str, int]:
         """获取从指定行开始的代码块"""
         if start_idx >= len(lines):
@@ -199,12 +222,14 @@ class CCodeExtractor:
             'struct': self.elements['struct'],
             'macro': self.elements['macro'],
             'globalvar': self.elements['globalvar'],
+            'enum': self.elements['enum'],
             'stats': {
                 'files_scanned': self.files_scanned,
                 'functions': len(self.elements['function']),
                 'structs': len(self.elements['struct']),
                 'macros': len(self.elements['macro']),
-                'globalvars': len(self.elements['globalvar'])
+                'globalvars': len(self.elements['globalvar']),
+                'enums': len(self.elements['enum'])
             }
         }
 
@@ -227,29 +252,48 @@ def gen_project_rag(path: str, json: str):
     save_to_json(data, json)
     print(f"Saved {json} with {data['stats']['files_scanned']} files scanned")
     print(f"Found {data['stats']['functions']} functions, {data['stats']['structs']} structs, "
-            f"{data['stats']['macros']} macros, {data['stats']['globalvars']} global variables")
+            f"{data['stats']['macros']} macros, {data['stats']['globalvars']} global variables, "
+            f"{data['stats']['enums']} enums")
 
 def get_project_rag(
     json: str,
     func: str=None,
     struct: str=None,
     macro: str=None,
-    globalvar: str=None
+    globalvar: str=None,
+    enum: str=None
 ):
     data = load_from_json(json)
     result = []
     if func:
-        element = data['function'].get(func)
-        result.append(get_result('Function', func, element))
+        etype = 'function'
+        if func in data['function']:
+            element = data['function'].get(func)
+        elif func in data['macro']:
+            element = data['macro'].get(func)
+            etype = 'Macro'
+        result.append(get_result(etype, func, element))
     if struct:
         element = data['struct'].get(struct)
         result.append(get_result('Struct', struct, element))
     if macro:
-        element = data['macro'].get(macro)
-        result.append(get_result('Macro', macro, element))
+        etype = 'Macro'
+        if macro in data['macro']:
+            element = data['macro'].get(macro)
+        else:
+            for key, each in data[''].items():
+                if macro not in each['code']:
+                    continue
+                element = each
+                etype = 'Enum'
+                break
+        result.append(get_result(etype, macro, element))
     if globalvar:
         element = data['globalvar'].get(globalvar)
         result.append(get_result('Global Variable', globalvar, element))
+    if enum:
+        element = data['enum'].get(enum)
+        result.append(get_result('Enum', enum, element))
     return result
 
 def main():
@@ -260,6 +304,7 @@ def main():
     parser.add_argument('--func', help='查询指定函数')
     parser.add_argument('--struct', help='查询指定结构体')
     parser.add_argument('--macro', help='查询指定宏')
+    parser.add_argument('--enum', help='查询枚举')
     parser.add_argument('--globalvar', help='查询指定全局变量')
     args = parser.parse_args()
 
