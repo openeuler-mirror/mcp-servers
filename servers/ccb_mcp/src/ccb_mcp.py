@@ -100,6 +100,11 @@ def select_projects(
     """查询EulerMaker中的工程信息（project）
     
     示例用法:
+    1. 查看名为lly-test的EulerMaker工程信息
+    2. 查看名为lly-test的EulerMaker工程信息，请返回os_project,users字段
+    3. 请查询owner为xxx的所有工程，按照create_time降序排
+
+    ccb命令：
     1. 查询所有projects: ccb select projects，数据量较大，不推荐，尽量带过滤条件查询
     2. 条件查询: ccb select projects os_project=openEuler:Mainline owner=xxx
     3. 指定字段: ccb select projects os_project=openEuler:Mainline --field os_project,users
@@ -121,69 +126,32 @@ def select_projects(
     return _run_command(cmd)
 
 @mcp.tool()
-def select_rpms(
-    repo_id: Optional[str] = Field(default=None, description="repo_id"),
-    fields: Optional[List[str]] = Field(default=None, description="指定返回的字段列表")
-) -> Dict[str, Any]:
-    """查询EulerMaker中的rpms
-     
-    示例用法:
-    1. 指定返回字段: ccb select rpms -f repo_id
-    2. 条件查询: ccb select rpms repo_id=openEuler-22.03-LTS:baseos-openEuler:22.03-LTS-x86_64-313
-    注意: 由于rpms表数据量过大，必须使用key=value指定过滤条件，例如指定repo_id，或者使用-f指定返回字段
-    """
-    if not repo_id and not fields:
-        return {"error": "必须提供repo_id或fields参数"}
-     
-    cmd = ["ccb", "select", "rpms"]
-
-    if repo_id:
-        cmd.append(f"repo_id={repo_id}")
-
-    if fields:
-        cmd.extend(["--field", ",".join(fields)])
-     
-    return _run_command(cmd)
-
-@mcp.tool()
-def select_rpm_repos(
-    repo_id: Optional[str] = Field(default=None, description="repo_id"),
-    fields: Optional[List[str]] = Field(default=None, description="指定返回的字段列表")
-) -> Dict[str, Any]:
-    """查询EulerMaker中的rpm_repos表
-     
-    示例用法:
-    1. 指定返回字段: ccb select rpm_repos -f repo_id
-    2. 条件查询: ccb select rpm_repos repo_id=openEuler-22.03-LTS:baseos-openEuler:22.03-LTS-x86_64-313
-    注意: 由于rpm_repos表数据量过大，必须使用key=value指定过滤条件，例如指定repo_id，或者使用-f指定返回字段
-    """
-    if not repo_id and not fields:
-        return {"error": "必须提供repo_id或fields参数"}
-      
-    cmd = ["ccb", "select", "rpm_repos"]
-
-    if repo_id:
-        cmd.append(f"repo_id={repo_id}")
-
-    if fields:
-        cmd.extend(["--field", ",".join(fields)])
-      
-    return _run_command(cmd)
-
-@mcp.tool()
 def select_snapshots(
-    os_project: str = Field(..., description="工程名"),
+    os_project: Optional[str] = Field(default=None, description="工程名"),
+    snapshot_id: Optional[str] = Field(default=None, description="快照ID"),
     fields: Optional[List[str]] = Field(default=None, description="指定返回的字段列表"),
     sort: Optional[List[str]] = Field(default=None, description="排序规则，格式为'字段名:asc|desc'")
 ) -> Dict[str, Any]:
-    """查询指定工程的所有快照(snapshot)
+    """查询快照(snapshot)
     
     示例用法:
+    1. 查询lly-test工程的所有快照
+    2. 查询快照id为ce4e7a42-3167-11f0-bae2-02291c731353对应的工程名
+    3. 查询lly-test工程的所有快照，按照create_time降序排
+
+    ccb命令：
     1. 列出工程所有快照: ccb select snapshots os_project=openEuler:Mainline
-    2. 指定返回字段: ccb select snapshots os_project=openEuler:Mainline --field snapshot_id,create_time
+    2. 通过快照ID查询: ccb select snapshots snapshot_id=ce4e7a42-3167-11f0-bae2-02291c731353 --field os_project
     3. 排序查询: ccb select snapshots os_project=openEuler:Mainline --sort create_time:desc
     """
-    cmd = ["ccb", "select", "snapshots", f"os_project={os_project}"]
+    if not os_project and not snapshot_id:
+        return {"error": "必须提供os_project或snapshot_id参数"}
+    
+    cmd = ["ccb", "select", "snapshots"]
+    if os_project:
+        cmd.append(f"os_project={os_project}")
+    elif snapshot_id:
+        cmd.append(f"snapshot_id={snapshot_id}")
 
     if fields:
         cmd.extend(["--field", ",".join(fields)])
@@ -202,6 +170,10 @@ def select_builds(
     """查询EulerMaker中的构建任务（builds）
     
     示例用法:
+    1. 查询build_id为cfa874d6-2f11-11f0-a00b-eaafa4f3ec35的构建任务
+    2. 查询工程lly-test所有构建任务
+
+    ccb命令：
     1. 指定返回字段: ccb select builds -f repo_id
     2. 按构建ID查询: ccb select builds build_id=cfa874d6-2f11-11f0-a00b-eaafa4f3ec35
     3. 按工程名查询: ccb select builds os_project=lly-test
@@ -291,41 +263,48 @@ def create_project(
 def update_project(
     project_name: str = Field(..., description="要更新的工程名称"),
     json_config: Optional[str] = Field(default=None, description="JSON配置文件路径"),
-    package_name: Optional[str] = Field(default=None, description="要操作的包名"),
-    lock: Optional[bool] = Field(default=None, description="锁定状态(true/false)"),
-    package_url: Optional[str] = Field(default=None, description="包的git仓库URL"),
-    package_branch: Optional[str] = Field(default="master", description="包的分支，默认为master"),
+    package_name: Optional[Union[str, List[str]]] = Field(default=None, description="包名或包名列表"),
+    package_url: Optional[Union[str, List[str]]] = Field(default=None, description="包git仓库URL或URL列表"),
+    package_branch: Optional[Union[str, List[str]]] = Field(default="master", description="包分支或分支列表"),
     users_to_remove: Optional[List[str]] = Field(default=None, description="要删除权限的用户列表"),
     users_to_add: Optional[Dict[str, str]] = Field(default=None, description="要添加的用户及角色，格式: {'username': 'role'}")
 ) -> Dict[str, Any]:
     """更新EulerMaker工程
     
     示例用法:
-    1. 请在lly-test工程中添加包gcc-for-openEuler，url为https://gitee.com/openeuler/gcc-for-openEuler.git
+    1. 请在lly515工程中添加以下包，每行信息分别为包名，url，分支名：
+       gcc-for-openEuler，https://gitee.com/openeuler/gcc-for-openEuler.git，master，
+       fstrm，https://gitee.com/src-openeuler/fstrm.git ，openEuler-20.03-LTS
     2. 请删除lly-test工程中的lly用户，为lcx150用户添加maintainer角色，为llyqq添加reader角色
+    3. 请根据配置文件/tmp/update_project.json来更新名为test的EulerMaker工程
 
     ccb命令：
     1. 通过json配置更新: ccb update projects test-project --json config.json
-    2. 锁定包: ccb update projects test-project package_overrides.$package.lock=true
-    3. 解锁包: ccb update projects test-project package_overrides.$package.lock=false
     """
 
-    if not (json_config or package_name or lock or package_url or users_to_remove or users_to_add):
+    if not (json_config or package_name or package_url or users_to_remove or users_to_add):
         return {"error": "命令执行失败: 未提供任何更新内容"}
-
     cmd = ["ccb", "update", "projects", project_name]
-    
     update_data = {}
+    tmp_json_path = None
     
     # 处理添加包的情况
     if package_name and package_url:
-        update_data["my_specs+"] = [
-            {
+        if isinstance(package_name, str):
+            update_data["my_specs+"] = [{
                 "spec_name": package_name,
                 "spec_url": package_url,
                 "spec_branch": package_branch
-            }
-        ]
+            }]
+        else:
+            update_data["my_specs+"] = [
+                {
+                    "spec_name": name,
+                    "spec_url": package_url[i] if isinstance(package_url, list) else package_url,
+                    "spec_branch": package_branch[i] if isinstance(package_branch, list) else package_branch
+                }
+                for i, name in enumerate(package_name)
+            ]
     
     # 处理用户权限变更
     if users_to_remove or users_to_add:
@@ -333,20 +312,38 @@ def update_project(
             update_data["users-"] = users_to_remove
         if users_to_add:
             update_data["users+"] = users_to_add
-        
-        tmp_json_path = "/tmp/update.json"
+    
+    if update_data:  
+        tmp_json_path = "/tmp/update_project.json"
         with open(tmp_json_path, 'w') as f:
             json.dump(update_data, f)
         cmd.extend(["--json", tmp_json_path])
-        return _run_command(cmd, tmp_json_path)
-    
-    if json_config:
+    elif json_config:  
         cmd.extend(["--json", json_config])
     
-    if package_name is not None and lock is not None:
-        lock_str = "true" if lock else "false"
-        cmd.append(f"package_overrides.{package_name}.lock={lock_str}")
+    return _run_command(cmd, tmp_file=tmp_json_path)
+
+@mcp.tool()
+def set_package_lock(
+    project_name: str = Field(..., description="工程名称"),
+    package_name: str = Field(..., description="要操作的包名"),
+    action: str = Field(..., description="操作类型: lock(锁定)或unlock(解锁)")
+) -> Dict[str, Any]:
+    """设置包的锁定状态
     
+    示例用法:
+    1. 锁定lly-test工程中的gcc包
+    2. 解锁lly-test工程中的gcc包
+    
+    ccb命令：
+    1. 锁定: ccb update projects test-project package_overrides.gcc.lock=true
+    2. 解锁: ccb update projects test-project package_overrides.gcc.lock=false
+    """
+    if action not in ["lock", "unlock"]:
+        return {"error": "action参数必须是lock或unlock"}
+    
+    lock_str = "true" if action == "lock" else "false"
+    cmd = ["ccb", "update", "projects", project_name, f"package_overrides.{package_name}.lock={lock_str}"]
     return _run_command(cmd)
 
 @mcp.tool()
@@ -362,7 +359,7 @@ def build_single_package(
     示例用法:
     1. 请构建lly-test工程中的fstrm包
     2. 请根据配置文件/tmp/build_targets.json构建lly-test工程中的fstrm包
-    2. 请构建工程lly-test中的fstrm包，构建环境为openEuler:24.03-LTS-SP1，架构x86_64和aarch64
+    3. 请构建工程lly-test中的fstrm包，构建环境为openEuler:24.03-LTS-SP2，架构x86_64和aarch64
     
     ccb命令:
     1. 基本构建: ccb build-single os_project=test-project packages=gcc
@@ -414,7 +411,7 @@ def build(
     
     示例用法:
     1. 全量构建lly-test工程
-    2. 增量构建lly-test工程
+    2. 请基于ce4e7a42-3167-11f0-bae2-02291c731353快照进行增量构建
     3. 全量构建lly-test工程，构建环境为openEuler:24.03-LTS-SP1，架构x86_64和aarch64
 
     ccb命令：
@@ -463,10 +460,29 @@ def build(
     oauth_url = global_config['OAUTH_REDIRECT_URL']
     base_url = oauth_url.split('/oauth/')[0]
 
-    ret = {
-        "result": result.get("result", ""),
-        "build_result_url": f"{base_url}/project/build?osProject={os_project}" + (f"&buildId={build_id}" if build_id else "")
-    }
+    ret = {"result": result.get("result", "")}
+    # 如果只提供了snapshot_id而没有os_project，则查询快照获取工程名
+    if snapshot_id and not os_project:
+        cmd = ["ccb", "select", "snapshots", f"snapshot_id={snapshot_id}", "--field", "os_project"]
+        result = _run_command(cmd)
+        
+        try:
+            snapshot_data = json.loads(result.get("result", "[]"))
+            if (isinstance(snapshot_data, list) and
+                len(snapshot_data) > 0 and
+                isinstance(snapshot_data[0], dict) and
+                "_source" in snapshot_data[0] and
+                isinstance(snapshot_data[0]["_source"], dict)):
+                # 提取第一个结果的os_project字段
+                os_project = snapshot_data[0]["_source"].get("os_project")
+        except (json.JSONDecodeError, AttributeError, KeyError) as e:
+            # 如果获取os_project，静默跳过（不报错）
+            pass
+    
+    # 构造构建结果URL
+    if os_project:
+        ret["build_result_url"] = f"{base_url}/project/build?osProject={os_project}" + (f"&buildId={build_id}" if build_id else "")
+    
     
     return ret
 
@@ -484,6 +500,9 @@ def download_package(
     """下载软件包
     
     示例用法:
+    请下载lly-test中构建出来的fstrm的aarch64架构包，保存到/tmp目录
+
+    ccb命令：
     1. 基本下载: 
        ccb download os_project=test-project packages=python-flask architecture=aarch64
     2. 指定下载路径:
@@ -535,7 +554,10 @@ def cancel(
     """取消构建任务
     
     示例用法:
-    1. 取消构建: ccb cancel 12345
+    取消构建864db44a-3178-11f0-ba18-3ef950579dc9
+    
+    ccb命令：
+    ccb cancel 864db44a-3178-11f0-ba18-3ef950579dc9
     """
     cmd = ["ccb", "cancel", build_id]
     
@@ -548,7 +570,10 @@ def log(
     """查看job日志
     
     示例用法:
-    1. 查看日志: ccb log 67890
+    查看cbs.8843409的日志
+    
+    ccb命令：
+    ccb log cbs.8843409
     """
     cmd = ["ccb", "log", job_id]
     
