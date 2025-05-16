@@ -267,6 +267,7 @@ def get_project_rag(
     result = []
     if func:
         etype = 'function'
+        element = None
         if func in data['function']:
             element = data['function'].get(func)
         elif func in data['macro']:
@@ -278,10 +279,11 @@ def get_project_rag(
         result.append(get_result('Struct', struct, element))
     if macro:
         etype = 'Macro'
+        element = None
         if macro in data['macro']:
             element = data['macro'].get(macro)
         else:
-            for key, each in data[''].items():
+            for key, each in data['enum'].items():
                 if macro not in each['code']:
                     continue
                 element = each
@@ -315,7 +317,7 @@ def main():
         # 从JSON文件查询
         code = get_project_rag(args.json, func=args.func,
                                struct=args.struct, macro=args.macro, 
-                               globalvar=args.globalvar)
+                               globalvar=args.globalvar, enum=args.enum)
         print(code)
     else:
         parser.print_help()
