@@ -21,22 +21,21 @@ def get_version_from_spec(spec_file: Path) -> str:
     return ""
 
 @mcp.tool()
-def build_tar(ctx: Context, package_name: str) -> str:
+def build_tar(ctx: Context, package_name: str, source_repo: str, spec_path: str) -> str:
     """将最新源码打包成tar.gz文件并放到~/rpmbuild/SOURCES目录
     
     Args:
         package_name: 要构建的软件包名
+        source_repo: 源码仓路径
+        spec_path: spec文件路径
     """
     try:
         # 确保目录存在
         (RPMBUILD_DIR / "SOURCES").mkdir(parents=True, exist_ok=True)
         
         # 配置路径
-        source_dir = Path.home() / f"openeuler_repos/openeuler/{package_name}"
-        build_dir = Path.home() / f"openeuler_repos/src-openeuler/{package_name}"
-        
-        # 获取版本号(从spec文件读取)
-        spec_file = build_dir / f"{package_name}.spec"
+        source_dir = Path(source_repo)
+        spec_file = Path(spec_path)
         if not spec_file.exists():
             return f"错误: 未找到spec文件 {spec_file}"
             
@@ -56,35 +55,36 @@ def build_tar(ctx: Context, package_name: str) -> str:
         if tar_path.exists():
             tar_path.unlink()
         
-        # 直接创建.tar.gz文件
-        shutil.make_archive(
-            str(tar_path.with_suffix('').with_suffix('')),  # 移除.gz和.tar后缀
-            'gztar',
-            root_dir=source_dir
-        )
+        # 使用tarfile手动创建压缩包
+        import tarfile
+        with tarfile.open(tar_path, "w:gz") as tar:
+            for item in source_dir.iterdir():
+                # 添加文件时重命名路径，使解压后第一层是package_name
+                arcname = f"{package_name}/{item.name}"
+                tar.add(str(item), arcname=arcname)
         
         return f"成功创建最新tar包: {tar_path}"
     except Exception as e:
         return f"打包失败: {str(e)}"
 
 @mcp.tool()
-def build_rpm(ctx: Context, package_name: str) -> str:
+def build_rpm(ctx: Context, package_name: str, spec_path: str) -> str:
     """使用spec文件构建最新RPM包
     
     Args:
         package_name: 要构建的软件包名
+        spec_path: spec文件路径
     """
     try:
-        # 配置路径
-        build_dir = Path.home() / f"openeuler_repos/src-openeuler/{package_name}"
-        spec_file = build_dir / f"{package_name}.spec"
+        spec_file = Path(spec_path)
         
         # 确保spec文件存在
         if not spec_file.exists():
             return f"错误: 未找到spec文件 {spec_file}"
             
-        # 从src-openeuler仓库拷贝所有文件到SOURCES目录
+        # 从spec文件所在目录拷贝所有文件到SOURCES目录
         sources_dir = RPMBUILD_DIR / "SOURCES"
+        build_dir = spec_file.parent
         for item in build_dir.iterdir():
             if item.name != ".git":
                 dest = sources_dir / item.name
