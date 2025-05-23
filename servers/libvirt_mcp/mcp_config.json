@@ -1,9 +1,12 @@
 {
   "mcpServers": {
     "libvirt_mcp": {
-      "command": "python3",
+      "command": "uv",
       "args": [
-        ".oedp/mcp/libvirt_mcp.py"
+        "--directory",
+        "/opt/mcp-servers/servers/libvirt_mcp/src",
+        "run",
+        "libvirt_mcp.py"
       ],
       "disabled": false,
       "alwaysAllow": []
