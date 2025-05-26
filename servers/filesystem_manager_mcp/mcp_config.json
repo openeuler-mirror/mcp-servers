@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "filesystem_manager_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/filesystem_manager_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": [
+        "create_filesystem",
+        "mount_filesystem",
+        "list_filesystems"
+      ]
+    }
+  }
+}

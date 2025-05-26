@@ -1,0 +1,20 @@
+{
+    "mcpServers": {
+        "file_integrity_check_mcp": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "/opt/mcp-servers/servers/file_integrity_check_mcp/src",
+                "run",
+                "server.py"
+            ],
+            "disabled": false,
+            "alwaysAllow": [
+                "init_database",
+                "run_check",
+                "view_report",
+                "update_database"
+            ]
+        }
+    }
+}

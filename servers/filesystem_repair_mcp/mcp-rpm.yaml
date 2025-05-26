@@ -1,0 +1,18 @@
+name: "filesystem_repair_mcp"
+summary: "文件系统修复工具MCP服务器"
+description: |
+  提供文件系统修复功能，支持ext2/3/4、xfs等常见文件系统类型，
+  可自动或交互式修复损坏的文件系统。
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - e2fsprogs
+    - xfsprogs
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py

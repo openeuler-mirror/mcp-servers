@@ -1,0 +1,20 @@
+name: "file_integrity_check_mcp"
+summary: "File integrity checker using AIDE and Tripwire"
+description: |
+  Provides tools for checking system file integrity including:
+  - Initializing AIDE/Tripwire database
+  - Running integrity checks
+  - Viewing reports
+  - Updating databases
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - aide
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
