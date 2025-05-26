@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "kernel_driver_manager_mcp": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/kernel_driver_manager_mcp/src/server.py",
+        "--kernel_modules_path=/lib/modules",
+        "--driver_db_path=/var/lib/dkms",
+        "--log_level=info",
+        "--max_workers=4"
+      ],
+      "disabled": false
+    }
+  },
+  "name": "kernel_driver_manager_mcp",
+  "description": "内核驱动管理MCP服务器，提供内核模块的查看、加载、卸载和管理功能",
+  "version": "1.0.0",
+  "author": "openEuler MCP Team",
+  "license": "Apache-2.0"
+}

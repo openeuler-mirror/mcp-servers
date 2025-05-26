@@ -1,0 +1,20 @@
+name: "intrusion_detection_mcp"
+summary: "入侵检测系统"
+description: |
+  提供入侵检测功能，基于aide工具实现
+  支持IDS规则配置和扫描结果查询
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - aide
+    - jq
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

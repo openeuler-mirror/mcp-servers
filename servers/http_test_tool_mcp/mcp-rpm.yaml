@@ -1,0 +1,20 @@
+name: "http_test_tool_mcp"
+summary: "HTTP测试工具MCP服务器"
+description: |
+  提供HTTP接口测试功能，封装curl和httpie命令，支持GET/POST/PUT/DELETE等HTTP方法
+
+dependencies:
+  system:
+    - python3
+    - curl
+    - python3-httpie
+    - python3-mcp
+  packages:
+    - python3-requests
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

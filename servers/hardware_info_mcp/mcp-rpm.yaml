@@ -1,0 +1,19 @@
+name: "hardware_info_mcp"
+summary: "硬件信息查询MCP服务器"
+description: |
+  提供系统硬件信息查询功能，包括CPU、内存、磁盘等硬件信息
+
+dependencies:
+  system:
+    - python3
+    - lshw
+    - dmidecode
+  packages:
+    - rpm-build
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

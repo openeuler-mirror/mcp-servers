@@ -1,0 +1,25 @@
+name: "git_assistant_mcp"
+summary: "Git操作辅助工具"
+description: |
+  提供Git常用命令的封装和辅助功能，包括：
+  - 仓库克隆/初始化
+  - 分支管理
+  - 提交/推送操作
+  - 状态查看
+  - 差异比较
+
+dependencies:
+  system:
+    - python3
+    - git
+    - python3-GitPython
+  packages:
+    - rpm-build
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md
