@@ -1,0 +1,19 @@
+name: "firewall_manager_mcp"
+summary: "Firewalld规则管理工具"
+description: |
+  提供对firewalld防火墙规则的查看、添加、删除等管理功能
+  通过调用firewall-cmd命令实现
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - firewalld
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

@@ -1,0 +1,45 @@
+{
+  "mcpServers": {
+    "filesystemRepairMcp": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/filesystem_repair_mcp/src/server.py"
+      ],
+      "tools": [
+        {
+          "name": "fsck",
+          "description": "修复损坏的文件系统",
+          "parameters": [
+            {
+              "name": "device",
+              "type": "string",
+              "description": "要修复的设备路径(如/dev/sda1)",
+              "required": true
+            },
+            {
+              "name": "fs_type",
+              "type": "string",
+              "description": "文件系统类型(如ext4,xfs)",
+              "required": false
+            },
+            {
+              "name": "force",
+              "type": "boolean",
+              "description": "是否强制修复",
+              "required": false,
+              "default": false
+            },
+            {
+              "name": "interactive",
+              "type": "boolean",
+              "description": "是否交互式修复",
+              "required": false,
+              "default": false
+            }
+          ]
+        }
+      ],
+      "disabled": false
+    }
+  }
+}

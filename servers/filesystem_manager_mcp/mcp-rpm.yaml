@@ -1,0 +1,21 @@
+name: "filesystem_manager_mcp"
+summary: "文件系统管理MCP服务"
+description: |
+  提供文件系统创建、挂载和管理功能
+  支持ext4/xfs等常见文件系统
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - e2fsprogs
+    - xfsprogs
+    - util-linux
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
