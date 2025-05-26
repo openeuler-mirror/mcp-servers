@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "gitAssistantMcp": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/git_assistant_mcp/src/server.py",
+        "--name=git_assistant_mcp",
+        "--version=1.0.0",
+        "--description=Git操作辅助MCP Server"
+      ],
+      "disabled": false
+    }
+  }
+}
