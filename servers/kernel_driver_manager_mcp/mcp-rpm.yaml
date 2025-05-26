@@ -1,0 +1,21 @@
+name: "kernel_driver_manager_mcp"
+summary: "内核驱动管理工具"
+description: |
+  提供内核模块的查看和管理功能，包括：
+  - 列出已加载的内核模块
+  - 查看内核模块详细信息
+  - 加载/卸载内核模块
+
+dependencies:
+  system:
+    - python3
+    - python3-mcp
+    - kmod
+    - dkms
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

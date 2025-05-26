@@ -1,0 +1,10 @@
+{
+  "name": "hardware_info_mcp",
+  "version": "1.0.0",
+  "description": "硬件信息查询MCP服务器",
+  "protocol": "stdio",
+  "entry": "src/server.py",
+  "dependencies": {
+    "system": ["lshw", "dmidecode"]
+  }
+}

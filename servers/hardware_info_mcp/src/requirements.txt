@@ -1,0 +1,2 @@
+# 硬件信息查询MCP服务器Python依赖
+# 本项目使用系统工具lshw和dmidecode，无需额外Python包

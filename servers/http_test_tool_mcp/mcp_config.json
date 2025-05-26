@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "httpTestToolMcp": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/http_test_tool_mcp/src/server.py",
+        "--TEST_TARGET_HOST=${target_host}",
+        "--TEST_TARGET_PORT=${target_port}",
+        "--TEST_PROTOCOL=http://",
+        "--CONCURRENT_USERS=10",
+        "--TEST_DURATION=60",
+        "--REPORT_FORMAT=json",
+        "--AUTH_TYPE=${auth_type}",
+        "--AUTH_TOKEN=${auth_token}",
+        "--VERBOSE=true"
+      ],
+      "disabled": false
+    }
+  }
+}
