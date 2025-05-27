@@ -1,0 +1,19 @@
+{
+    "mcpServers": {
+        "kernel_tuner_mcp": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "/opt/mcp-servers/servers/kernel_tuner_mcp/src",
+                "run",
+                "server.py"
+            ],
+            "disabled": false,
+            "alwaysAllow": [
+                "get_param",
+                "set_param",
+                "list_params"
+            ]
+        }
+    }
+}

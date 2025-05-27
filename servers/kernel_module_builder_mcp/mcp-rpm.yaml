@@ -1,0 +1,25 @@
+name: "kernel-module-builder-mcp"
+summary: "MCP server for building and installing kernel modules"
+description: |
+  Provides MCP tools for compiling and installing kernel modules
+  using dkms/build commands.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+    - kernel-devel
+    - gcc
+    - dkms
+  packages:
+    - rpm-build
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md

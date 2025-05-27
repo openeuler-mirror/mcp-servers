@@ -1,0 +1,41 @@
+{
+  "mcpServers": {
+    "logAnalyzerMcp": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/log_analyzer_mcp/src/server.py"
+      ],
+      "disabled": false,
+      "tools": [
+        {
+          "name": "analyze_syslog",
+          "description": "Analyze /var/log/messages",
+          "parameters": {
+            "keyword": {"type": "string", "optional": true},
+            "since": {"type": "string", "optional": true},
+            "service": {"type": "string", "optional": true}
+          }
+        },
+        {
+          "name": "query_journal",
+          "description": "Query systemd journal logs",
+          "parameters": {
+            "unit": {"type": "string", "optional": true},
+            "priority": {"type": "string", "optional": true},
+            "since": {"type": "string", "optional": true},
+            "until": {"type": "string", "optional": true}
+          }
+        }
+      ],
+      "resources": [
+        {
+          "name": "log_stats",
+          "description": "Get log statistics",
+          "parameters": {
+            "time_range": {"type": "string", "required": true}
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,5 @@
+# Python dependencies for LVM Manager MCP Server
+# Standard library modules used:
+# - subprocess
+# - json
+# - typing

@@ -1,0 +1,20 @@
+name: "log_analyzer_mcp"
+summary: "System log analysis MCP server"
+description: |
+  Provides tools for analyzing system logs from /var/log/messages
+  and systemd journal. Supports filtering by time, service and keywords.
+
+dependencies:
+  system:
+    - python3
+    - rsyslog
+    - systemd
+    - python3-mcp
+    - jq
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

@@ -1,0 +1,33 @@
+{
+  "mcpServers": {
+    "kernelModuleBuilderMcp": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/kernel_module_builder_mcp/src/server.py",
+        "--kernel_modules_path=/lib/modules",
+        "--driver_db_path=/var/lib/dkms"
+      ],
+      "disabled": false,
+      "tools": [
+        {
+          "name": "build_module",
+          "description": "Build and install a kernel module from source",
+          "parameters": [
+            {
+              "name": "source_path",
+              "type": "string",
+              "description": "Path to the kernel module source directory",
+              "required": true
+            },
+            {
+              "name": "module_name",
+              "type": "string",
+              "description": "Name of the kernel module",
+              "required": true
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
