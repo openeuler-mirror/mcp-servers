@@ -1,0 +1,23 @@
+name: "pci-info-mcp"
+summary: "MCP server for PCI device information"
+description: |
+  Provides MCP tools for querying and retrieving 
+  detailed PCI device information using lspci.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+    - pciutils
+  packages:
+    - rpm-build
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md

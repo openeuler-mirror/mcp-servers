@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "process_manager_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/process_manager_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": [
+        "list_processes",
+        "monitor_processes",
+        "kill_process"
+      ]
+    }
+  }
+}

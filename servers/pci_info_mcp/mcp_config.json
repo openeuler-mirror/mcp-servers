@@ -1,0 +1,18 @@
+{
+    "mcpServers": {
+        "pci_info_mcp": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "/opt/mcp-servers/servers/pci_info_mcp/src",
+                "run",
+                "server.py"
+            ],
+            "disabled": false,
+            "alwaysAllow": [
+                "get_pci_info",
+                "list_pci_devices"
+            ]
+        }
+    }
+}

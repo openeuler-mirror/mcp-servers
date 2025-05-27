@@ -1,0 +1,23 @@
+name: "ssh-manager-mcp"
+summary: "MCP server for SSH connection management"
+description: |
+  Provides MCP tools for managing SSH connections and SCP file transfers,
+  including connecting to remote hosts and transferring files securely.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+    - openssh
+  packages:
+    - sshpass
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md

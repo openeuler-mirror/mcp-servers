@@ -1,0 +1,19 @@
+{
+    "mcpServers": {
+        "ssh_manager_mcp": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "/opt/mcp-servers/servers/ssh_manager_mcp/src",
+                "run",
+                "server.py"
+            ],
+            "disabled": false,
+            "alwaysAllow": [
+                "ssh_connect",
+                "scp_transfer",
+                "list_connections"
+            ]
+        }
+    }
+}
