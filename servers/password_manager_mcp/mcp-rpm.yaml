@@ -1,0 +1,23 @@
+name: "password-manager-mcp"
+summary: "MCP server for password management"
+description: |
+  Provides MCP tools for managing passwords using the pass password manager,
+  including storing, retrieving and listing passwords securely.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+    - passwd
+  packages:
+    - gnupg2
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md

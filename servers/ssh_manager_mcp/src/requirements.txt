@@ -1,0 +1,2 @@
+# Python dependencies for SSH Manager MCP
+# No additional dependencies required beyond standard library

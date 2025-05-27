@@ -1,0 +1,23 @@
+name: "proxy-manager-mcp"
+summary: "MCP server for proxy management"
+description: |
+  Provides MCP tools for managing proxy settings,
+  including configuring and controlling squid proxy service.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp 
+    - jq
+    - squid
+  packages:
+    - squid
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md

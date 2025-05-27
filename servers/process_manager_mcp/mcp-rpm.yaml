@@ -1,0 +1,18 @@
+name: "process_manager_mcp"
+summary: "进程管理MCP服务器"
+description: |
+  提供进程查看和管理功能的MCP服务器，可以查看进程列表、监控进程状态和终止进程。
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - procps-ng  # 提供ps/top/kill命令
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

@@ -1,0 +1,81 @@
+{
+  "mcpServers": {
+    "performanceProfilerMcp": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/performance_profiler_mcp/src/server.py",
+        "--HOME_DIR=${your_home_directory}"
+      ],
+      "disabled": false
+    }
+  },
+  "name": "performance_profiler_mcp",
+  "version": "1.0.0",
+  "description": "性能剖析工具MCP服务器，提供代码性能剖析功能",
+  "resources": {
+    "HOME_DIR": {
+      "type": "string",
+      "description": "主目录路径",
+      "required": true
+    },
+    "PERF_PATH": {
+      "type": "string",
+      "description": "perf工具路径",
+      "default": "/usr/bin/perf"
+    },
+    "VALGRIND_PATH": {
+      "type": "string",
+      "description": "valgrind工具路径",
+      "default": "/usr/bin/valgrind"
+    }
+  },
+  "tools": [
+    {
+      "name": "perf_profile",
+      "description": "使用perf进行性能剖析",
+      "parameters": {
+        "program": {
+          "type": "string",
+          "description": "要剖析的程序路径"
+        },
+        "duration": {
+          "type": "integer",
+          "description": "剖析持续时间(秒)",
+          "default": 10
+        }
+      },
+      "examples": [
+        {
+          "description": "剖析nginx进程10秒",
+          "parameters": {
+            "program": "/usr/sbin/nginx",
+            "duration": 10
+          }
+        }
+      ]
+    },
+    {
+      "name": "valgrind_profile",
+      "description": "使用valgrind进行内存分析",
+      "parameters": {
+        "program": {
+          "type": "string",
+          "description": "要分析的程序路径"
+        },
+        "args": {
+          "type": "string",
+          "description": "程序参数",
+          "optional": true
+        }
+      },
+      "examples": [
+        {
+          "description": "分析test程序的内存泄漏",
+          "parameters": {
+            "program": "./test"
+          }
+        }
+      ]
+    }
+  ]
+}

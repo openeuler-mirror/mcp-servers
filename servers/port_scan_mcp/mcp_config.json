@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "port_scan_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/port_scan_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": [
+        "scan_ports"
+      ]
+    }
+  }
+}
