@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "lvm_manager_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/lvm_manager_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": [
+        "list_volume_groups",
+        "list_logical_volumes",
+        "list_physical_volumes",
+        "get_lvm_info"
+      ]
+    }
+  }
+}

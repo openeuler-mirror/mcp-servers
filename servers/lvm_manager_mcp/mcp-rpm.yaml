@@ -1,0 +1,23 @@
+name: "lvm_manager_mcp"
+summary: "LVM Management MCP Server"
+description: |
+  Provides tools for managing LVM (Logical Volume Manager) including:
+  - Volume group management
+  - Logical volume operations
+  - Physical volume monitoring
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - lvm2
+  packages:
+    - rpm-build
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

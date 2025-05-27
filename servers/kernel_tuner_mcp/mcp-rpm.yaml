@@ -1,0 +1,24 @@
+name: "kernel-tuner-mcp"
+summary: "MCP server for kernel parameter tuning"
+description: |
+  Provides MCP tools for viewing and modifying kernel runtime parameters
+  using sysctl command.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+    - procps
+    - procps-ng
+  packages:
+    - rpm-build
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md
