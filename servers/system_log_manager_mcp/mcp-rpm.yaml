@@ -1,0 +1,23 @@
+name: "system-log-manager-mcp"
+summary: "MCP server for system log management"
+description: |
+  Provides MCP tools for managing system logs,
+  including log rotation configuration and log viewing.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+    - logrotate
+  packages:
+    - rsyslog
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md

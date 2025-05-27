@@ -1,0 +1,17 @@
+name: "system_monitor_mcp"
+summary: "System Monitor MCP Server"
+description: |
+  A FastMCP implementation for system monitoring, providing tools to monitor
+  CPU, memory, disk usage and process management.
+
+dependencies:
+  system:
+    - python3
+    - python3-mcp
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

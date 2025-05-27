@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "systemMonitorMcp": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/system_monitor_mcp/src/server.py",
+        "--MONITOR_INTERVAL=5",
+        "--CPU_THRESHOLD=90",
+        "--MEMORY_THRESHOLD=85",
+        "--DISK_THRESHOLD=90",
+        "--LOG_DIR=/var/log/system_monitor"
+      ],
+      "disabled": false
+    }
+  }
+}
