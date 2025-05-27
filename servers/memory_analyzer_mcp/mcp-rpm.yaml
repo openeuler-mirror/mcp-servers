@@ -1,0 +1,28 @@
+name: "memory-analyzer-mcp"
+summary: "内存分析工具MCP服务器"
+description: |
+  提供内存问题检测和分析功能，支持使用valgrind检测内存问题和address-sanitizer分析内存错误。
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+    - valgrind
+    - gcc
+    - libasan
+  packages:
+    - rpm-build
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md
+
+post_install: |
+  echo "内存分析工具MCP服务器安装完成"
+  echo "使用前请确保已安装valgrind和gcc(带address-sanitizer支持)"

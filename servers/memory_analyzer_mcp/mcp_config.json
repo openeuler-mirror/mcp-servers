@@ -1,0 +1,69 @@
+{
+  "mcpServers": {
+    "memoryAnalyzerMcp": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/memory_analyzer_mcp/src/server.py",
+        "--VALGRIND_PATH=${valgrind_install_path}",
+        "--ASAN_OPTIONS=detect_leaks=1",
+        "--REPORT_DIR=/var/log/memory_analyzer"
+      ],
+      "disabled": false
+    }
+  },
+  "name": "memory_analyzer_mcp",
+  "version": "1.0.0",
+  "description": "内存分析工具MCP服务器，提供内存问题检测和分析功能",
+  "tools": [
+    {
+      "name": "valgrind_memcheck",
+      "description": "使用valgrind检测内存问题",
+      "parameters": {
+        "program": {
+          "type": "string",
+          "description": "要检测的程序路径"
+        },
+        "args": {
+          "type": "string",
+          "description": "程序参数",
+          "optional": true
+        },
+        "options": {
+          "type": "string",
+          "description": "valgrind额外选项",
+          "optional": true
+        }
+      }
+    },
+    {
+      "name": "asan_analyze",
+      "description": "使用address-sanitizer分析内存错误",
+      "parameters": {
+        "program": {
+          "type": "string",
+          "description": "要分析的程序路径"
+        },
+        "args": {
+          "type": "string",
+          "description": "程序参数",
+          "optional": true
+        }
+      }
+    },
+    {
+      "name": "report_analyzer",
+      "description": "分析内存报告",
+      "parameters": {
+        "report_file": {
+          "type": "string",
+          "description": "内存报告文件路径"
+        },
+        "output_format": {
+          "type": "string",
+          "description": "输出格式(json/text)",
+          "default": "text"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+    "mcpServers": {
+        "network_manager_mcp": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "/opt/mcp-servers/servers/network_manager_mcp/src",
+                "run",
+                "server.py"
+            ],
+            "disabled": false,
+            "alwaysAllow": [
+                "list_interfaces",
+                "get_interface_status",
+                "show_connections"
+            ]
+        }
+    }
+}

@@ -1,0 +1,24 @@
+name: "network_monitor_mcp"
+summary: "网络流量监控MCP服务器"
+description: |
+  提供网络流量监控功能，包括:
+  - 实时网络流量监控
+  - 连接状态查看
+  - 带宽使用统计
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - iftop
+    - nethogs
+  packages:
+    - rpm-build
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

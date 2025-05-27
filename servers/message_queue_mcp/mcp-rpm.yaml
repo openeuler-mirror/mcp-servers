@@ -1,0 +1,24 @@
+name: "message_queue_mcp"
+summary: "Message queue management tool for RabbitMQ and Kafka"
+description: |
+  Provides tools for managing message queues including:
+  - Connecting to RabbitMQ and Kafka
+  - Publishing messages
+  - Consuming messages
+  - Creating queues/topics
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - rabbitmq-server
+    - kafka
+    - jq
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

@@ -1,0 +1,20 @@
+name: "package_manager_mcp"
+summary: "软件包管理MCP服务器"
+description: |
+  提供软件包查询、安装和卸载功能的MCP服务器
+  通过dnf/rpm命令管理系统软件包
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - dnf
+    - rpm
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

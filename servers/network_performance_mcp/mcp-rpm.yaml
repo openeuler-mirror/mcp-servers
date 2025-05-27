@@ -1,0 +1,21 @@
+name: "network_performance_mcp"
+summary: "网络性能分析MCP服务"
+description: |
+  提供网络带宽和吞吐量测试功能，基于iperf和netperf实现
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - iperf3
+    - netperf
+  packages:
+    - rpm-build
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
