@@ -1,0 +1,51 @@
+{
+  "name": "package_dependency_analyzer_mcp",
+  "description": "A MCP server for analyzing package dependencies (rpm/dnf/pip)",
+  "version": "1.0.0",
+  "mcpServers": {
+    "packageDependencyAnalyzerMcp": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/package_dependency_analyzer_mcp/src/server.py"
+      ],
+      "disabled": false
+    }
+  },
+  "tools": [
+    {
+      "name": "analyze_rpm_dependencies",
+      "description": "Analyze RPM package dependencies and generate dependency tree",
+      "parameters": {
+        "package_name": {
+          "type": "string",
+          "description": "Name of the RPM package to analyze"
+        },
+        "recursive": {
+          "type": "boolean",
+          "description": "Whether to analyze dependencies recursively",
+          "default": true
+        }
+      }
+    },
+    {
+      "name": "analyze_dnf_dependencies",
+      "description": "Analyze DNF package dependencies and generate dependency tree",
+      "parameters": {
+        "package_name": {
+          "type": "string",
+          "description": "Name of the DNF package to analyze"
+        }
+      }
+    },
+    {
+      "name": "analyze_pip_dependencies",
+      "description": "Analyze Python pip package dependencies and generate dependency tree",
+      "parameters": {
+        "package_name": {
+          "type": "string",
+          "description": "Name of the pip package to analyze"
+        }
+      }
+    }
+  ]
+}

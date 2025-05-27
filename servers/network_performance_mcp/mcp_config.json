@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "network_performance_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/network_performance_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": [
+        "test_bandwidth",
+        "test_throughput"
+      ]
+    }
+  }
+}
