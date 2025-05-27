@@ -1,0 +1,19 @@
+{
+    "mcpServers": {
+        "network_monitor_mcp": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "/opt/mcp-servers/servers/network_monitor_mcp/src",
+                "run",
+                "server.py"
+            ],
+            "disabled": false,
+            "alwaysAllow": [
+                "monitor_traffic",
+                "show_connections",
+                "get_bandwidth"
+            ]
+        }
+    }
+}

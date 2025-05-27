@@ -1,0 +1,69 @@
+{
+  "name": "message_queue_mcp",
+  "description": "Message queue management tool for RabbitMQ and Kafka",
+  "version": "1.0.0",
+  "mcpServers": {
+    "messageQueueMcp": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/message_queue_mcp/src/server.py",
+        "--RABBITMQ_HOST=${rabbitmq_host}",
+        "--RABBITMQ_PORT=${rabbitmq_port}",
+        "--RABBITMQ_USERNAME=${rabbitmq_username}",
+        "--RABBITMQ_PASSWORD=${rabbitmq_password}",
+        "--KAFKA_BOOTSTRAP_SERVERS=${kafka_bootstrap_servers}",
+        "--KAFKA_CLIENT_ID=${kafka_client_id}"
+      ],
+      "disabled": false
+    }
+  },
+  "tools": [
+    {
+      "name": "connect_rabbitmq",
+      "description": "Connect to RabbitMQ server",
+      "parameters": {
+        "host": {"type": "string", "description": "RabbitMQ host"},
+        "port": {"type": "number", "description": "RabbitMQ port", "default": 5672},
+        "username": {"type": "string", "description": "RabbitMQ username", "default": "guest"},
+        "password": {"type": "string", "description": "RabbitMQ password", "default": "guest"},
+        "vhost": {"type": "string", "description": "RabbitMQ virtual host", "default": "/"}
+      }
+    },
+    {
+      "name": "connect_kafka",
+      "description": "Connect to Kafka server",
+      "parameters": {
+        "bootstrap_servers": {"type": "string", "description": "Kafka bootstrap servers (comma separated)"},
+        "client_id": {"type": "string", "description": "Kafka client ID", "default": "mcp-client"}
+      }
+    },
+    {
+      "name": "publish_message",
+      "description": "Publish message to queue/topic",
+      "parameters": {
+        "queue_type": {"type": "string", "enum": ["rabbitmq", "kafka"], "description": "Queue type"},
+        "queue_name": {"type": "string", "description": "Queue/topic name"},
+        "message": {"type": "string", "description": "Message content"},
+        "properties": {"type": "object", "description": "Additional message properties", "default": {}}
+      }
+    },
+    {
+      "name": "consume_message",
+      "description": "Consume message from queue/topic",
+      "parameters": {
+        "queue_type": {"type": "string", "enum": ["rabbitmq", "kafka"], "description": "Queue type"},
+        "queue_name": {"type": "string", "description": "Queue/topic name"},
+        "auto_ack": {"type": "boolean", "description": "Auto acknowledge message", "default": false}
+      }
+    },
+    {
+      "name": "create_queue",
+      "description": "Create new queue/topic",
+      "parameters": {
+        "queue_type": {"type": "string", "enum": ["rabbitmq", "kafka"], "description": "Queue type"},
+        "queue_name": {"type": "string", "description": "Queue/topic name"},
+        "durable": {"type": "boolean", "description": "Make queue durable", "default": true}
+      }
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+name: "network-config-mcp"
+summary: "Network configuration MCP server"
+description: |
+  Provides network interface configuration capabilities
+  using NetworkManager and iproute2 commands.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - NetworkManager
+    - iproute
+    - python3-pydantic
+  packages:
+    - jq
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - README.md
+
+post_install: |
+  echo "Network configuration MCP server installed successfully"
