@@ -12,11 +12,10 @@ uv pip install pydantic pyyaml --trusted-host mirrors.huaweicloud.com -i https:/
 
 安装 ccb 命令行工具:
 
+使用openEuler社区openEuler-24.03-LTS-SP2或以上版本的源，安装ccb
+
 ```
-    git clone https://gitee.com/openeuler-customization/lkp-tests.git
-    cd lkp-tests
-    make install
-    source ~/.${SHELL##*/}rc
+yum install ccb
 ```
 
 确保以下命令可以执行：
@@ -39,8 +38,8 @@ ccb -h
         "--HOME_DIR=${your_home_directory}",
         "--SRV_HTTP_REPOSITORIES_HOST=eulermaker.compass-ci.openeuler.openatom.cn",
         "--SRV_HTTP_REPOSITORIES_PORT=443",
-        "--SRV_HTTP_REPOSITORIES_PROTOCOL=http://",
-        "--SRV_HTTP_RESULT_PROTOCOL=http://",
+        "--SRV_HTTP_REPOSITORIES_PROTOCOL=https://",
+        "--SRV_HTTP_RESULT_PROTOCOL=https://",
         "--SRV_HTTP_RESULT_HOST=eulermaker.compass-ci.openeuler.openatom.cn",
         "--SRV_HTTP_RESULT_PORT=443",
         "--DAG_HOST=eulermaker.compass-ci.openeuler.openatom.cn",
