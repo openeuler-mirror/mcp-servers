@@ -1,0 +1,2 @@
+# USB监控MCP服务器不需要额外Python依赖
+# 系统依赖: usbutils (已在mcp_config.json中声明)

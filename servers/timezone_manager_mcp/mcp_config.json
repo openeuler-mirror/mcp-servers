@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "timezoneManagerMcp": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/timezone_manager_mcp/src/server.py"
+      ],
+      "disabled": false
+    }
+  }
+}

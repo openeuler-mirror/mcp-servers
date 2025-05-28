@@ -1,0 +1,18 @@
+name: "usb_monitor_mcp"
+summary: "USB设备监控MCP服务"
+description: |
+  提供USB设备监控和管理功能的MCP服务，包括：
+  - 获取当前连接的USB设备列表
+  - 监控USB设备插拔事件
+  - 提供USB设备变化回调通知
+
+dependencies:
+  system:
+    - python3
+    - usbutils  # 提供lsusb命令
+    - python3-pydantic  # FastMCP依赖
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py

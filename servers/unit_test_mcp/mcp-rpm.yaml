@@ -1,0 +1,20 @@
+name: "unit-test"
+summary: "MCP server for unit testing"
+description: |
+  Provides MCP tools for running and analyzing unit tests (gtest/pytest/junit).
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - gtest-devel
+    - python3-pytest
+    - junit
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

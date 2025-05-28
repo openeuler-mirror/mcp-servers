@@ -1,0 +1,24 @@
+name: "timezone-manager-mcp"
+summary: "MCP server for timezone management"
+description: |
+  Provides MCP tools for managing system timezone,
+  including getting current timezone, setting new timezone,
+  and listing available timezones.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+    - tzdata
+  packages:
+    - rpm-build
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md
