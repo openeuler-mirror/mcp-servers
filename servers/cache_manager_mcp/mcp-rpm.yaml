@@ -1,0 +1,31 @@
+# 缓存管理工具MCP Server RPM配置
+name: "cache-manager-mcp"
+summary: "缓存管理工具MCP Server"
+description: |
+  提供Redis和Memcached缓存系统的管理功能，
+  支持执行各种缓存操作命令。
+
+# 依赖配置
+dependencies:
+  system:
+    - python3
+    - redis
+    - memcached
+    - python3-mcp
+  packages:
+    - python3-redis
+    - python3-memcached
+
+# 文件配置
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md
+
+# 安装后脚本
+post_install: |
+  echo "缓存管理工具MCP Server安装成功"
+  echo "请确保Redis和Memcached服务已启动"

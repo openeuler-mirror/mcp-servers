@@ -1,0 +1,48 @@
+{
+  "name": "cache-manager",
+  "version": "1.0.0",
+  "description": "缓存管理工具，支持Redis和Memcached操作",
+  "author": "MCP Team",
+  "license": "Apache-2.0",
+  "mcpServers": {
+    "cacheManagerMcp": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/cache_manager_mcp/src/server.py",
+        "--REDIS_HOST=localhost",
+        "--REDIS_PORT=6379",
+        "--MEMCACHED_HOST=localhost",
+        "--MEMCACHED_PORT=11211",
+        "--CACHE_EXPIRE_TIME=3600",
+        "--MAX_CONNECTIONS=100"
+      ],
+      "disabled": false
+    }
+  },
+  "tools": [
+    {
+      "name": "redis",
+      "description": "执行Redis命令",
+      "parameters": [
+        {
+          "name": "command",
+          "type": "string",
+          "description": "要执行的Redis命令",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "memcached",
+      "description": "执行Memcached命令",
+      "parameters": [
+        {
+          "name": "command",
+          "type": "string",
+          "description": "要执行的Memcached命令",
+          "required": true
+        }
+      ]
+    }
+  ]
+}

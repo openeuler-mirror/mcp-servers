@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "api_document_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/api_document_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": [
+        "generate_docs"
+      ]
+    }
+  }
+}

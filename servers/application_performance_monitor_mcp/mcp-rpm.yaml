@@ -1,0 +1,28 @@
+name: "application-performance-monitor-mcp"
+summary: "应用性能监控MCP服务器"
+description: |
+  提供应用程序性能指标监控功能，集成Prometheus和Grafana进行可视化展示。
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+    - prometheus2
+    - grafana
+    - python3-prometheus-client
+  packages:
+    - rpm-build
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md
+
+post_install: |
+  echo "应用性能监控MCP服务器安装完成"
+  echo "请确保Prometheus和Grafana服务已启动"

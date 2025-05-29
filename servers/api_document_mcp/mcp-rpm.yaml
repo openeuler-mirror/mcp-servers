@@ -1,0 +1,20 @@
+name: "api-document"
+summary: "MCP server for API documentation generation"
+description: |
+  Provides MCP tools for generating API documentation using doxygen and sphinx.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - doxygen
+    - sphinx
+    - python3-sphinx
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
