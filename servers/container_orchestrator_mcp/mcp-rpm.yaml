@@ -1,0 +1,19 @@
+name: "container_orchestrator_mcp"
+summary: "容器编排工具MCP Server"
+description: |
+  提供容器编排管理功能，基于docker-compose实现
+
+dependencies:
+  system:
+    - python3
+    - docker-compose
+    - python3-mcp
+  packages:
+    - rpm-build
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

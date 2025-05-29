@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "dependency_analyzer_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/dependency_analyzer_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": [
+        "analyze_rpm_deps",
+        "analyze_pip_deps"
+      ]
+    }
+  }
+}

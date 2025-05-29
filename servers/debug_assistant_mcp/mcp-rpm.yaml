@@ -1,0 +1,19 @@
+name: "debug_assistant_mcp"
+summary: "Debug Assistant MCP Server"
+description: |
+  Provides debugging tools and utilities for MCP servers.
+  Supports remote debugging sessions and log analysis.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - python3-debugpy
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

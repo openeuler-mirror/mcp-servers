@@ -1,0 +1,27 @@
+name: "disk_array_manager_mcp"
+summary: "磁盘阵列(RAID)管理工具"
+description: |
+  提供RAID磁盘阵列的创建、删除、状态查询等功能
+  支持添加/移除磁盘等操作
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+    - mdadm
+  packages:
+    - rpm-build
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md
+
+post_install: |
+  echo "磁盘阵列管理MCP服务器安装完成"
+  echo "请确保已安装mdadm工具"
