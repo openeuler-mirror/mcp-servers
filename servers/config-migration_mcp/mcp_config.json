@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "config-migration_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/config-migration_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": []
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "compile_diagnostic_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/compile_diagnostic_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": [
+        "analyze_compile_log"
+      ]
+    }
+  }
+}

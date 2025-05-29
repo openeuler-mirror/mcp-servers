@@ -1,0 +1,23 @@
+name: "config-migration_mcp"
+summary: "System Configuration Migration Tool"
+description: |
+  This MCP server provides configuration file migration capabilities
+  between different systems or environments. It can compare and sync
+  configuration files with conflict resolution.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - rsync
+    - diffutils
+  packages:
+    - nodejs-difflib
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md

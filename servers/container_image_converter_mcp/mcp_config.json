@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "containerImageConverterMcp": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/container_image_converter_mcp/src/server.py",
+        "--source_registry=${source_registry_url}",
+        "--target_registry=${target_registry_url}",
+        "--registry_username=${registry_username}",
+        "--registry_password=${registry_password}"
+      ],
+      "disabled": false
+    }
+  }
+}

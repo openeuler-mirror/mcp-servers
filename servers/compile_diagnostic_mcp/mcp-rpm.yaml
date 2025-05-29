@@ -1,0 +1,29 @@
+# MCP Server RPM打包配置
+name: "compile-diagnostic-mcp"
+summary: "编译错误诊断工具"
+description: |
+  分析gcc/clang编译错误和警告，提供结构化的诊断信息
+
+# 依赖配置
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+  packages:
+    - gcc
+    - clang
+
+# 文件配置
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md
+
+# 安装后脚本(可选)
+post_install: |
+  echo "编译诊断工具MCP服务器安装完成"
