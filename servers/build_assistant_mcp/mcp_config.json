@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "build_assistant_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/build_assistant_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": [
+        "configure",
+        "build"
+      ]
+    }
+  }
+}

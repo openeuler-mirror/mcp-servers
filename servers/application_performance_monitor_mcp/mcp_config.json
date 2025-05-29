@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "applicationPerformanceMonitor": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/application_performance_monitor_mcp/src/server.py",
+        "--PROMETHEUS_URL=http://localhost:9090",
+        "--GRAFANA_URL=http://localhost:3000"
+      ],
+      "disabled": false
+    }
+  }
+}

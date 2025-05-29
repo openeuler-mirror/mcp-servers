@@ -1,0 +1,26 @@
+# MCP Server RPM打包配置
+name: "build-assistant-mcp"
+summary: "构建系统助手MCP服务"
+description: |
+  封装CMake和Make构建命令，提供标准化的项目构建接口
+
+# 依赖配置
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+  packages:
+    - cmake
+    - make
+
+# 文件配置
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+    - README.md
+
+# 安装后脚本
+post_install: |
+  echo "构建系统助手MCP服务安装完成"
