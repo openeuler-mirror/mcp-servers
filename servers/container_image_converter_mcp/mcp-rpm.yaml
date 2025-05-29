@@ -1,0 +1,15 @@
+name: "container_image_converter_mcp"
+summary: "容器镜像格式转换工具"
+description: |
+  支持不同格式容器镜像之间的转换，包括docker镜像、OCI镜像等格式
+
+dependencies:
+  system:
+    - skopeo
+    - buildah
+    - jq
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py

@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "code_review_assistant": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/code_review_assistant_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "autoApprove": [
+        "*"
+      ]
+    }
+  }
+}

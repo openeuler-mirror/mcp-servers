@@ -1,0 +1,20 @@
+name: "code_review_assistant"
+summary: "自动化代码审查助手"
+description: |
+  提供自动化代码审查功能，支持C/C++和Python代码的静态分析，
+  集成cppcheck和pylint工具，可检测代码质量问题和潜在缺陷。
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - cppcheck
+    - pylint
+    - python3-pylint
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+    - src/requirements.txt
