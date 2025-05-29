@@ -1,0 +1,16 @@
+name: "user_manager_mcp"
+summary: "用户管理MCP服务器"
+description: |
+  提供用户管理功能，包括添加/删除/修改用户
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - shadow-utils
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py

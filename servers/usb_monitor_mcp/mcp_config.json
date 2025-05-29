@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "usbMonitorMcp": {
+      "command": "uv",
+      "args": [
+          "--directory",
+          "/opt/mcp-servers/servers/usb_monitor_mcp/src",
+          "run",
+          "server.py",
+          "--HOME_DIR=~/.config/usb_monitor"
+      ],
+      "disabled": false
+    }
+  }
+}

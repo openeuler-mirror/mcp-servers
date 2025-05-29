@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "vm_manager_mcp": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/vm_manager_mcp/src/server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": []
+    }
+  }
+}

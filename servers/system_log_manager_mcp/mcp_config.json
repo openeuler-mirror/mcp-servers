@@ -1,0 +1,19 @@
+{
+    "mcpServers": {
+        "system_log_manager_mcp": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "/opt/mcp-servers/servers/system_log_manager_mcp/src",
+                "run",
+                "server.py"
+            ],
+            "disabled": false,
+            "alwaysAllow": [
+                "configure_logrotate",
+                "list_logs",
+                "view_log"
+            ]
+        }
+    }
+}

@@ -1,0 +1,20 @@
+{
+    "mcpServers": {
+        "system_resource_limit_mcp": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "/opt/mcp-servers/servers/system_resource_limit_mcp/src",
+                "run",
+                "server.py"
+            ],
+            "disabled": false,
+            "alwaysAllow": [
+                "get_limits",
+                "set_limits",
+                "add_limit",
+                "remove_limit"
+            ]
+        }
+    }
+}

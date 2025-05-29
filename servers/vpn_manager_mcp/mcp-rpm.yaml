@@ -1,0 +1,25 @@
+name: "vpn-manager-mcp"
+summary: "VPN management MCP server"
+description: |
+  Provides VPN connection management capabilities
+  using openvpn and strongswan commands.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - openvpn
+    - strongswan
+  packages:
+    - jq
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - README.md
+
+post_install: |
+  echo "VPN management MCP server installed successfully"

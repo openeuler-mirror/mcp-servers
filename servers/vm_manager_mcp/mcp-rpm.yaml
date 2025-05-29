@@ -1,0 +1,18 @@
+name: "vm_manager_mcp"
+summary: "KVM虚拟机管理工具"
+description: |
+  提供KVM虚拟机的基础管理功能，包括创建、删除、启动、停止等操作
+  通过调用virsh命令实现
+
+dependencies:
+  system:
+    - python3
+    - libvirt
+    - qemu-kvm
+    - virt-install
+    - libvirt-client
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py

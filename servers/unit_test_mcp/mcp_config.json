@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "unit_test_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/unit_test_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": [
+        "run_gtest",
+        "run_pytest",
+        "run_junit"
+      ]
+    }
+  }
+}

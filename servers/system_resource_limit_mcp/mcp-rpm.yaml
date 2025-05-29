@@ -1,0 +1,23 @@
+name: "system-resource-limit-mcp"
+summary: "MCP server for system resource limits management"
+description: |
+  Provides MCP tools for managing system resource limits,
+  including viewing and modifying limits.conf configurations.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+    - pam
+  packages:
+    - pam
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md

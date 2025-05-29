@@ -1,0 +1,23 @@
+{
+    "mcpServers": {
+        "vpn_manager_mcp": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "/opt/mcp-servers/servers/vpn_manager_mcp/src",
+                "run",
+                "server.py",
+                "--GATEWAY_IP",
+                "192.168.1.1",
+                "--GATEWAY_PORT",
+                "1194"
+            ],
+            "disabled": false,
+            "alwaysAllow": [
+                "list_vpns",
+                "get_vpn_status",
+                "show_configs"
+            ]
+        }
+    }
+}
