@@ -1,0 +1,21 @@
+{
+    "mcpServers": {
+        "disk_array_manager_mcp": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "/opt/mcp-servers/servers/disk_array_manager_mcp/src",
+                "run",
+                "server.py"
+            ],
+            "disabled": false,
+            "alwaysAllow": [
+                "create_raid",
+                "remove_raid",
+                "raid_status",
+                "add_disk",
+                "remove_disk"
+            ]
+        }
+    }
+}

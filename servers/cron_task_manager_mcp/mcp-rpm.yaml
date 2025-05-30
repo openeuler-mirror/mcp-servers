@@ -1,0 +1,22 @@
+name: "cron-task-manager-mcp"
+summary: "MCP server for cron job management"
+description: |
+  Provides MCP tools for managing cron jobs,
+  including adding, removing, listing and editing cron jobs.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - cronie
+  packages:
+    - jq
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md

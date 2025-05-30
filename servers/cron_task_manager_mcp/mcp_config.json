@@ -1,0 +1,20 @@
+{
+    "mcpServers": {
+        "cron_task_manager_mcp": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "/opt/mcp-servers/servers/cron_task_manager_mcp/src",
+                "run",
+                "server.py"
+            ],
+            "disabled": false,
+            "alwaysAllow": [
+                "add_cron_job",
+                "remove_cron_job",
+                "list_cron_jobs",
+                "edit_cron_job"
+            ]
+        }
+    }
+}

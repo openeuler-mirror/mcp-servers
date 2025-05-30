@@ -1,0 +1,77 @@
+{
+  "name": "disk_manager_mcp",
+  "version": "1.0.0",
+  "description": "Disk space management MCP server",
+  "mcpServers": {
+    "diskManagerMcp": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/disk_manager_mcp/src/server.py",
+        "--HOME_DIR=${your_home_directory}",
+        "--MAX_DISK_USAGE=90",
+        "--ALERT_INTERVAL=300"
+      ],
+      "disabled": false
+    }
+  },
+  "tools": [
+    {
+      "name": "df",
+      "description": "Show disk filesystem usage",
+      "parameters": [
+        {
+          "name": "path",
+          "type": "string",
+          "description": "Filesystem path to check",
+          "required": false
+        },
+        {
+          "name": "human_readable",
+          "type": "boolean",
+          "description": "Show sizes in human readable format",
+          "required": false,
+          "default": true
+        }
+      ]
+    },
+    {
+      "name": "du",
+      "description": "Show directory space usage",
+      "parameters": [
+        {
+          "name": "path",
+          "type": "string",
+          "description": "Directory path to analyze",
+          "required": true
+        },
+        {
+          "name": "human_readable",
+          "type": "boolean",
+          "description": "Show sizes in human readable format",
+          "required": false,
+          "default": true
+        },
+        {
+          "name": "max_depth",
+          "type": "integer",
+          "description": "Max directory depth to analyze",
+          "required": false
+        }
+      ]
+    }
+  ],
+  "resources": [
+    {
+      "name": "disk_usage",
+      "description": "Current disk usage information",
+      "parameters": [
+        {
+          "name": "filesystem",
+          "type": "string",
+          "description": "Specific filesystem to query",
+          "required": false
+        }
+      ]
+    }
+  ]
+}

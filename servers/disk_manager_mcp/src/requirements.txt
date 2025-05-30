@@ -1,0 +1,2 @@
+# Python dependencies for disk_manager_mcp
+# No additional dependencies required beyond standard library

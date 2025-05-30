@@ -1,0 +1,19 @@
+name: "disk_manager_mcp"
+summary: "Disk space management MCP server"
+description: |
+  Provides disk space management tools including df and du commands
+  for monitoring and analyzing disk usage.
+
+dependencies:
+  system:
+    - python3
+    - util-linux
+    - python3-mcp
+    - jq
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

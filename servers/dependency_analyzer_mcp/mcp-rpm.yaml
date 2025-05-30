@@ -1,0 +1,21 @@
+name: "dependency-analyzer"
+summary: "MCP server for analyzing package dependencies"
+description: |
+  Provides tools for analyzing RPM/DNF and Python pip package dependencies,
+  including dependency tree visualization.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - rpm
+    - dnf
+    - python3-pip
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

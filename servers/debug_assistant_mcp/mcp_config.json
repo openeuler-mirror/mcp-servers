@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "debugAssistantMcp": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-servers/servers/debug_assistant_mcp/src/server.py",
+        "--LOG_LEVEL=INFO",
+        "--MAX_DEBUG_SESSIONS=5",
+        "--DEBUG_TIMEOUT=3600"
+      ],
+      "disabled": false
+    }
+  }
+}
