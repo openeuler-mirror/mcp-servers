@@ -368,10 +368,9 @@ def build_single_package(
     """
 
     cmd = ["ccb", "build-single", f"os_project={os_project}", f"packages={package_name}"]
+    result = {"error": "未知错误"}
     
-    if json_config:
-        cmd.extend(["--json", json_config])
-    elif os_variant and architecture:
+    if os_variant and architecture:
         # 生成构建目标配置
         build_targets = _generate_build_targets(os_variant, architecture)
         config_data = {"build_targets": build_targets}
@@ -383,7 +382,10 @@ def build_single_package(
         cmd.extend(["--json", tmp_json_path])
         result = _run_command(cmd, tmp_json_path)
     else:
+        if json_config:
+            cmd.extend(["--json", json_config])
         result = _run_command(cmd)
+        
     if "error" in result:
         return result
         
@@ -428,15 +430,14 @@ def build(
         return {"error": "build_type必须是full或incremental"}
     
     cmd = ["ccb", "build", f"build_type={build_type}"]
+    result = {"error": "未知错误"}
     
     if os_project:
         cmd.append(f"os_project={os_project}")
     if snapshot_id:
         cmd.append(f"snapshot_id={snapshot_id}")
 
-    if build_targets:
-        cmd.extend(["--json", build_targets])
-    elif os_variant and architecture:
+    if os_variant and architecture:
         # 生成构建目标配置
         build_targets = _generate_build_targets(os_variant, architecture)
         config_data = {"build_targets": build_targets}
@@ -448,6 +449,8 @@ def build(
         cmd.extend(["--json", tmp_json_path])
         result = _run_command(cmd, tmp_json_path)
     else:
+        if build_targets:
+            cmd.extend(["--json", build_targets])
         result = _run_command(cmd)
     if "error" in result:
         return result
