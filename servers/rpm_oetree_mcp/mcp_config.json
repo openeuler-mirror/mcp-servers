@@ -1,0 +1,16 @@
+{
+    "mcpServers": {
+        "rpm_oetree_mcp": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "/opt/mcp-servers/servers/rpm_oetree_mcp/src",
+                "run",
+                "server.py"
+            ],
+            "disabled": false,
+            "alwaysAllow": [
+            ]
+        }
+    }
+}

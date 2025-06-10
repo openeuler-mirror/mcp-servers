@@ -1,0 +1,18 @@
+name: "text_processing_mcp"
+summary: "文本处理mcp服务"
+description: |
+  提供基础文本处理功能，包括：1、文本分词与词频统计 2、关键词提取 3、文本相似度计算 4、正则表达式匹配 5、文本格式化与清理
+  
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+

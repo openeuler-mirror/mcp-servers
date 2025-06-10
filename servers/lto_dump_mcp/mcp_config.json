@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "libvirt_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/lto_dump_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": []
+    }
+  }
+}
