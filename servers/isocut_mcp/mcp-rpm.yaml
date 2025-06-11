@@ -1,0 +1,29 @@
+name: isocutmcp
+version: 1.0.0
+release: 1
+summary: MCP server for ISO customization tools
+license: MIT
+vendor: Your Company
+packager: Your Name <your.email@example.com>
+
+requires:
+  - python3 >= 3.6
+  - isocut
+  - python3-fastmcp
+
+files:
+  - /opt/isocutmcp/msrc/server.py
+  - /opt/isocutmcp/msrc/mcp_config.json
+  - /opt/isocutmcp/README.md
+
+postinstall: |
+  #!/bin/bash
+  systemctl daemon-reload
+
+preuninstall: |
+  #!/bin/bash
+  systemctl stop isocutmcp.service 2>/dev/null || true
+
+postuninstall: |
+  #!/bin/bash
+  systemctl daemon-reload
