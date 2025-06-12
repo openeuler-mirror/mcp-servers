@@ -89,3 +89,22 @@ oeGitExt 提供以下工具函数：
 - 目标分支：master 
 - 描述：版本新特性.. (可选)
 ```
+
+## 5. 测试说明
+
+项目包含单元测试，确保功能正确性并达到60%以上的语句覆盖率。
+
+### 运行测试
+```bash
+cd src
+# 使用国内镜像源安装 coverage
+pip install coverage -i https://pypi.tuna.tsinghua.edu.cn/simple
+coverage run -m unittest test_oegitext_mcp.py
+coverage report --show-missing --fail-under=60
+```
+
+### 测试覆盖
+- 所有工具函数（get_my_openeuler_issue, get_my_openeuler_project, get_my_openeuler_pr, create_openeuler_pr）
+- 参数验证和错误处理
+- 外部命令执行模拟
+- token配置逻辑

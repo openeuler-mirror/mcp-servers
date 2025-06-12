@@ -1,6 +1,7 @@
 import subprocess
 import json
 import argparse
+import logging
 from typing import Optional
 from pydantic import Field
 from mcp.server.fastmcp import FastMCP
@@ -28,7 +29,8 @@ def configure_oegitext(token: Optional[str] = None):
         else:
             print("未检测到token参数，请确保本地已预先配置")
     except subprocess.CalledProcessError as e:
-        print(f"Token配置失败: {e.stderr.decode()}")
+        error_msg = e.stderr.decode() if e.stderr else str(e)
+        logging.error(f"Token配置失败: {error_msg}")
 
 
 @mcp.tool()
@@ -99,7 +101,7 @@ def create_openeuler_pr(
     """在openEuler社区仓库创建PR，默认源为本地当前仓库的当前分支，目标为主仓的master分支"""
     try:
         # 解析组合格式参数
-        if source_combined:
+        if source_combined and isinstance(source_combined, str):
             source_parts = source_combined.split('/')
             if len(source_parts) == 2:
                 source_namespace = source_parts[0]
@@ -108,7 +110,7 @@ def create_openeuler_pr(
                     source_repo_name = repo_branch[0]
                     source_branch = repo_branch[1]
         
-        if target_combined:
+        if target_combined and isinstance(target_combined, str):
             target_parts = target_combined.split('/')
             if len(target_parts) == 2:
                 target_namespace = target_parts[0]
@@ -118,12 +120,17 @@ def create_openeuler_pr(
                     target_branch = repo_branch[1]
         
         # 设置默认值
-        if not source_namespace:
-            source_namespace = subprocess.check_output(['git', 'config', 'user.name'], text=True).strip()
-        if not source_repo_name:
-            source_repo_name = Repo('.').remotes[0].url.split('/')[-1].replace('.git', '')
-        if not source_branch:
-            source_branch = Repo('.').active_branch.name
+        try:
+            if not source_namespace or not source_repo_name or not source_branch:
+                git_namespace, git_repo_name, git_branch = get_git_repo_info()
+                if not source_namespace:
+                    source_namespace = git_namespace
+                if not source_repo_name:
+                    source_repo_name = git_repo_name
+                if not source_branch:
+                    source_branch = git_branch
+        except Exception as e:
+            return {"error": str(e)}
             
         if not target_namespace:
             target_namespace = "openeuler"
@@ -162,6 +169,15 @@ def create_openeuler_pr(
         return {"error": e.output}
     except Exception as e:
         return {"error": str(e)}
+
+def get_git_repo_info():
+    try:
+        namespace = subprocess.check_output(['git', 'config', 'user.name'], text=True).strip()
+        repo_name = Repo('.').remotes[0].url.split('/')[-1].replace('.git', '')
+        branch = Repo('.').active_branch.name
+        return namespace, repo_name, branch
+    except Exception as e:
+        raise Exception(f"获取本地git仓库信息失败: {str(e)}")
 
 if __name__ == "__main__":
     # 配置oegitext的token，用于访问Gitee
