@@ -1,0 +1,15 @@
+{
+    "mcpServers": {
+        "docker": {
+            "command": "python3",
+            "args": [
+                "/opt/isocutmcp/server.py"
+            ],
+            "alwaysAllow": [
+                "list_available_isos"
+            ],
+            "disabled": true,
+            "timeout": 3600
+        }
+    }
+}
