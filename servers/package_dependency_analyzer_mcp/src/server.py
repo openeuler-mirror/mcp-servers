@@ -57,5 +57,62 @@ def analyze_pip_dependencies(package_name: str) -> str:
     result = parse_pip_dependencies(output)
     return json.dumps(result, indent=2)
 
+def parse_npm_dependencies(output):
+    """Parse npm ls --json output into dependency tree"""
+    try:
+        data = json.loads(output)
+        return {
+            "dependencies": list(data.get("dependencies", {}).keys()),
+            "version": data.get("version", "")
+        }
+    except json.JSONDecodeError:
+        return {"error": "Invalid JSON output from npm"}
+
+def parse_yarn_dependencies(output):
+    """Parse yarn list --json output into dependency tree"""
+    try:
+        data = json.loads(output)
+        return {
+            "dependencies": [dep.split("@")[0] for dep in data.get("data", {}).get("trees", [])],
+            "version": data.get("data", {}).get("version", "")
+        }
+    except json.JSONDecodeError:
+        return {"error": "Invalid JSON output from yarn"}
+
+def parse_pnpm_dependencies(output):
+    """Parse pnpm list --json output into dependency tree"""
+    try:
+        data = json.loads(output)
+        return {
+            "dependencies": list(data.get("dependencies", {}).keys()),
+            "version": data.get("version", "")
+        }
+    except json.JSONDecodeError:
+        return {"error": "Invalid JSON output from pnpm"}
+
+@mcp.tool()
+def analyze_npm_dependencies(package_name: str) -> str:
+    """Analyze NPM package dependencies"""
+    cmd = ["npm", "ls", package_name, "--json"]
+    output = run_command(cmd)
+    result = parse_npm_dependencies(output)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+def analyze_yarn_dependencies(package_name: str) -> str:
+    """Analyze Yarn package dependencies"""
+    cmd = ["yarn", "list", "--pattern", package_name, "--json"]
+    output = run_command(cmd)
+    result = parse_yarn_dependencies(output)
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+def analyze_pnpm_dependencies(package_name: str) -> str:
+    """Analyze PNPM package dependencies"""
+    cmd = ["pnpm", "list", package_name, "--json"]
+    output = run_command(cmd)
+    result = parse_pnpm_dependencies(output)
+    return json.dumps(result, indent=2)
+
 if __name__ == "__main__":
     mcp.run()
