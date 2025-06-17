@@ -1,0 +1,19 @@
+name: "cross_distro_packaging_mcp"
+summary: "跨发行版打包MCP Server"
+description: |
+  提供跨发行版打包功能
+
+dependencies:
+  system:
+    - python3
+    - docker-compose
+    - python3-mcp
+  packages:
+    - rpm-build
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

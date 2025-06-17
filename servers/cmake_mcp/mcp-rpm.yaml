@@ -1,0 +1,23 @@
+name: "cmake_mcp"
+summary: "CMake构建工具MCP服务"
+description: |
+  提供CMake项目配置、构建、安装和清理功能的MCP服务
+  支持以下功能：
+  - 配置CMake项目
+  - 构建项目(支持并行构建)
+  - 安装构建目标
+  - 清理构建目录
+
+dependencies:
+  system:
+    - python3
+    - python3-mcp
+    - cmake
+    - make
+    - gcc
+    - gcc-c++
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
