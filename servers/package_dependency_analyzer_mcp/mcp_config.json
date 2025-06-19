@@ -1,6 +1,6 @@
 {
   "name": "package_dependency_analyzer_mcp",
-  "description": "A MCP server for analyzing package dependencies (rpm/dnf/pip)",
+  "description": "A MCP server for analyzing package dependencies (rpm/dnf/pip/npm/yarn/pnpm)",
   "version": "1.0.0",
   "mcpServers": {
     "packageDependencyAnalyzerMcp": {
@@ -44,6 +44,36 @@
         "package_name": {
           "type": "string",
           "description": "Name of the pip package to analyze"
+        }
+      }
+    },
+    {
+      "name": "analyze_npm_dependencies",
+      "description": "Analyze NPM package dependencies and generate dependency tree",
+      "parameters": {
+        "package_name": {
+          "type": "string",
+          "description": "Name of the NPM package to analyze"
+        }
+      }
+    },
+    {
+      "name": "analyze_yarn_dependencies",
+      "description": "Analyze Yarn package dependencies and generate dependency tree",
+      "parameters": {
+        "package_name": {
+          "type": "string",
+          "description": "Name of the Yarn package to analyze"
+        }
+      }
+    },
+    {
+      "name": "analyze_pnpm_dependencies",
+      "description": "Analyze PNPM package dependencies and generate dependency tree",
+      "parameters": {
+        "package_name": {
+          "type": "string",
+          "description": "Name of the PNPM package to analyze"
         }
       }
     }
