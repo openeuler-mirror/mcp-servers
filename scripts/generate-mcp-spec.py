@@ -85,9 +85,13 @@ find /opt/mcp-servers -type d -exec chmod 755 {{}} \;
                 f"Summary:        {config['summary']}",
                 f"Requires:       %{{name}} = %{{version}}-%{{release}}"
             ]
+            deps = config.get('dependencies', {})
+            system_deps = deps.get('system', [])
+            package_deps = deps.get('packages', [])
             pkg_def.extend(
                 f"Requires:       {dep}"
-                for dep in config['dependencies']['system'] + config['dependencies'].get('packages', [])
+                for dep in system_deps + package_deps
+                if dep
             )
             
             # 添加子包特定的%post脚本

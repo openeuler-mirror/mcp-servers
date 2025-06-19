@@ -2,19 +2,34 @@ name: isocutmcp
 version: 1.0.0
 release: 1
 summary: MCP server for ISO customization tools
+description: |
+  This MCP Server provides tools for customizing ISO images,
+  including:
+  1、ISO content modification
+  2、Boot configuration
+  3、Package management
+  4、Custom script injection
+  
 license: MIT
 vendor: Your Company
 packager: Your Name <your.email@example.com>
 
-requires:
-  - python3 >= 3.6
-  - isocut
-  - python3-fastmcp
+dependencies:
+  system:
+    - python3 >= 3.6
+    - isocut
+    - python3-fastmcp
+    - python3-mcp
+  packages:
+    - rpm-build
 
 files:
-  - /opt/isocutmcp/msrc/server.py
-  - /opt/isocutmcp/msrc/mcp_config.json
-  - /opt/isocutmcp/README.md
+  required:
+    - /opt/isocutmcp/src/server.py
+    - /opt/isocutmcp/mcp_config.json
+  optional:
+    - /opt/isocutmcp/README.md
+    - /opt/isocutmcp/src/requirements.txt
 
 postinstall: |
   #!/bin/bash
