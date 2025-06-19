@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "dependency_analyzer_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/cross_distro_packaging_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": [
+      ]
+    }
+  }
+}
+

@@ -1,0 +1,19 @@
+name: "gcc_mcp"
+summary: "gcc编译管理工具"
+description: |
+  GCC编译管理工具，提供以下功能：1、列出GCC常用编译选项(优化/警告/调试等) 2、使用指定选项编译源代码 3、获取GCC版本信息 4、支持多种C/C++标准 5、生成可执行文件或共享库
+
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - firewalld
+
+files:
+  required:
+    - mcp_config.json
+    - src/gcc_mcp.py
+  optional:
+    - src/requirements.txt

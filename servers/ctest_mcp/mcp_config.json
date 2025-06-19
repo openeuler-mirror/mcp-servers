@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "ctestMcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/ctestMcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": [
+      ]
+    }
+  }
+}

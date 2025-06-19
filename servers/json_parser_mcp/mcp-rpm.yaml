@@ -1,0 +1,19 @@
+name: "json_parser_mcp"
+summary: "json打包解包工具"
+description: |
+  JSON解析和处理MCP服务，提供以下功能：1、JSON格式化：支持缩进控制和键排序 2、JSON查询：使用jq语法提取数据 3、格式验证：检查JSON有效性 4、格式转换：支持转为CSV/YAML/XML
+
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - firewalld
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt

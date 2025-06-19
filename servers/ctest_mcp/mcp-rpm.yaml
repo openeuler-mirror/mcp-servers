@@ -1,0 +1,24 @@
+name: "ctest-mcp"
+summary: "MCP server for CMake test management"
+description: |
+  Provides MCP tools for managing CMake test suites,
+  including running tests, listing available tests,
+  and generating test coverage reports.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+    - cmake
+  packages:
+    - rpm-build
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+    - README.md

@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "firewall_manager_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/gcc_mcp/src",
+        "run",
+        "gcc_mcp.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": []
+    }
+  }
+}

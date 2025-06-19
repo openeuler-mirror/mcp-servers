@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "cmake_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/cmake_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "autoApprove": [
+        "*"
+      ],
+      "description": "提供CMake构建工具链的MCP服务"
+    }
+  }
+}
