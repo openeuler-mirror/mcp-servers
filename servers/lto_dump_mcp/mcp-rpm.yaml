@@ -1,0 +1,19 @@
+name: "lto_dump_mcp"
+summary: "LTO分析工具MCP服务器"
+description: |
+  提供LLVM LTO(链接时优化)分析功能，支持显示LTO摘要、符号表、
+  IR代码和优化信息分析。
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - llvm
+
+files:
+  required:
+    - mcp_config.json
+    - README.md
+    - src/server.py
+    - src/requirements.txt

@@ -1,0 +1,20 @@
+name: "rpm-oetree-mcp"
+summary: "MCP server for rpm-ostree management"
+description: |
+  Provides MCP tools for managing rpm-ostree operations,
+  including deployment, rollback, upgrade and rebasing.
+
+dependencies:
+  system:
+    - python3
+    - rpm-ostree
+    - systemd
+  packages:
+    - rpm-ostree
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - README.md

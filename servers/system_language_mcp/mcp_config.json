@@ -1,0 +1,15 @@
+{
+    "mcpServers": {
+        "system_log_manager_mcp": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "/opt/mcp-servers/servers/system_language_mcp/src",
+                "run",
+                "server.py"
+            ],
+            "disabled": false,
+            "alwaysAllow": [ ]
+        }
+    }
+}

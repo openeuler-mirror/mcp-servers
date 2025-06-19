@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "firewall_manager_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/web-perf-optimization/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": []
+    }
+  }
+}
+

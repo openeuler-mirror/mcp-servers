@@ -1,0 +1,19 @@
+name: "web-perf-optimization"
+summary: "web性能优化服务"
+description: |
+  基于Lighthouse和PageSpeed Insights的网页性能分析服务，提供以下功能：1、使用Lighthouse进行本地网页性能测试 2、通过PageSpeed Insights API获取性能指标  3、支持桌面和移动设备模拟测试
+  
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
+
