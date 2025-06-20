@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "cve_mcp_kernel": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/cve_mcp_kernel/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": [],
+      "description": "Gitee kernel代码仓CVE补丁处理服务",
+      "platform": "gitee",
+      "apiBaseUrl": "https://gitee.com/api/v5",
+      "timeout": 600,
+      "_note": "由于任务耗时大所以暂时设置超时时间设置为600秒，可以根据不同的仓库的大小酌情调整超时时间"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+name: "cve_mcp"
+summary: "OpenEuler CVE补丁处理服务"
+description: |
+  自动化处理OpenEuler CVE补丁的服务
+  包括issue解析、补丁应用和PR创建
+
+dependencies:
+  system:
+    - python3
+    - git
+    - patch
+  python:
+    - requests
+    - PyGithub
+
+files:
+  required:
+    - src/server.py
+    - mcp_config.json
+  optional:
+    - src/requirements.txt
+
