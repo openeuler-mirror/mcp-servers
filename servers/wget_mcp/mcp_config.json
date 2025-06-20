@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "wget_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/wget_mcp",
+        "run",
+        "src/server.py"
+      ],
+      "disabled": false,
+      "autoApprove": [],
+      "alwaysAllow": [
+        "download_file"
+      ]
+    }
+  }
+}

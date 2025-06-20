@@ -1,5 +1,10 @@
+import os
 import subprocess
 import argparse
+import collections
+import logging
+import os
+import time
 from typing import Optional, Dict
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
@@ -9,6 +14,16 @@ parser = argparse.ArgumentParser()
 args, _ = parser.parse_known_args()
 
 mcp = FastMCP("鲲鹏DevKit工具是一款涵盖系统/应用迁移、亲和分析、编译调试和调优诊断等的工具集")
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("/Images/mcp.log",mode='a',encoding='utf-8')
+    ]
+)
 
 @mcp.tool()
 def analysis_python(
@@ -1749,6 +1764,151 @@ if __name__ == "__main__":
             }
 
     @mcp.tool()
+    def devkit_kat_mysql_tune(
+        help: bool = Field(default=False, description="显示帮助信息")
+    ) -> Dict:
+        """帮我对mysql进行自动调优"""
+        try:
+            # 创建必要的目录结构
+            required_dirs = [
+                '/Images/lib/mysql',
+                '/Images/log/mysql',
+                '/run/mysqld'
+            ]
+            
+            for dir_path in required_dirs:
+                try:
+                    subprocess.run(['mkdir', '-p', dir_path], check=True)
+                    subprocess.run(['chown', 'mysql:mysql', dir_path], check=True)
+                    logger.info(f"Created and set permissions for directory: {dir_path}")
+                except subprocess.CalledProcessError as e:
+                    logger.warning(f"Failed to create/set permissions for {dir_path}: {str(e)}")
+                    return {
+                        "error": f"Failed to setup required directories: {str(e)}",
+                        "required_dirs": required_dirs
+                    }
+            
+            # 检查MySQL服务状态
+            try:
+                subprocess.run(['systemctl', 'start', 'mysqld'], check=True)
+                subprocess.run(['systemctl', 'enable', 'mysqld'], check=True)
+                logger.info("MySQL service started and enabled")
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Failed to start MySQL service: {str(e)}")
+                return {"error": f"Failed to start MySQL service: {str(e)}"}
+            
+            # 清除root密码
+            try:
+                subprocess.run(['mysqladmin', '-u', 'root', 'password', ''], check=True)
+                logger.info("Cleared MySQL root password")
+            except subprocess.CalledProcessError as e:
+                logger.warning(f"Failed to clear MySQL root password: {str(e)}")
+                return {"error": f"Failed to clear MySQL root password: {str(e)}"}
+            
+            # 验证免密登录
+            try:
+                result = subprocess.run(
+                    ['mysql', '-u', 'root', '-e', 'SELECT 1'],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode != 0:
+                    raise subprocess.CalledProcessError(result.returncode, result.args)
+                logger.info("Verified passwordless login to MySQL")
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Failed to verify passwordless login: {str(e)}")
+                return {"error": f"Failed to verify passwordless login: {str(e)}"}
+            
+            # 停止MySQL服务
+            try:
+                subprocess.run(['systemctl', 'stop', 'mysqld'], check=True)
+                logger.info("MySQL service stopped successfully")
+                
+                # 验证服务已停止
+                result = subprocess.run(
+                    ['systemctl', 'is-active', 'mysqld'],
+                    capture_output=True,
+                    text=True
+                )
+                time.sleep(30)
+                if result.stdout.strip() == 'active':
+                    logger.error("MySQL service is still running after stop command")
+                    return {"error": "Failed to stop MySQL service"}
+                    
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Failed to stop MySQL service: {str(e)}")
+                return {"error": f"Failed to stop MySQL service: {str(e)}"}
+            
+            # 检查MySQL配置文件
+            mysql_conf = '/etc/my.cnf.d/mysql-server.cnf'
+            if not os.path.exists(mysql_conf):
+                logger.error(f"MySQL config file not found at {mysql_conf}")
+                return {"error": f"MySQL config file not found at {mysql_conf}"}
+            
+            # 执行调优命令
+            cmd = [
+                'devkit', 'kat', 'train',
+                '-t', '/opt/mcp-servers/servers/devkit_mcp/kat_template/template_MySQL/task_MySQL_System.json',
+                '-p', '/opt/mcp-servers/servers/devkit_mcp/kat_template/template_MySQL/param_MySQL_System.json',
+                '-l', '0'
+            ]
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
+
+            # 缓存最后100行输出
+            output_buffer = collections.deque(maxlen=100)
+            error_buffer = collections.deque(maxlen=100)
+
+            def read_output(stream, buffer):
+                for line in stream:
+                    buffer.append(line.strip())
+                    logging.debug(line, end='')  # 实时打印输出
+
+            # 创建线程分别读取stdout和stderr
+            from threading import Thread
+            stdout_thread = Thread(target=read_output, args=(process.stdout, output_buffer))
+            stderr_thread = Thread(target=read_output, args=(process.stderr, error_buffer))
+            
+            stdout_thread.start()
+            stderr_thread.start()
+
+            # 等待进程结束
+            process.wait()
+            stdout_thread.join()
+            stderr_thread.join()
+
+            # 准备返回结果
+            result = {
+                "command": " ".join(cmd),
+                "status": "completed" if process.returncode == 0 else "failed",
+                "return_code": process.returncode,
+                "stdout": "\n".join(output_buffer),
+                "stderr": "\n".join(error_buffer),
+                "last_100_lines": list(output_buffer),  # 返回最后100行
+                "output": "\n".join(output_buffer)  # 兼容旧版本
+            }
+            
+            if process.returncode != 0:
+                result["error"] = "\n".join(error_buffer)
+
+            return result
+
+        except subprocess.CalledProcessError as e:
+            return {
+                "error": e.stderr if e.stderr else e.output,
+                "command": " ".join(cmd) if 'cmd' in locals() else None,
+                "return_code": e.returncode
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    @mcp.tool()
     def devkit_kat(
         task: Optional[str] = Field(default=None, description="任务类型: analysis/advisor/doctor/porting"),
         args: Optional[str] = Field(default=None, description="任务参数"),
@@ -1770,7 +1930,7 @@ if __name__ == "__main__":
                     "missing_params": ["task"],
                     "suggestions": ["analysis", "advisor", "doctor", "porting"]
                 }
-
+            
             # 构建命令
             cmd = ['devkit', 'kat', task]
             if args:

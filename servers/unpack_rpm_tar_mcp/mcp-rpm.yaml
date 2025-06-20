@@ -1,0 +1,20 @@
+name: "unpack-rpm-tar"
+summary: "MCP server for unpacking RPM and tar archives"
+description: |
+  Provides MCP tools for unpacking RPM packages and tar archives.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - rpm
+    - tar
+    - gzip
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+  optional:
+    - src/requirements.txt
