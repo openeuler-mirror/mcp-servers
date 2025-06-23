@@ -1,0 +1,6 @@
+# 项目依赖
+fastapi==0.115.13
+uvicorn==0.29.0
+python-dotenv==1.0.0
+pyyaml==6.0.1
+mcp-server==0.1.4  # FastMCP框架
