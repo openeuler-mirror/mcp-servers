@@ -1,0 +1,31 @@
+name: ffmpeg-mcp
+version: 1.0.0
+release: 1
+summary: FFmpeg 媒体处理工具 MCP 服务
+license: MIT
+vendor: MCP Project
+packager: MCP Team
+
+requires:
+  - python3 >= 3.6
+  - ffmpeg >= 4.0
+  - mcp-server
+
+files:
+  - src: /root/ffmpeg_mcp/src/server.py
+    dest: /opt/ffmpegmcp/server.py
+    mode: 0755
+  - src: /root/ffmpeg_mcp/mcp_config.json
+    dest: /etc/ffmpeg-mcp/config.json
+    mode: 0644
+
+postinstall: |
+  #!/bin/bash
+  systemctl daemon-reload
+  systemctl enable ffmpeg-mcp
+
+services:
+  - name: ffmpeg-mcp
+    enable: true
+    state: started
+    exec: /usr/bin/python3 /opt/ffmpegmcp/server.py

@@ -1,0 +1,13 @@
+{
+    "mcpServers": {
+        "docker": {
+            "command": "python3",
+            "args": [
+                "/opt/ffmpeg_mcp/src/server.py"
+            ],
+            "alwaysAllow": [],
+            "disabled": true,
+            "timeout": 3600
+        }
+    }
+}
