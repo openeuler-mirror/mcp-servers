@@ -1,12 +1,20 @@
 {
     "mcpServers": {
-        "docker": {
+        "ffmpeg": {
             "command": "python3",
             "args": [
-                "/opt/ffmpeg_mcp/src/server.py"
+                "/opt/mcp-servers_6/servers/ffmpeg_mcp/src/server.py"
             ],
-            "alwaysAllow": [],
-            "disabled": true,
+            "alwaysAllow": [
+                "probe_video",
+                "convert_to_webm",
+                "convert_to_mp4",
+                "extract_aac",
+                "extract_mp3",
+                "remove_audio",
+                "merge_av"
+            ],
+            "disabled": false,
             "timeout": 3600
         }
     }
