@@ -3,7 +3,7 @@
         "ffmpeg": {
             "command": "python3",
             "args": [
-                "/opt/mcp-servers_6/servers/ffmpeg_mcp/src/server.py"
+                "/opt/mcp-servers/servers/ffmpeg_mcp/src/server.py"
             ],
             "alwaysAllow": [
                 "probe_video",
