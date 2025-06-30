@@ -1,0 +1,25 @@
+{
+    "mcpServers": {
+        "anaconda": {
+            "command": "python3",
+            "args": [
+                "/opt/mcp-servers/servers/anconda_mcp/src/server.py"
+            ],
+            "alwaysAllow": [
+                "get_conda_envs",
+                "create_conda_env"
+            ],
+            "disabled": false,
+            "timeout": 3600
+        }
+    },
+    "server_name": "anaconda-mcp",
+    "anaconda_path": "/opt/anaconda3",
+    "default_env": "base",
+    "log_level": "info",
+    "port": 8080,
+    "allowed_origins": [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000"
+    ]
+}
