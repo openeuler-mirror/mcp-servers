@@ -10,10 +10,7 @@ import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
 
 public class EncryptUtils {
-    private static final String PUBLIC_KEY = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDxRJAwJGMHBOKHW3nHFHaXylHy" +
-            "t+ZrXNDOsbbZqCwgfTGrE9Jw6A+WQY/jiDEqThuMKLhb7z8//w6fmPu0kLdAmc1n" +
-            "qkmozOOVt+1BgRqsVckJjw7eiRflqsDZEIgtnUMX61eyMcIGPHzxdL3XmlaPf1Qp" +
-            "gPXBWQaNl4I7qJ2LoQIDAQAB";
+    private static final String PUBLIC_KEY = "";
 
     /**
      * 加密DataKit用户密码
