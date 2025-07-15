@@ -41,6 +41,8 @@ DataKit Mcp提供了使用DataKit数据迁移功能的MCP服务。DataKit为open
    datakit.password=your_password
    ```
 
+   再从[openGauss-workbench/blob/master/plugins](https://gitcode.com/opengauss/openGauss-workbench/blob/master/plugins/compatibility-assessment/web-ui/src/utils/jsencrypt.ts)获取`publicKey`的内容，配置到项目`src/main/java/org/opengauss/migrationmcp/utils/EncryptUtils.java`文件中的`EncryptUtils.PUBLIC_KEY`字段。
+
 4. 打包项目
 
    在项目目录下，使用`mvn clean package -DskipTests`命令对项目进行打包，打包成功后可以在项目目录下看到如下文件`target/MigrationMcp-0.0.1-SNAPSHOT.jar`。
