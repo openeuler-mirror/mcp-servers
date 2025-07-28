@@ -9,6 +9,7 @@ def generate_spec_file():
     
     if not os.path.exists(servers_dir):
         raise FileNotFoundError(f"Servers directory not found at: {servers_dir}")
+    
     spec_template = """Name:           mcp-servers
 Version:        1.0.0
 Release:        1
@@ -18,13 +19,11 @@ URL:            https://gitee.com/openeuler/mcp-servers
 Source0:        mcp-servers-%{{version}}.tar.gz
 BuildArch:      noarch
 
-# 公共依赖
 BuildRequires:  python3-devel
 BuildRequires:  python3-setuptools
 Requires:       python3
 Requires:       uv
 Requires:       python3-mcp
-Requires:       jq
 
 {package_definitions}
 
@@ -37,7 +36,6 @@ Collection of openEuler MCP Servers providing various capabilities.
 %autosetup -n %{{name}}
 
 %build
-# 不需要构建步骤
 
 %install
 mkdir -p %{{buildroot}}/opt/mcp-servers/servers
@@ -53,11 +51,12 @@ done
 # 主包%post只处理公共目录权限设置
 find /opt/mcp-servers -type d -exec chmod 755 {{}} \;
 
-# 子包特定的%post脚本由各自子包处理
 {package_posts}
 
 %files
-# 主包不包含具体文件，只包含子包
+/opt/mcp-servers/servers/
+%defattr(-,root,root,-)
+
 {package_files}
 
 %changelog
@@ -68,6 +67,7 @@ find /opt/mcp-servers -type d -exec chmod 755 {{}} \;
     server_dirs = glob.glob(os.path.join(servers_dir, "*", "mcp-rpm.yaml"))
     if not server_dirs:
         raise FileNotFoundError(f"No mcp-rpm.yaml files found in {servers_dir} subdirectories")
+    
     package_defs = []
     package_descs = []
     package_files = []
@@ -94,7 +94,7 @@ find /opt/mcp-servers -type d -exec chmod 755 {{}} \;
                 if dep
             )
             
-            # 添加子包特定的%post脚本
+            # 简化的%post脚本
             pkg_post = [
                 f"%post {config['name']}",
                 f"# 为{config['name']}创建虚拟环境",
@@ -111,64 +111,9 @@ find /opt/mcp-servers -type d -exec chmod 755 {{}} \;
                 f"    find /opt/mcp-servers/servers/{server_name}/.venv -type f -exec chmod 644 {{}} \\;",
                 f"fi",
                 f"",
-                f"# 合并MCP配置",
-                f"if [ -f /opt/mcp-servers/servers/{server_name}/mcp_config.json ]; then",
-                f"    MCP_CONFIG_PATH=\"/.config/VSCodium/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json\"",
-                f"    ",
-                f"    mkdir -p \"/root$(dirname $MCP_CONFIG_PATH)\"",
-                f"    if [ -f \"/root$MCP_CONFIG_PATH\" ]; then",
-                f"        jq -s '.[0] * .[1]' \"/root$MCP_CONFIG_PATH\" \\",
-                f"            /opt/mcp-servers/servers/{server_name}/mcp_config.json \\",
-                f"            > \"/root$MCP_CONFIG_PATH.tmp\" && \\",
-                f"        mv \"/root$MCP_CONFIG_PATH.tmp\" \"/root$MCP_CONFIG_PATH\"",
-                f"    else",
-                f"        cp /opt/mcp-servers/servers/{server_name}/mcp_config.json \"/root$MCP_CONFIG_PATH\"",
-                f"    fi",
-                f"    ",
-                f"    for user_home in /home/*; do",
-                f"        if [ -d \"$user_home\" ]; then",
-                f"            username=$(basename \"$user_home\")",
-                f"            mkdir -p \"$user_home$(dirname $MCP_CONFIG_PATH)\"",
-                f"            if [ -f \"$user_home$MCP_CONFIG_PATH\" ]; then",
-                f"                jq -s '.[0] * .[1]' \"$user_home$MCP_CONFIG_PATH\" \\",
-                f"                    /opt/mcp-servers/servers/{server_name}/mcp_config.json \\",
-                f"                    > \"$user_home$MCP_CONFIG_PATH.tmp\" && \\",
-                f"                mv \"$user_home$MCP_CONFIG_PATH.tmp\" \"$user_home$MCP_CONFIG_PATH\"",
-                f"            else",
-                f"                cp /opt/mcp-servers/servers/{server_name}/mcp_config.json \"$user_home$MCP_CONFIG_PATH\"",
-                f"            fi",
-                f"            # 确保整个.config目录权限正确",
-                f"            chown -R \"$username:$username\" \"$user_home/.config\"",
-                f"            chmod 755 \"$user_home$(dirname $MCP_CONFIG_PATH)\"",
-                f"            chmod 644 \"$user_home$MCP_CONFIG_PATH\"",
-                f"        fi",
-                f"    done",
-                f"fi",
-                f"",
                 f"%postun {config['name']}",
-                f"# 卸载时清理MCP配置和虚拟环境",
-                f"MCP_CONFIG_PATH=\"/.config/VSCodium/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json\"",
-                f"",
-                f"rm -rf \"/opt/mcp-servers/servers/{server_name}/.venv\"",
-                f"",
-                f"# 清理root用户的配置",
-                f"if [ -f \"/root$MCP_CONFIG_PATH\" ]; then",
-                f"    jq 'del(.mcpServers.\"{server_name}\")' \"/root$MCP_CONFIG_PATH\" \\",
-                f"        > \"/root$MCP_CONFIG_PATH.tmp\" && \\",
-                f"    mv \"/root$MCP_CONFIG_PATH.tmp\" \"/root$MCP_CONFIG_PATH\"",
-                f"fi",
-                f"",
-                f"# 清理普通用户的配置",
-                f"for user_home in /home/*; do",
-                f"    if [ -d \"$user_home\" ]; then",
-                f"        username=$(basename \"$user_home\")",
-                f"        if [ -f \"$user_home$MCP_CONFIG_PATH\" ]; then",
-                f"            jq 'del(.mcpServers.\"{server_name}\")' \"$user_home$MCP_CONFIG_PATH\" \\",
-                f"                > \"$user_home$MCP_CONFIG_PATH.tmp\" && \\",
-                f"            mv \"$user_home$MCP_CONFIG_PATH.tmp\" \"$user_home$MCP_CONFIG_PATH\"",
-                f"        fi",
-                f"    fi",
-                f"done"
+                f"# 卸载时清理虚拟环境",
+                f"rm -rf \"/opt/mcp-servers/servers/{server_name}/.venv\""
             ]
             
             package_defs.append("\n".join(pkg_def))
@@ -197,3 +142,4 @@ find /opt/mcp-servers -type d -exec chmod 755 {{}} \;
 
 if __name__ == "__main__":
     generate_spec_file()
+
