@@ -1,0 +1,21 @@
+{
+    "mcpServers": {
+        "ffmpeg": {
+            "command": "python3",
+            "args": [
+                "/opt/mcp-servers/servers/ffmpeg_mcp/src/server.py"
+            ],
+            "alwaysAllow": [
+                "probe_video",
+                "convert_to_webm",
+                "convert_to_mp4",
+                "extract_aac",
+                "extract_mp3",
+                "remove_audio",
+                "merge_av"
+            ],
+            "disabled": false,
+            "timeout": 3600
+        }
+    }
+}
