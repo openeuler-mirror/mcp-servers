@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "cve_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/cvekit_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": [],
+      "description": "Gitee代码仓CVE补丁处理服务",
+      "timeout": 600
+    }
+  }
+}
