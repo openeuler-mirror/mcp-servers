@@ -313,7 +313,7 @@ def main():
     if args.path and args.output:
         # 扫描代码并生成JSON文件
         gen_project_rag(args.path, args.output)
-    elif args.json and (args.func or args.struct or args.macro or args.globalvar):
+    elif args.json and (args.func or args.struct or args.macro or args.globalvar or args.enum):
         # 从JSON文件查询
         code = get_project_rag(args.json, func=args.func,
                                struct=args.struct, macro=args.macro, 
