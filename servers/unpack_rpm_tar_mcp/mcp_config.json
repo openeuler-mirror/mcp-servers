@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "unpack_rpm_tar_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/unpack_rpm_tar_mcp",
+        "run",
+        "src/server.py"
+      ],
+      "disabled": false,
+      "autoApprove": [],
+      "alwaysAllow": [
+        "create_tar",
+        "extract_tar",
+        "rpm_unpack"
+      ]
+    }
+  }
+}
