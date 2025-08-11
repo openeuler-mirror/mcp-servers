@@ -44,6 +44,26 @@ def run_cvekit(action: str, params: dict) -> dict:
             if 'signer_email' in params:
                 cmd.append(f'--signer-email={params["signer_email"]}')
         
+        elif action == 'apply-patch':
+            if 'patch_path' in params:
+                cmd.append(f'--patch-path={params["patch_path"]}')
+            if 'fork_repo_url' in params:
+                cmd.append(f'--fork-repo-url={params["fork_repo_url"]}')
+            if 'branch' in params:
+                cmd.append(f'--branch={params["branch"]}')
+            if 'signer_name' in params:
+                cmd.append(f'--signer-name={params["signer_name"]}')
+            if 'signer_email' in params:
+                cmd.append(f'--signer-email={params["signer_email"]}')
+
+        elif action == 'create-pr':
+            if 'branch' in params:
+                cmd.append(f'--branch={params["branch"]}')
+            if 'fork_repo_url' in params:
+                cmd.append(f'--fork-repo-url={params["fork_repo_url"]}')
+            if 'repo_url' in params:
+                cmd.append(f'--repo-url={params["repo_url"]}')
+
         result = subprocess.run(
             cmd,
             check=True,
@@ -138,7 +158,7 @@ def get_commits(
 @mcp.tool()
 def analyze_branches(
     issue_url: str = Field(..., description="Gitee Issue URL"),
-    branches: Optional[str] = Field(None, description="要分析的分支列表，逗号分隔"),
+    branches: Optional[str] = Field('OLK-5.10,OLK-6.6,master', description="要分析的分支列表，逗号分隔"),
     signer_name: Optional[str] = Field(None, description="提交者姓名"),
     signer_email: Optional[str] = Field(None, description="提交者邮箱"),
     gitee_token: Optional[str] = Field(None, description="Gitee访问令牌(可选)")
@@ -147,6 +167,8 @@ def analyze_branches(
     该函数是CVE修复流程的第四步：
         分析introduced_commit在本地仓库的哪些分支被引入，如果引入的话，是否被fixed了，以此来分析哪些分支需要应用补丁
         并检查从上游获取的补丁直接应用，是否存在冲突
+        该步骤中的参数branches为kernel的分支名，和issue分析中的受影响版本并不完全一致，若用户未指定要分析的分支名，采
+        用默认值即可
     """
     result = run_cvekit('analyze-branches', {
         'issue_url': issue_url,
@@ -180,6 +202,60 @@ def analyze_branches(
         f"{table}\n"
         "请确认以上分析结果"
     )
+
+@mcp.tool()
+def apply_patch(
+    issue_url: str = Field(..., description="Gitee Issue URL"),
+    branch: Optional[str] = Field(description="要应用patch的分支名"),
+    fork_repo_url: Optional[str] = Field(description="fork仓库url"),
+    patch_path: Optional[str] = Field(description="patch路径"),
+    signer_name: Optional[str] = Field(description="提交者姓名"),
+    signer_email: Optional[str] = Field(None, description="提交者邮箱"),
+    gitee_token: Optional[str] = Field(None, description="Gitee访问令牌(可选)")
+) -> str:
+    """
+    该函数是CVE修复流程的第五步：
+        对于第四步中分析出的受影响分支，分别应用相对应的patch，参数中的patch_path为第四步的冲突点，
+        若patch应用成功，提交之后，把该分支推送到fork仓，若patch应用失败，尝试解决冲突后，重新执行该步骤
+    """
+    result = run_cvekit('apply-patch', {
+        'issue_url': issue_url,
+        'branch': branch,
+        'fork_repo_url': fork_repo_url,
+        'patch_path': patch_path,
+        'signer_name': signer_name,
+        'signer_email': signer_email,
+        'gitee_token': gitee_token
+    })
+
+    if 'error' in result or 'error' in result.get('status'):
+        return f"应用patch失败: {result['error']}"
+    return 'patch应用成功'
+
+@mcp.tool()
+def create_pr(
+    issue_url: str = Field(..., description="Gitee Issue URL"),
+    branch: Optional[str] = Field(None, description="提交pr源分支名和目标分支名"),
+    fork_repo_url: Optional[str] = Field(None, description="fork仓库url"),
+    repo_url: Optional[str] = Field('https://gitee.com/openeuler/kernel', description="目标仓库url"),
+    signer_name: Optional[str] = Field(None, description="提交者姓名"),
+    signer_email: Optional[str] = Field(None, description="提交者邮箱"),
+    gitee_token: Optional[str] = Field(description="Gitee访问令牌")
+) -> str:
+    """
+    该函数是CVE修复流程的第六步：
+        对于第五步中推送成功的分支，提交pr，若用户未提供目标仓库url，则使用默认的目标仓库
+    """
+    result = run_cvekit('create-pr', {
+        'issue_url': issue_url,
+        'branch': branch,
+        'fork_repo_url': fork_repo_url,
+        'repo_url': repo_url,
+        'gitee_token': gitee_token
+    })
+    if 'error' in result or 'error' in result.get('status'):
+        return f"pr提交失败: {result.get('error')}"
+    return f"pr已提交: {result.get('pr_html_url')}"
 
 if __name__ == "__main__":
     mcp.run()

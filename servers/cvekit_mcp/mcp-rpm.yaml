@@ -9,9 +9,11 @@ dependencies:
     - python3
     - git
     - patch
+    - oegitext
   python:
     - requests
     - PyGithub
+    - curl_ffi
 
 files:
   required:

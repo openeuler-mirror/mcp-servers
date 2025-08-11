@@ -3,11 +3,14 @@ import sys
 import logging
 import os
 import json
+
 from tabulate import tabulate
 from .utils.gitee import parse_gitee_issue_url, setup_repository
 from .utils.commits import get_vulnerability_commits
 from .utils.branches import process_branches
 from .utils.cache import get_cached_data, save_cache
+from .utils.apply_patch import apply_patch
+from .utils.create_pr import create_pr
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +30,7 @@ def main():
 
     # 操作模式参数
     parser.add_argument('--action', type=str,
-                      choices=['parse-issue', 'get-commits', 'analyze-branches', 'setup-env'],
+                      choices=['parse-issue', 'get-commits', 'analyze-branches', 'setup-env', 'apply-patch', 'create-pr'],
                       default='analyze-branches',
                       help='''执行模式: 
                       parse-issue(解析issue),
@@ -44,6 +47,8 @@ def main():
     env_group = parser.add_argument_group('仓库环境参数')
     env_group.add_argument('--fork-repo-url', type=str,
                          help='Fork仓库URL (也可通过FORK_REPO_URL环境变量设置)')
+    env_group.add_argument('--repo-url', type=str,
+                         help='仓库URL (也可通过REPO_URL环境变量设置)')
     env_group.add_argument('--gitee-token', type=str,
                          help='Gitee访问令牌(也可通过GITEE_TOKEN环境变量设置)')
     env_group.add_argument('--clone-dir', type=str,
@@ -65,10 +70,16 @@ def main():
     output_group.add_argument('--no-cache', action='store_true', help='禁用缓存')
     output_group.add_argument('--debug', action='store_true', help='开启调试模式')
 
+    # 提交pr参数
+    pr_group = parser.add_argument_group('提交pr')
+    pr_group.add_argument('--patch-path', type=str, help='patch文件路径')
+    pr_group.add_argument('--branch', type=str, help='pr提交分支')
+
     args = parser.parse_args()
 
     # 从环境变量获取参数默认值
     args.fork_repo_url = args.fork_repo_url or os.environ.get('FORK_REPO_URL', "https://gitee.com/lw520203/kernel_4")
+    args.repo_url = args.repo_url or os.environ.get('REPO_URL', "https://gitee.com/openeuler/kernel")
     args.gitee_token = args.gitee_token or os.environ.get('GITEE_TOKEN')
     args.clone_dir = args.clone_dir or os.environ.get('CLONE_DIR', os.path.join(os.path.expanduser("~"), "Image"))
     args.branches = args.branches or os.environ.get('BRANCHES', "OLK-5.10,OLK-6.6,master")
@@ -120,7 +131,17 @@ def main():
 def handle_action(args):
     """路由到不同操作处理器"""
     if args.action == 'setup-env':
-        return setup_repository(args.fork_repo_url, args.gitee_token, args.clone_dir)
+        try:
+            repo, repo_path = setup_repository(args.fork_repo_url, args.gitee_token, args.clone_dir)
+        except Exception as e:
+            return {
+                'status': 'failed',
+                'message': str(e)
+            }
+        return {
+            'status': 'success',
+            'repo_path': repo_path
+        }
 
     cve_id = args.cve_id if args.cve_id else fetch_cve_id(args.issue_url, args.gitee_token, not args.no_cache)
 
@@ -128,8 +149,42 @@ def handle_action(args):
         return handle_parse_issue(args)
     elif args.action == 'get-commits':
         return handle_get_commits(cve_id, not args.no_cache)
-    else:  # analyze-branches
+    elif args.action == 'analyze-branches':  # analyze-branches
         return handle_analyze_branches(args)
+    elif args.action == 'apply-patch':
+        return handle_apply_patch(cve_id, args)
+    elif args.action == 'create-pr':
+        return handle_create_pr(cve_id, args)
+    else:
+        raise RuntimeError("action not supported: %s", args.action)
+
+def handle_apply_patch(cve_id, args):
+    """应用patch并把branch提交到fork分支"""
+    result = apply_patch(
+        fork_repo_url=args.fork_repo_url,
+        gitee_token=args.gitee_token,
+        branch=args.branch,
+        clone_dir=args.clone_dir,
+        patch_path=args.patch_path,
+        signer_name=args.signer_name,
+        signer_email=args.signer_email,
+        cve_id=cve_id,
+        issue_url=args.issue_url
+        )
+    return result
+
+def handle_create_pr(cve_id, args):
+    """创建pr"""
+    result = create_pr(
+        cve_id=cve_id,
+        issue_url=args.issue_url,
+        fork_repo_url=args.fork_repo_url,
+        repo_url=args.repo_url,
+        branch=args.branch,
+        clone_dir=args.clone_dir,
+        gitee_token=args.gitee_token
+    )
+    return result
 
 def handle_parse_issue(args):
     """处理issue解析逻辑"""
