@@ -5,8 +5,10 @@ import subprocess
 import git
 import requests
 import logging
-from .cache import get_cached_data, save_cache
 from typing import Optional, Dict
+
+from .cache import get_cached_data, save_cache
+from .locales import i18n
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +34,13 @@ def parse_gitee_issue_url(issue_url: str, gitee_token: Optional[str] = None, use
         pattern = r"https://gitee.com/([^/]+)/([^/]+)/issues/([^/]+)"
         match = re.match(pattern, issue_url)
         if not match:
-            raise ValueError("无效的gitee issue URL格式")
+            raise ValueError(i18n("无效的gitee issue URL格式"))
         org = match.group(1)
         repo = match.group(2)
         issue_id = match.group(3)
     except Exception as e:
         logger.error(f"解析issue URL失败: {str(e)}")
-        raise ValueError(f"无法解析issue URL: {str(e)}")
+        raise ValueError(i18n("解析issue URL失败: %s") % (str(e)))
     
     # 从Gitee API获取issue描述
     try:
@@ -116,16 +118,16 @@ def _clone_repository(
         )
         
         if not os.path.exists(os.path.join(local_path, '.git')):
-            raise RuntimeError(f"仓库克隆失败: {local_path}")
+            raise RuntimeError(i18n("仓库克隆失败: %s") % (local_path))
         
         return local_path
     
     except subprocess.CalledProcessError as e:
         logger.error(f"克隆命令执行失败: {str(e)}")
-        raise RuntimeError(f"无法克隆仓库: {str(e)}")
+        raise RuntimeError(i18n("无法克隆仓库: %s") % (str(e)))
     except Exception as e:
         logger.error(f"克隆操作失败: {str(e)}")
-        raise RuntimeError(f"无法克隆仓库: {str(e)}")
+        raise RuntimeError(i18n("无法克隆仓库: %s") % (str(e)))
 
 
 def setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name=None):

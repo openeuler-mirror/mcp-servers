@@ -6,6 +6,7 @@ import json
 
 from .patch import getUrlText
 from .commits import get_vulnerability_commits
+from .locales import i18n
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ def create_pr(
         logger.error(f"oegitext配置token失败: {str(e)}")
         return {
             "status": "error",
-            "error": f"oegitext配置token失败: {str(e)}"
+            "error": i18n("oegitext配置token失败: %s") % (str(e))
         }
 
     cmd = [
@@ -90,7 +91,7 @@ def create_pr(
         logger.error(f"提交pr失败: {str(e)}")
         return {
             "status": "error",
-            "error": f"提交pr失败: {str(e)}"
+            "error": i18n("提交pr失败: %s") % (str(e))
         }
     result = json.loads(result.stdout)
 

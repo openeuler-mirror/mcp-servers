@@ -7,9 +7,25 @@ import subprocess
 from .gitee import setup_repository
 from .patch import getUrlText
 from .commits import get_vulnerability_commits
+from .locales import i18n
 
 logger = logging.getLogger(__name__)
 
+def config_git_signer(signer_name, signer_email, repo_path):
+    subprocess.run(
+        ["git", "config", "--global", "user.name", signer_name],
+        check=True,
+        cwd=repo_path,
+        capture_output=True,
+        text=True
+    )
+    subprocess.run(
+        ["git", "config", "--global", "user.email", signer_email],
+        check=True,
+        cwd=repo_path,
+        capture_output=True,
+        text=True
+    )
 
 def get_commit_reference(commit_id, repo_path):
     # 判断目录是否存在
@@ -43,13 +59,11 @@ def get_commit_reference(commit_id, repo_path):
             raise RuntimeError("linux仓库克隆失败: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git")
 
     repo = git.Repo(repo_path)
-    subprocess.run(
-        ["git", "pull"],
-        check=True,
-        cwd=repo_path,
-        capture_output=True,
-        text=True
-    )
+    try:
+        repo.git.checkout('master')
+        repo.git.pull()
+    except Exception as e:
+        logger.error(f"更新仓库失败: {e}")
     """获取提交的引用信息，如mainline版本或stable版本"""
     is_stable = True
     try:
@@ -144,7 +158,7 @@ def apply_patch(
         logger.error(f"生成commit信息失败: {str(e)}")
         return {
                 "status": "error",
-                "error": f"生成commit信息失败: {str(e)}"
+                "error": i18n("生成commit信息失败: %s") % (str(e))
             }
     # 解析fork URL获取组织名和仓库名
     parts = fork_repo_url.strip().rstrip('/').split('/')
@@ -152,18 +166,26 @@ def apply_patch(
     repo_name = parts[-1].replace('.git', '')
 
     repo, repo_path = setup_repository(fork_repo_url, gitee_token, clone_dir)
-    repo.git.pull()
+    try:
+        config_git_signer(signer_name, signer_email, repo_path)
+    except Exception as e:
+        logger.error(f"配置用户信息失败: {str(e)}")
+        return {
+                "status": "error",
+                "error": i18n("配置用户信息失败: %s") % (str(e))
+            }
     branches = repo.git.branch().split()
     try:
         if branch in branches:
             repo.git.checkout(branch)
         else:
             repo.git.checkout('-b', branch, f'origin/{branch}')
+        repo.git.pull()
     except Exception as e:
         logger.error(f"切换分支失败: {str(e)}")
         return {
                 "status": "error",
-                "error": f"切换分支失败: {str(e)}"
+                "error": i18n("切换分支失败: %s") % (str(e))
             }
     fix_branch = branch
     try:
@@ -178,14 +200,13 @@ def apply_patch(
             repo.git.am("--abort")
             return {
                 "status": "error",
-                "error": f"无法完成补丁应用，请检查冲突并重试。: {str(e)}"
+                "error": i18n("无法完成补丁应用，请检查冲突并重试: %s") % (str(e))
             }
         else:
-            repo.git.am("--abort")  # 非冲突错误，直接中止
             logger.info("已中止补丁应用过程")
             return {
                 "status": "error",
-                "error": f"无法应用补丁: {str(e)}"
+                "error": i18n("无法应用补丁: %s") % (str(e))
             }
 
     # 添加所有变更并提交
@@ -214,7 +235,7 @@ def apply_patch(
                 logger.error(f"推送变更失败: {str(e)}")
                 return {
                     "status": "error",
-                    "error": f"无法推送变更: {str(e)}"
+                    "error": i18n("无法推送变更: %s") % (str(e))
                 }
 
     return {
