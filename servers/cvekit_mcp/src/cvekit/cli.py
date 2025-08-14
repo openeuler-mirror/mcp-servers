@@ -276,10 +276,10 @@ def _display_branch_table(branches):
     table_data = []
     for branch in branches:
         table_data.append([
-            branch['目标分支'],
-            branch['是否受影响'],
-            branch['适配状态'],
-            branch['冲突点'][:50] + '...' if len(branch['冲突点']) > 50 else branch['冲突点']
+            branch[i18n('目标分支')],
+            branch[i18n('是否受影响')],
+            branch[i18n('适配状态')],
+            branch[i18n('冲突点')][:50] + '...' if len(branch[i18n('冲突点')]) > 50 else branch[i18n('冲突点')]
         ])
     print(tabulate(table_data,
                   headers=[i18n('分支'), i18n('受影响'), i18n('状态'), i18n('冲突点')],

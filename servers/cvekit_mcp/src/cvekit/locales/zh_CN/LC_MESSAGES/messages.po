@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PROJECT VERSION\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2025-08-13 14:37+0800\n"
+"POT-Creation-Date: 2025-08-15 14:21+0800\n"
 "PO-Revision-Date: 2025-08-11 09:34+0800\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_Hans_CN\n"
@@ -22,7 +22,7 @@ msgstr ""
 msgid "CVE修复流程自动化工具，提供CVE分析、补丁适配等功能"
 msgstr ""
 
-#: server.py:19 server.py:250
+#: server.py:19 server.py:258
 msgid "Gitee访问令牌"
 msgstr ""
 
@@ -50,13 +50,13 @@ msgid ""
 "    "
 msgstr ""
 
-#: server.py:101 server.py:129 server.py:147 server.py:176 server.py:222
+#: server.py:101 server.py:129 server.py:147 server.py:176 server.py:227
 msgid "Gitee访问令牌(可选)"
 msgstr ""
 
 #: server.py:110
 #, python-format
-msgid "解析Issue失败: %s "
+msgid "解析Issue失败: %s"
 msgstr ""
 
 #: server.py:113
@@ -152,11 +152,11 @@ msgstr ""
 msgid "要分析的分支列表，逗号分隔"
 msgstr ""
 
-#: server.py:174 server.py:220 server.py:248
+#: server.py:174 server.py:225 server.py:256
 msgid "提交者姓名"
 msgstr ""
 
-#: server.py:175 server.py:221 server.py:249
+#: server.py:175 server.py:226 server.py:257
 msgid "提交者邮箱"
 msgstr ""
 
@@ -173,71 +173,105 @@ msgstr ""
 msgid "| 补丁ID | 目标分支 | 是否受影响 | 适配状态 | 冲突点 | 建议调整文件 |\n"
 msgstr ""
 
-#: server.py:203
+#: cvekit/utils/branches.py:163 cvekit/utils/branches.py:172
+#: cvekit/utils/branches.py:183 cvekit/utils/branches.py:195 server.py:199
+msgid "补丁ID"
+msgstr ""
+
+#: cvekit/cli.py:279 cvekit/utils/branches.py:164 cvekit/utils/branches.py:173
+#: cvekit/utils/branches.py:184 cvekit/utils/branches.py:196 server.py:200
+msgid "目标分支"
+msgstr ""
+
+#: cvekit/cli.py:280 cvekit/utils/branches.py:165 cvekit/utils/branches.py:174
+#: cvekit/utils/branches.py:185 cvekit/utils/branches.py:197 server.py:201
+msgid "是否受影响"
+msgstr ""
+
+#: cvekit/cli.py:281 cvekit/utils/branches.py:166 cvekit/utils/branches.py:175
+#: cvekit/utils/branches.py:186 cvekit/utils/branches.py:198 server.py:202
+msgid "适配状态"
+msgstr ""
+
+#: cvekit/cli.py:282 cvekit/cli.py:285 cvekit/utils/branches.py:167
+#: cvekit/utils/branches.py:176 cvekit/utils/branches.py:187
+#: cvekit/utils/branches.py:199 server.py:203
+msgid "冲突点"
+msgstr ""
+
+#: cvekit/utils/branches.py:168 cvekit/utils/branches.py:177
+#: cvekit/utils/branches.py:188 cvekit/utils/branches.py:200 server.py:204
+msgid "建议调整文件"
+msgstr ""
+
+#: server.py:207
 #, python-format
 msgid ""
 "分支分析完成，共发现 %d 个受影响的分支:\n"
 "\n"
 msgstr ""
 
-#: server.py:205
+#: server.py:209
 msgid "请确认以上分析结果"
 msgstr ""
 
-#: server.py:209
+#: server.py:213
 msgid ""
 "\n"
 "    该函数是CVE修复流程的第五步：\n"
 "        对于第四步中分析出的受影响分支，分别应用相对应的patch，参数中的patch_path为第四步的冲突点\n"
 "        若patch应用成功，提交之后，把该分支推送到fork仓，若patch应用失败，尝试解决冲突后，重新执行该步骤\n"
 "        本地代码位于工作空间里面的仓库名所在的目录\n"
+"        若没有受影响分支，该步骤可跳过\n"
 "    "
 msgstr ""
 
-#: server.py:217
+#: server.py:222
 msgid "要应用patch的分支名"
 msgstr ""
 
-#: server.py:218 server.py:246
+#: server.py:223 server.py:254
 msgid "fork仓库url"
 msgstr ""
 
-#: server.py:219
+#: server.py:224
 msgid "patch路径"
 msgstr ""
 
-#: server.py:235
+#: server.py:240
 #, python-format
 msgid "应用patch失败: %s"
 msgstr ""
 
-#: server.py:236
+#: server.py:242
 #, python-format
-msgid "patch应用成功, branch: %s, patch: %s"
-msgstr ""
-
-#: server.py:239
-msgid ""
-"\n"
-"    该函数是CVE修复流程的第六步：\n"
-"        对于第五步中推送成功的分支，提交pr，若用户未提供目标仓库url，则使用默认的目标仓库\n"
-"    "
+msgid "patch应用成功, 目标分支: %s, 修复分支: %s, patch: %s"
 msgstr ""
 
 #: server.py:245
-msgid "提交pr的分支名"
+msgid ""
+"\n"
+"    该函数是CVE修复流程的第六步：\n"
+"        对于第五步中修复成功的分支，提交pr，若用户未提供目标仓库url，则使用默认的目标仓库\n"
+"        若所有分支均已修复，该步骤可跳过\n"
+"        参数中的branch是受影响分支名，提交pr的目标分支\n"
+"    "
 msgstr ""
 
-#: server.py:247
+#: server.py:253
+msgid "受影响分支名，目标分支"
+msgstr ""
+
+#: server.py:255
 msgid "目标仓库url"
 msgstr ""
 
-#: server.py:260
+#: server.py:268
 #, python-format
 msgid "pr提交失败: %s"
 msgstr ""
 
-#: server.py:261
+#: server.py:269
 #, python-format
 msgid "pr已提交: %s"
 msgstr ""
@@ -260,16 +294,12 @@ msgstr ""
 msgid "分支"
 msgstr ""
 
-#: cvekit/cli.py:285 cvekit/utils/branches.py:150 cvekit/utils/branches.py:159
+#: cvekit/cli.py:285 cvekit/utils/branches.py:165 cvekit/utils/branches.py:174
 msgid "受影响"
 msgstr ""
 
 #: cvekit/cli.py:285
 msgid "状态"
-msgstr ""
-
-#: cvekit/cli.py:285
-msgid "冲突点"
 msgstr ""
 
 #: cvekit/utils/apply_patch.py:161
@@ -282,54 +312,54 @@ msgstr ""
 msgid "配置用户信息失败: %s"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:188
+#: cvekit/utils/apply_patch.py:193
 #, python-format
 msgid "切换分支失败: %s"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:203
+#: cvekit/utils/apply_patch.py:207
 #, python-format
 msgid "无法完成补丁应用，请检查冲突并重试: %s"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:209
+#: cvekit/utils/apply_patch.py:213
 #, python-format
 msgid "无法应用补丁: %s"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:238
+#: cvekit/utils/apply_patch.py:242
 #, python-format
 msgid "无法推送变更: %s"
 msgstr ""
 
-#: cvekit/utils/branches.py:151
+#: cvekit/utils/branches.py:166
 msgid "成功"
 msgstr ""
 
-#: cvekit/utils/branches.py:160
+#: cvekit/utils/branches.py:175
 msgid "需要调整"
 msgstr ""
 
-#: cvekit/utils/branches.py:170 cvekit/utils/branches.py:172
+#: cvekit/utils/branches.py:185 cvekit/utils/branches.py:187
 msgid "已修复"
 msgstr ""
 
-#: cvekit/utils/branches.py:182
+#: cvekit/utils/branches.py:197
 msgid "不受影响"
 msgstr ""
 
-#: cvekit/utils/branches.py:184
+#: cvekit/utils/branches.py:199
 msgid "无"
 msgstr ""
 
-#: cvekit/utils/create_pr.py:73
+#: cvekit/utils/create_pr.py:76
 #, python-format
-msgid "oegitext配置token失败: %s"
+msgid "oegitext配置token失败: %s, stderr: %s"
 msgstr ""
 
-#: cvekit/utils/create_pr.py:94
+#: cvekit/utils/create_pr.py:97
 #, python-format
-msgid "提交pr失败: %s"
+msgid "提交pr失败: %s, stderr: %s"
 msgstr ""
 
 #: cvekit/utils/gitee.py:37
@@ -439,5 +469,61 @@ msgstr ""
 #~ "        若patch应用成功，提交之后，把该分支推送到fork仓，若patch应用失败，尝试解决冲突后，重新执行该步骤\n"
 #~ "        代码所在为工作空间里面的仓库名所在的目录\n"
 #~ "    "
+#~ msgstr ""
+
+#~ msgid "解析Issue失败: %s "
+#~ msgstr ""
+
+#~ msgid "需要调整"
+#~ msgstr ""
+
+#~ msgid ""
+#~ "\n"
+#~ "    该函数是CVE修复流程的第五步：\n"
+#~ "        对于第四步中分析出的受影响分支，分别应用相对应的patch，参数中的patch_path为第四步的冲突点\n"
+#~ "        若patch应用成功，提交之后，把该分支推送到fork仓，若patch应用失败，尝试解决冲突后，重新执行该步骤\n"
+#~ "        本地代码位于工作空间里面的仓库名所在的目录\n"
+#~ "    "
+#~ msgstr ""
+
+#~ msgid ""
+#~ "\n"
+#~ "    该函数是CVE修复流程的第六步：\n"
+#~ "        对于第五步中推送成功的分支，提交pr，若用户未提供目标仓库url，则使用默认的目标仓库\n"
+#~ "    "
+#~ msgstr ""
+
+#~ msgid "patch应用成功, branch: %s, patch: %s"
+#~ msgstr ""
+
+#~ msgid "提交pr的分支名"
+#~ msgstr ""
+
+#~ msgid ""
+#~ "\n"
+#~ "    该函数是CVE修复流程的第六步：\n"
+#~ "        对于第五步中推送成功的分支，提交pr，若用户未提供目标仓库url，则使用默认的目标仓库\n"
+#~ "        若所有分支均已修复，该步骤可跳过\n"
+#~ "    "
+#~ msgstr ""
+
+#~ msgid ""
+#~ "\n"
+#~ "    该函数是CVE修复流程的第六步：\n"
+#~ "        对于第五步中修复成功的分支，提交pr，若用户未提供目标仓库url，则使用默认的目标仓库\n"
+#~ "        若所有分支均已修复，该步骤可跳过\n"
+#~ "    "
+#~ msgstr ""
+
+#~ msgid "受影响分支名，源分支"
+#~ msgstr ""
+
+#~ msgid "patch应用成功, 源分支: %s, 修复分支: %s, patch: %s"
+#~ msgstr ""
+
+#~ msgid "oegitext配置token失败: %s"
+#~ msgstr ""
+
+#~ msgid "提交pr失败: %s"
 #~ msgstr ""
 

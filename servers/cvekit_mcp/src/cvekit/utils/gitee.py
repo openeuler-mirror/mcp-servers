@@ -173,12 +173,12 @@ def setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name=None):
     # 创建或切换到本地分支
     if branch_name:
         remote_branch_ref = f"{fork_remote_name}/{branch_name}"
-        if branch_name not in repo.heads:
+        if branch_name not in repo.git.branch().split():
             logging.info(f"设置仓库，切换分支：{branch_name}， 同步远程分支：{remote_branch_ref}")
             repo.git.checkout('-b', branch_name, remote_branch_ref)
         else:
             logging.info(f"设置仓库，切换本地分支：{branch_name}，同步{fork_remote_name}代码")
             repo.git.checkout(branch_name)
-            repo.git.pull(fork_remote_name, branch_name)
+            repo.git.pull(fork_remote_name, branch_name, "--rebase")
     
     return repo, repo_path
