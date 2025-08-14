@@ -4,6 +4,7 @@ import os
 from .gitee import setup_repository
 from .patch import get_cve_patch, getUrlText
 from .commits import get_vulnerability_commits
+from .locales import i18n
 
 logger = logging.getLogger(__name__)
 
@@ -146,8 +147,8 @@ def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, si
                 items.append({
                     "补丁ID": issue_info.cve_id,
                     "目标分支": branch,
-                    "是否受影响": "受影响",
-                    "适配状态": "成功",
+                    "是否受影响": i18n("受影响"),
+                    "适配状态": i18n("成功"),
                     "冲突点": patch['patch_path'],
                     "建议调整文件": "N/A",
                 })
@@ -155,8 +156,8 @@ def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, si
                 items.append({
                     "补丁ID": issue_info.cve_id,
                     "目标分支": branch,
-                    "是否受影响": "受影响",
-                    "适配状态": "需要调整",
+                    "是否受影响": i18n("受影响"),
+                    "适配状态": i18n("需要调整"),
                     "冲突点": patch['patch_path'],
                     "建议调整文件": "",
                 })
@@ -166,9 +167,9 @@ def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, si
         items.append({
             "补丁ID": issue_info.cve_id,
             "目标分支": branch,
-            "是否受影响": "已修复",
+            "是否受影响": i18n("已修复"),
             "适配状态": "",
-            "冲突点": "已修复",
+            "冲突点": i18n("已修复"),
             "建议调整文件": "N/A",
         })
     
@@ -178,9 +179,9 @@ def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, si
         items.append({
             "补丁ID": issue_info.cve_id,
             "目标分支": branch,
-            "是否受影响": "不受影响",
+            "是否受影响": i18n("不受影响"),
             "适配状态": "",
-            "冲突点": "无",
+            "冲突点": i18n("无"),
             "建议调整文件": "N/A",
         })
     

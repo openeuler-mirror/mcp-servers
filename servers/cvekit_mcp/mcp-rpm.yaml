@@ -13,7 +13,7 @@ dependencies:
   python:
     - requests
     - PyGithub
-    - curl_ffi
+    - curl_cffi
 
 files:
   required:

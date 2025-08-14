@@ -5,16 +5,23 @@ import logging
 from typing import Optional
 from pydantic import Field
 from mcp.server.fastmcp import FastMCP
+import os
 
-mcp = FastMCP("CVE修复流程自动化工具，提供CVE分析、补丁适配等功能")
+dir = os.path.dirname(__file__)
+os.environ['PYTHONPATH'] = dir
+
+from cvekit.utils.locales import i18n, update_docstring
+
+mcp = FastMCP(i18n("CVE修复流程自动化工具，提供CVE分析、补丁适配等功能"))
 
 # 配置参数解析
 parser = argparse.ArgumentParser()
-parser.add_argument('--gitee-token', help='Gitee访问令牌')
+parser.add_argument('--gitee-token', help=i18n('Gitee访问令牌'))
 args, _ = parser.parse_known_args()
 
+
+@update_docstring(i18n("""执行cvekit命令并返回结果"""))
 def run_cvekit(action: str, params: dict) -> dict:
-    """执行cvekit命令并返回结果"""
     try:
         # 构建基础命令
         cmd = ['cvekit', f'--action={action}']
@@ -76,51 +83,51 @@ def run_cvekit(action: str, params: dict) -> dict:
         
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr if e.stderr else str(e)
-        logging.error(f"cvekit执行失败: {error_msg}")
+        logging.error(i18n("cvekit执行失败: %s") % (str(error_msg)))
         return {"error": error_msg, "command": " ".join(cmd)}
     except json.JSONDecodeError:
-        logging.error("cvekit输出非JSON格式")
+        logging.error(i18n("cvekit输出非JSON格式"))
         return {"error": "Invalid JSON output", "output": result.stdout}
 
 @mcp.tool()
-def parse_issue(
-    issue_url: str = Field(..., description="Gitee Issue URL"),
-    gitee_token: Optional[str] = Field(None, description="Gitee访问令牌(可选)")
-) -> str:
-    """
+@update_docstring(i18n("""
     该函数是CVE修复流程的第一步：
         通过调用gitee的api，解析gitee issue URL并获取基本信息
         在这里将通过issue_url解析得到的issue_info以json格式反馈给用户
         主要告知用户我们获取的issue_id, cve_id, org_name, repo_name, affected_versions这些是否正确，需要用户确认
-    """
+    """))
+def parse_issue(
+    issue_url: str = Field(..., description="Gitee Issue URL"),
+    gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
+) -> str:
+    
     result = run_cvekit('parse-issue', {
         'issue_url': issue_url,
         'gitee_token': gitee_token
     })
     
     if 'error' in result:
-        return f"解析Issue失败: {result['error']}"
+        return i18n("解析Issue失败: %s") % (result['error'])
     
     data = result.get('data', {})
-    return (
-        f"已解析Issue {data.get('issue_id', '')}:\n"
-        f"- CVE ID: {data.get('cve_id', '')}\n"
-        f"- 组织: {data.get('org_name', '')}\n"
-        f"- 仓库: {data.get('repo_name', '')}\n"
-        f"- 受影响版本: {data.get('affected_versions', '')}\n"
-        "请确认以上信息是否正确"
-    )
+    res = i18n("已解析Issue: %s\n") % (data.get('issue_id', ''))
+    res += f"- CVE ID: {data.get('cve_id', '')}\n"
+    res += i18n("- 组织: %s\n") % (data.get('org_name', ''))
+    res += i18n("- 仓库: %s\n") % (data.get('repo_name', ''))
+    res += i18n("- 受影响版本: %s\n") % (data.get('affected_versions', ''))
+    res += i18n("请确认以上信息是否正确")
+    return res
 
 @mcp.tool()
-def setup_env(
-    fork_repo_url: str = Field(..., description="Fork仓库URL"),
-    clone_dir: str = Field(..., description="本地仓库克隆目录"),
-    gitee_token: Optional[str] = Field(None, description="Gitee访问令牌(可选)")
-) -> dict:
-    """
+@update_docstring(i18n("""
     该函数是CVE修复流程的第二步：
         设置仓库环境，克隆官方仓库，添加fork远程
-    """
+    """))
+def setup_env(
+    fork_repo_url: str = Field(..., description=i18n("Fork仓库URL")),
+    clone_dir: str = Field(..., description=i18n("工作空间或克隆目录，本地克隆仓库在该目录所在的仓库名文件夹中")),
+    gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
+) -> dict:
 
     run_cvekit('setup-env', {
         'fork_repo_url': fork_repo_url,
@@ -128,17 +135,17 @@ def setup_env(
         'gitee_token': gitee_token
     })
 
-    return f"仓库已经下载到{clone_dir}路径下"
+    return i18n("仓库已经下载到%s路径下") % (clone_dir)
 
 @mcp.tool()
-def get_commits(
-    issue_url: str = Field(..., description="Gitee Issue URL"),
-    gitee_token: Optional[str] = Field(None, description="Gitee访问令牌(可选)")
-) -> str:
-    """
+@update_docstring(i18n("""
     该函数是CVE修复流程的第三步：
         获取漏洞相关的真实上游提交信息，并将获取到的commit告知给用户
-    """
+    """))
+def get_commits(
+    issue_url: str = Field(..., description="Gitee Issue URL"),
+    gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
+) -> str:
     result = run_cvekit('get-commits', {
         'issue_url': issue_url,
         'gitee_token': gitee_token
@@ -146,30 +153,28 @@ def get_commits(
     
     # Check for errors first
     if 'error' in result:
-        return f"获取提交信息失败: {result['error']}"
+        return i18n("获取提交信息失败: %s") % (result['error'])
     
-    return (
-        f"已获取CVE {result.get('cve_id', '')}的提交信息:\n"
-        f"- 引入漏洞的提交: {result.get('introduced', '')}\n"
-        f"- 修复漏洞的提交: {result.get('fixed', '')}\n"
-        "请确认以上提交信息是否正确"
-    )
+    res = i18n("已获取CVE %s的提交信息:\n") % (result.get('cve_id', ''))
+    res += i18n("- 引入漏洞的提交: %s\n") % (result.get('introduced', ''))
+    res += i18n("- 修复漏洞的提交: %s\n") % (result.get('fixed', ''))
+    res += i18n("请确认以上提交信息是否正确")
+    return res
 
 @mcp.tool()
-def analyze_branches(
-    issue_url: str = Field(..., description="Gitee Issue URL"),
-    branches: Optional[str] = Field('OLK-5.10,OLK-6.6,master', description="要分析的分支列表，逗号分隔"),
-    signer_name: Optional[str] = Field(None, description="提交者姓名"),
-    signer_email: Optional[str] = Field(None, description="提交者邮箱"),
-    gitee_token: Optional[str] = Field(None, description="Gitee访问令牌(可选)")
-) -> str:
-    """
+@update_docstring(i18n("""
     该函数是CVE修复流程的第四步：
         分析introduced_commit在本地仓库的哪些分支被引入，如果引入的话，是否被fixed了，以此来分析哪些分支需要应用补丁
         并检查从上游获取的补丁直接应用，是否存在冲突
-        该步骤中的参数branches为kernel的分支名，和issue分析中的受影响版本并不完全一致，若用户未指定要分析的分支名，采
-        用默认值即可
-    """
+        该步骤中的参数branches为kernel的分支名，和issue分析中的受影响版本并不一致，若用户未输入要分析的分支名，使用默认值即可
+    """))
+def analyze_branches(
+    issue_url: str = Field(..., description="Gitee Issue URL"),
+    branches: Optional[str] = Field('OLK-5.10,OLK-6.6,master', description=i18n("要分析的分支列表，逗号分隔")),
+    signer_name: Optional[str] = Field(None, description=i18n("提交者姓名")),
+    signer_email: Optional[str] = Field(None, description=i18n("提交者邮箱")),
+    gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
+) -> str:
     result = run_cvekit('analyze-branches', {
         'issue_url': issue_url,
         'branches': branches,
@@ -179,45 +184,43 @@ def analyze_branches(
     })
     
     if 'error' in result:
-        return f"分支分析失败: {result['error']}"
+        return i18n("分支分析失败: %s") % result['error']
     
     if isinstance(result, dict):
         result = [result]
     
     if not result:
-        return "未找到受影响的分支"
+        return i18n("未找到受影响的分支")
     
-    table = "| 补丁ID | 目标分支 | 是否受影响 | 适配状态 | 冲突点 | 建议调整文件 |\n"
+    table = i18n("| 补丁ID | 目标分支 | 是否受影响 | 适配状态 | 冲突点 | 建议调整文件 |\n")
     table += "|--------|----------|------------|----------|--------|--------------|\n"
     
     for item in result:
-        table += (
-            f"| {item.get('补丁ID', '')} | {item.get('目标分支', '')} | "
-            f"{item.get('是否受影响', '')} | {item.get('适配状态', '')} | "
+        table += f"| {item.get('补丁ID', '')} | {item.get('目标分支', '')} | " \
+            f"{item.get('是否受影响', '')} | {item.get('适配状态', '')} | " \
             f"{item.get('冲突点', '')} | {item.get('建议调整文件', '')} |\n"
-        )
-    
-    return (
-        f"分支分析完成，共发现 {len(result)} 个受影响的分支:\n\n"
-        f"{table}\n"
-        "请确认以上分析结果"
-    )
+
+    res = i18n("分支分析完成，共发现 %d 个受影响的分支:\n\n") % (len(result))
+    res += table
+    res += i18n("请确认以上分析结果")
+    return res
 
 @mcp.tool()
+@update_docstring(i18n("""
+    该函数是CVE修复流程的第五步：
+        对于第四步中分析出的受影响分支，分别应用相对应的patch，参数中的patch_path为第四步的冲突点
+        若patch应用成功，提交之后，把该分支推送到fork仓，若patch应用失败，尝试解决冲突后，重新执行该步骤
+        本地代码位于工作空间里面的仓库名所在的目录
+    """))
 def apply_patch(
     issue_url: str = Field(..., description="Gitee Issue URL"),
-    branch: Optional[str] = Field(description="要应用patch的分支名"),
-    fork_repo_url: Optional[str] = Field(description="fork仓库url"),
-    patch_path: Optional[str] = Field(description="patch路径"),
-    signer_name: Optional[str] = Field(description="提交者姓名"),
-    signer_email: Optional[str] = Field(None, description="提交者邮箱"),
-    gitee_token: Optional[str] = Field(None, description="Gitee访问令牌(可选)")
+    branch: Optional[str] = Field(description=i18n("要应用patch的分支名")),
+    fork_repo_url: Optional[str] = Field(description=i18n("fork仓库url")),
+    patch_path: Optional[str] = Field(description=i18n("patch路径")),
+    signer_name: Optional[str] = Field(description=i18n("提交者姓名")),
+    signer_email: Optional[str] = Field(None, description=i18n("提交者邮箱")),
+    gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
 ) -> str:
-    """
-    该函数是CVE修复流程的第五步：
-        对于第四步中分析出的受影响分支，分别应用相对应的patch，参数中的patch_path为第四步的冲突点，
-        若patch应用成功，提交之后，把该分支推送到fork仓，若patch应用失败，尝试解决冲突后，重新执行该步骤
-    """
     result = run_cvekit('apply-patch', {
         'issue_url': issue_url,
         'branch': branch,
@@ -229,23 +232,23 @@ def apply_patch(
     })
 
     if 'error' in result or 'error' in result.get('status'):
-        return f"应用patch失败: {result['error']}"
-    return 'patch应用成功'
+        return i18n("应用patch失败: %s") % (result['error'])
+    return i18n('patch应用成功, branch: %s, patch: %s') % (branch, patch_path)
 
 @mcp.tool()
-def create_pr(
-    issue_url: str = Field(..., description="Gitee Issue URL"),
-    branch: Optional[str] = Field(None, description="提交pr源分支名和目标分支名"),
-    fork_repo_url: Optional[str] = Field(None, description="fork仓库url"),
-    repo_url: Optional[str] = Field('https://gitee.com/openeuler/kernel', description="目标仓库url"),
-    signer_name: Optional[str] = Field(None, description="提交者姓名"),
-    signer_email: Optional[str] = Field(None, description="提交者邮箱"),
-    gitee_token: Optional[str] = Field(description="Gitee访问令牌")
-) -> str:
-    """
+@update_docstring(i18n("""
     该函数是CVE修复流程的第六步：
         对于第五步中推送成功的分支，提交pr，若用户未提供目标仓库url，则使用默认的目标仓库
-    """
+    """))
+def create_pr(
+    issue_url: str = Field(..., description="Gitee Issue URL"),
+    branch: Optional[str] = Field(None, description=i18n("提交pr的分支名")),
+    fork_repo_url: Optional[str] = Field(None, description=i18n("fork仓库url")),
+    repo_url: Optional[str] = Field('https://gitee.com/openeuler/kernel', description=i18n("目标仓库url")),
+    signer_name: Optional[str] = Field(None, description=i18n("提交者姓名")),
+    signer_email: Optional[str] = Field(None, description=i18n("提交者邮箱")),
+    gitee_token: Optional[str] = Field(description=i18n("Gitee访问令牌"))
+) -> str:
     result = run_cvekit('create-pr', {
         'issue_url': issue_url,
         'branch': branch,
@@ -254,8 +257,8 @@ def create_pr(
         'gitee_token': gitee_token
     })
     if 'error' in result or 'error' in result.get('status'):
-        return f"pr提交失败: {result.get('error')}"
-    return f"pr已提交: {result.get('pr_html_url')}"
+        return i18n("pr提交失败: %s") % (result.get('error'))
+    return i18n("pr已提交: %s") % (result.get('pr_html_url'))
 
 if __name__ == "__main__":
     mcp.run()
