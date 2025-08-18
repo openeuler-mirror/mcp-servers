@@ -61,7 +61,7 @@ def get_commit_reference(commit_id, repo_path):
     repo = git.Repo(repo_path)
     try:
         repo.git.checkout('master')
-        repo.git.pull()
+        repo.git.pull("origin", "master", "--rebase")
     except Exception as e:
         logger.error(f"更新仓库失败: {e}")
     """获取提交的引用信息，如mainline版本或stable版本"""
@@ -175,19 +175,23 @@ def apply_patch(
                 "error": i18n("配置用户信息失败: %s") % (str(e))
             }
     branches = repo.git.branch().split()
+    issue_num = os.path.basename(issue_url)
+    fix_branch = f"fix-{branch}-{issue_num}"
     try:
         if branch in branches:
             repo.git.checkout(branch)
         else:
             repo.git.checkout('-b', branch, f'origin/{branch}')
-        repo.git.pull()
+        repo.git.pull("origin", branch, "--rebase")
+        if fix_branch in branches:
+            repo.git.branch('-D', fix_branch)
+        repo.git.checkout('-b', fix_branch)
     except Exception as e:
         logger.error(f"切换分支失败: {str(e)}")
         return {
                 "status": "error",
                 "error": i18n("切换分支失败: %s") % (str(e))
             }
-    fix_branch = branch
     try:
         # 执行 git am patch_path
         repo.git.apply(patch_path)
@@ -242,5 +246,6 @@ def apply_patch(
         "status": "success",
         "remote": remote,
         "branch": branch,
+        "fix_branch": fix_branch,
         "repo_path": repo_path,
     }

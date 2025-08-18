@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PROJECT VERSION\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2025-08-13 14:37+0800\n"
+"POT-Creation-Date: 2025-08-15 14:21+0800\n"
 "PO-Revision-Date: 2025-08-11 09:35+0800\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: en_US\n"
@@ -24,7 +24,7 @@ msgstr ""
 "CVE remediation process automation tool, providing CVE analysis, patch "
 "adaptation, and other functions"
 
-#: server.py:19 server.py:250
+#: server.py:19 server.py:258
 msgid "Gitee访问令牌"
 msgstr "Gitee access token"
 
@@ -33,6 +33,7 @@ msgid "执行cvekit命令并返回结果"
 msgstr "execute cvekit command line and return result"
 
 #: server.py:86
+#, python-format
 msgid "cvekit执行失败: %s"
 msgstr "execute cvekit failed: %s"
 
@@ -62,27 +63,32 @@ msgstr ""
 "by the user.\n"
 "   "
 
-#: server.py:101 server.py:129 server.py:147 server.py:176 server.py:222
+#: server.py:101 server.py:129 server.py:147 server.py:176 server.py:227
 msgid "Gitee访问令牌(可选)"
 msgstr "Gitee access token (optional)"
 
 #: server.py:110
+#, python-format
 msgid "解析Issue失败: %s"
 msgstr "Parse Issue failed: %s"
 
 #: server.py:113
+#, python-format
 msgid "已解析Issue: %s\n"
 msgstr "Parsed issue: %s\n"
 
 #: server.py:115
+#, python-format
 msgid "- 组织: %s\n"
 msgstr "- Organization: %s\n"
 
 #: server.py:116
+#, python-format
 msgid "- 仓库: %s\n"
 msgstr "- Repository: %s\n"
 
 #: server.py:117
+#, python-format
 msgid "- 受影响版本: %s\n"
 msgstr "- Affected version: %s\n"
 
@@ -182,11 +188,11 @@ msgstr ""
 msgid "要分析的分支列表，逗号分隔"
 msgstr "The list of branches to be analyzed, separated by commas"
 
-#: server.py:174 server.py:220 server.py:248
+#: server.py:174 server.py:225 server.py:256
 msgid "提交者姓名"
 msgstr "Submitter's name"
 
-#: server.py:175 server.py:221 server.py:249
+#: server.py:175 server.py:226 server.py:257
 msgid "提交者邮箱"
 msgstr "Submitter's email"
 
@@ -205,7 +211,38 @@ msgstr ""
 "| patch ID | target branch | weather affected | conflict point | suggest "
 "adjusting the file |\n"
 
-#: server.py:203
+#: cvekit/utils/branches.py:163 cvekit/utils/branches.py:172
+#: cvekit/utils/branches.py:183 cvekit/utils/branches.py:195 server.py:199
+msgid "补丁ID"
+msgstr "patch_id"
+
+#: cvekit/cli.py:279 cvekit/utils/branches.py:164 cvekit/utils/branches.py:173
+#: cvekit/utils/branches.py:184 cvekit/utils/branches.py:196 server.py:200
+msgid "目标分支"
+msgstr "target_branch"
+
+#: cvekit/cli.py:280 cvekit/utils/branches.py:165 cvekit/utils/branches.py:174
+#: cvekit/utils/branches.py:185 cvekit/utils/branches.py:197 server.py:201
+msgid "是否受影响"
+msgstr "weather_affected"
+
+#: cvekit/cli.py:281 cvekit/utils/branches.py:166 cvekit/utils/branches.py:175
+#: cvekit/utils/branches.py:186 cvekit/utils/branches.py:198 server.py:202
+msgid "适配状态"
+msgstr "adjust_status"
+
+#: cvekit/cli.py:282 cvekit/cli.py:285 cvekit/utils/branches.py:167
+#: cvekit/utils/branches.py:176 cvekit/utils/branches.py:187
+#: cvekit/utils/branches.py:199 server.py:203
+msgid "冲突点"
+msgstr "conflict_point"
+
+#: cvekit/utils/branches.py:168 cvekit/utils/branches.py:177
+#: cvekit/utils/branches.py:188 cvekit/utils/branches.py:200 server.py:204
+msgid "建议调整文件"
+msgstr "suggest_adjust_files"
+
+#: server.py:207
 #, python-format
 msgid ""
 "分支分析完成，共发现 %d 个受影响的分支:\n"
@@ -214,17 +251,18 @@ msgstr ""
 "Branch analysis completed, with %d affected branches identified:\n"
 "\n"
 
-#: server.py:205
+#: server.py:209
 msgid "请确认以上分析结果"
 msgstr "Please confirm the above analysis results"
 
-#: server.py:209
+#: server.py:213
 msgid ""
 "\n"
 "    该函数是CVE修复流程的第五步：\n"
 "        对于第四步中分析出的受影响分支，分别应用相对应的patch，参数中的patch_path为第四步的冲突点\n"
 "        若patch应用成功，提交之后，把该分支推送到fork仓，若patch应用失败，尝试解决冲突后，重新执行该步骤\n"
 "        本地代码位于工作空间里面的仓库名所在的目录\n"
+"        若没有受影响分支，该步骤可跳过\n"
 "    "
 msgstr ""
 "\n"
@@ -237,58 +275,64 @@ msgstr ""
 "resolve the conflicts and then re-execute this step.\n"
 "       The local code is located in the directory corresponding to the "
 "repository name in the workspace\n"
+"       If there are no affected branches, this step can be skipped\n"
 "   "
 
-#: server.py:217
+#: server.py:222
 msgid "要应用patch的分支名"
 msgstr "The branch name to apply the patch"
 
-#: server.py:218 server.py:246
+#: server.py:223 server.py:254
 msgid "fork仓库url"
 msgstr "Fork repository URL"
 
-#: server.py:219
+#: server.py:224
 msgid "patch路径"
 msgstr "Patch file path"
 
-#: server.py:235
+#: server.py:240
 #, python-format
 msgid "应用patch失败: %s"
 msgstr "Failed to apply patch: %s"
 
-#: server.py:236
+#: server.py:242
 #, python-format
-msgid "patch应用成功, branch: %s, patch: %s"
-msgstr "Apply patch successful, branch: %s, patch: %s"
+msgid "patch应用成功, 目标分支: %s, 修复分支: %s, patch: %s"
+msgstr "Apply patch successful, target branch: %s, fix branch: %s, patch: %s"
 
-#: server.py:239
+#: server.py:245
 msgid ""
 "\n"
 "    该函数是CVE修复流程的第六步：\n"
-"        对于第五步中推送成功的分支，提交pr，若用户未提供目标仓库url，则使用默认的目标仓库\n"
+"        对于第五步中修复成功的分支，提交pr，若用户未提供目标仓库url，则使用默认的目标仓库\n"
+"        若所有分支均已修复，该步骤可跳过\n"
+"        参数中的branch是受影响分支名，提交pr的目标分支\n"
 "    "
 msgstr ""
 "\n"
 "   This function is the sixth step in the CVE remediation process:\n"
-"       For the branch successfully pushed in step 5, submit a pull "
-"request (PR). If the user does not provide a target repository URL, the "
-"default target repository will be used.\n"
+"       For the branch successfully fixed in step 5, submit a pull request"
+" (PR). If the user does not provide a target repository URL, the default "
+"target repository will be used.\n"
+"        If all branches have been repaired, this step can be skipped\n"
+"        The \"branch\" parameter refers to the name of the affected "
+"branch, which is the target branch for submitting the pull request (PR)\n"
 "   "
 
-#: server.py:245
-msgid "提交pr的分支名"
-msgstr "The branch name of the PR"
+#: server.py:253
+msgid "受影响分支名，目标分支"
+msgstr "Affected branch name, target branch"
 
-#: server.py:247
+#: server.py:255
 msgid "目标仓库url"
 msgstr "Target repository URL"
 
-#: server.py:260
+#: server.py:268
 #, python-format
 msgid "pr提交失败: %s"
 msgstr "PR submission failed: %s"
 
-#: server.py:261
+#: server.py:269
 #, python-format
 msgid "pr已提交: %s"
 msgstr "PR has been submitted: %s"
@@ -313,7 +357,7 @@ msgstr "No output"
 msgid "分支"
 msgstr "Branch"
 
-#: cvekit/cli.py:285 cvekit/utils/branches.py:150 cvekit/utils/branches.py:159
+#: cvekit/cli.py:285 cvekit/utils/branches.py:165 cvekit/utils/branches.py:174
 msgid "受影响"
 msgstr "Affected"
 
@@ -321,68 +365,65 @@ msgstr "Affected"
 msgid "状态"
 msgstr "Status"
 
-#: cvekit/cli.py:285
-msgid "冲突点"
-msgstr "Conflict point"
-
 #: cvekit/utils/apply_patch.py:161
 #, python-format
 msgid "生成commit信息失败: %s"
 msgstr "Failed to generate commit information: %s"
 
 #: cvekit/utils/apply_patch.py:175
+#, python-format
 msgid "配置用户信息失败: %s"
 msgstr "Failed to config user information: %s"
 
-#: cvekit/utils/apply_patch.py:188
+#: cvekit/utils/apply_patch.py:193
 #, python-format
 msgid "切换分支失败: %s"
 msgstr "Failed to switch branches: %s"
 
-#: cvekit/utils/apply_patch.py:203
+#: cvekit/utils/apply_patch.py:207
 #, python-format
 msgid "无法完成补丁应用，请检查冲突并重试: %s"
 msgstr "Can not apply patch, please check for conflicts and try again: %s"
 
-#: cvekit/utils/apply_patch.py:209
+#: cvekit/utils/apply_patch.py:213
 #, python-format
 msgid "无法应用补丁: %s"
 msgstr "Can not apply patch: %s"
 
-#: cvekit/utils/apply_patch.py:238
+#: cvekit/utils/apply_patch.py:242
 #, python-format
 msgid "无法推送变更: %s"
 msgstr "Unable to push changes: %s"
 
-#: cvekit/utils/branches.py:151
+#: cvekit/utils/branches.py:166
 msgid "成功"
-msgstr "Success"
+msgstr "success"
 
-#: cvekit/utils/branches.py:160
+#: cvekit/utils/branches.py:175
 msgid "需要调整"
 msgstr "Need to adjust"
 
-#: cvekit/utils/branches.py:170 cvekit/utils/branches.py:172
+#: cvekit/utils/branches.py:185 cvekit/utils/branches.py:187
 msgid "已修复"
 msgstr "Fixed"
 
-#: cvekit/utils/branches.py:182
+#: cvekit/utils/branches.py:197
 msgid "不受影响"
 msgstr "Not"
 
-#: cvekit/utils/branches.py:184
+#: cvekit/utils/branches.py:199
 msgid "无"
 msgstr "NULL"
 
-#: cvekit/utils/create_pr.py:73
+#: cvekit/utils/create_pr.py:76
 #, python-format
-msgid "oegitext配置token失败: %s"
-msgstr "Failed to configure the token for oegitext: %s"
+msgid "oegitext配置token失败: %s, stderr: %s"
+msgstr "Failed to configure the token for oegitext: %s, stderr: %s"
 
-#: cvekit/utils/create_pr.py:94
+#: cvekit/utils/create_pr.py:97
 #, python-format
-msgid "提交pr失败: %s"
-msgstr "PR submission failed: %s"
+msgid "提交pr失败: %s, stderr: %s"
+msgstr "PR submission failed: %s, stderr: %s"
 
 #: cvekit/utils/gitee.py:37
 msgid "无效的gitee issue URL格式"

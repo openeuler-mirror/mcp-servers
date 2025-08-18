@@ -84,6 +84,17 @@ def remove_leading_substring(s, substr):
         s = s[substr_len:]
     return s
 
+def read_commit_id_form_url(url):
+    parsed_url = urlparse(url)
+    query_params = parse_qs(parsed_url.query)
+    commit_hash = query_params.get('id', [None])[0]
+
+    if not commit_hash:
+        logger.warning(f"无法从URL提取commit ID: {url}")
+        return None
+
+    return commit_hash
+
 def get_upstream_commit_from_url(commit_url):
     """从commit URL获取真实的上游commit ID"""
     try:
@@ -110,16 +121,9 @@ def get_upstream_commit_from_url(commit_url):
         
         # 如果两种格式都没匹配到，尝试从URL中提取
         if not commit_hash:
-            logger.debug(f"upstream_commit_url {final_url}")
-            parsed_url = urlparse(final_url)
-            query_params = parse_qs(parsed_url.query)
-            commit_hash = query_params.get('id', [None])[0]
-            
-            if not commit_hash:
-                logger.warning(f"无法从URL提取commit ID: {final_url}")
-                return None
+            commit_hash = read_commit_id_form_url(final_url)
         
         return commit_hash
     except Exception as e:
         logger.warning(f"处理commit URL失败 {commit_url}: {str(e)}")
-        return None
+        return read_commit_id_form_url(commit_url)

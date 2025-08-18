@@ -196,9 +196,13 @@ def analyze_branches(
     table += "|--------|----------|------------|----------|--------|--------------|\n"
     
     for item in result:
-        table += f"| {item.get('补丁ID', '')} | {item.get('目标分支', '')} | " \
-            f"{item.get('是否受影响', '')} | {item.get('适配状态', '')} | " \
-            f"{item.get('冲突点', '')} | {item.get('建议调整文件', '')} |\n"
+        cve_id = item.get(i18n('补丁ID'), '')
+        target_branch = item.get(i18n('目标分支'), '')
+        is_affected = item.get(i18n('是否受影响'), '')
+        adapt_status = item.get(i18n('适配状态'), '')
+        conflict_point = item.get(i18n('冲突点'), '')
+        suggess_file = item.get(i18n('建议调整文件'), '')
+        table += f"| {cve_id} | {target_branch} | {is_affected} | {adapt_status} | {conflict_point} | {suggess_file} |\n"
 
     res = i18n("分支分析完成，共发现 %d 个受影响的分支:\n\n") % (len(result))
     res += table
@@ -211,6 +215,7 @@ def analyze_branches(
         对于第四步中分析出的受影响分支，分别应用相对应的patch，参数中的patch_path为第四步的冲突点
         若patch应用成功，提交之后，把该分支推送到fork仓，若patch应用失败，尝试解决冲突后，重新执行该步骤
         本地代码位于工作空间里面的仓库名所在的目录
+        若没有受影响分支，该步骤可跳过
     """))
 def apply_patch(
     issue_url: str = Field(..., description="Gitee Issue URL"),
@@ -233,16 +238,19 @@ def apply_patch(
 
     if 'error' in result or 'error' in result.get('status'):
         return i18n("应用patch失败: %s") % (result['error'])
-    return i18n('patch应用成功, branch: %s, patch: %s') % (branch, patch_path)
+    fix_branch = result.get('fix_branch', '')
+    return i18n('patch应用成功, 目标分支: %s, 修复分支: %s, patch: %s') % (branch, fix_branch, patch_path)
 
 @mcp.tool()
 @update_docstring(i18n("""
     该函数是CVE修复流程的第六步：
-        对于第五步中推送成功的分支，提交pr，若用户未提供目标仓库url，则使用默认的目标仓库
+        对于第五步中修复成功的分支，提交pr，若用户未提供目标仓库url，则使用默认的目标仓库
+        若所有分支均已修复，该步骤可跳过
+        参数中的branch是受影响分支名，提交pr的目标分支
     """))
 def create_pr(
     issue_url: str = Field(..., description="Gitee Issue URL"),
-    branch: Optional[str] = Field(None, description=i18n("提交pr的分支名")),
+    branch: Optional[str] = Field(None, description=i18n("受影响分支名，目标分支")),
     fork_repo_url: Optional[str] = Field(None, description=i18n("fork仓库url")),
     repo_url: Optional[str] = Field('https://gitee.com/openeuler/kernel', description=i18n("目标仓库url")),
     signer_name: Optional[str] = Field(None, description=i18n("提交者姓名")),
