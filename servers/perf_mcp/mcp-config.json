@@ -1,0 +1,6 @@
+{
+  "mcpServers": {
+    "url": "http://0.0.0.0:12141/sse",
+    "server_name": "perf_mcp"
+  }
+}
