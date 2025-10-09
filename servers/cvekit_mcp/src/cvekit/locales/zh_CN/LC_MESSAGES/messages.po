@@ -8,7 +8,7 @@ msgstr ""
 "Project-Id-Version: PROJECT VERSION\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
 "POT-Creation-Date: 2025-08-15 14:21+0800\n"
-"PO-Revision-Date: 2025-08-11 09:34+0800\n"
+"PO-Revision-Date: 2025-10-09 14:30+0800\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_Hans_CN\n"
 "Language-Team: zh_Hans_CN <LL@li.org>\n"
@@ -302,32 +302,32 @@ msgstr ""
 msgid "状态"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:161
+#: cvekit/utils/apply_patch.py:163
 #, python-format
 msgid "生成commit信息失败: %s"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:175
+#: cvekit/utils/apply_patch.py:177
 #, python-format
 msgid "配置用户信息失败: %s"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:193
+#: cvekit/utils/apply_patch.py:195
 #, python-format
 msgid "切换分支失败: %s"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:207
+#: cvekit/utils/apply_patch.py:209
 #, python-format
 msgid "无法完成补丁应用，请检查冲突并重试: %s"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:213
+#: cvekit/utils/apply_patch.py:215
 #, python-format
 msgid "无法应用补丁: %s"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:242
+#: cvekit/utils/apply_patch.py:244
 #, python-format
 msgid "无法推送变更: %s"
 msgstr ""
