@@ -82,7 +82,7 @@ def get_commit_reference(commit_id, repo_path):
         return "unknown", is_stable
 
 
-def generate_patch_header(commit_id, cve_id, bugzilla_url, patch_url, repo_path):
+def generate_patch_header(commit_id, cve_id, bugzilla_url, repo_path):
     """生成符合规范的补丁头"""
     ref_version, is_stable = get_commit_reference(commit_id, repo_path)
 
@@ -91,6 +91,10 @@ def generate_patch_header(commit_id, cve_id, bugzilla_url, patch_url, repo_path)
         from_line = f"from mainline" if not is_stable else f"from stable"
     else:
         from_line = f"from mainline-{ref_version}" if not is_stable else f"from stable-{ref_version}"
+    if is_stable:
+        patch_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id={commit_id}"
+    else:
+        patch_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id={commit_id}"
 
     commit_text = getUrlText(patch_url)
     pattern = re.compile(r"<div class='commit-subject'>(.+?)</div>", re.S)
@@ -103,7 +107,7 @@ def generate_patch_header(commit_id, cve_id, bugzilla_url, patch_url, repo_path)
 
 {inclusion_type}
 {from_line}
-commit id: {commit_id}
+commit {commit_id}
 bugzilla: {bugzilla_url}
 CVE: {cve_id}
 
@@ -119,9 +123,7 @@ Reference: {patch_url}
 def generate_commit_message(cve_id, issue_url, repo_path):
     """生成commit信息"""
     introduced_commit, fixed_commit = get_vulnerability_commits(cve_id)
-    patch_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id={fixed_commit}"
-    message = generate_patch_header(fixed_commit, cve_id, issue_url, patch_url, repo_path=repo_path)
-
+    message = generate_patch_header(fixed_commit, cve_id, issue_url, repo_path=repo_path)
     return message
 
 

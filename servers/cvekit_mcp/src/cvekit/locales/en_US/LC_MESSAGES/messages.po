@@ -8,7 +8,7 @@ msgstr ""
 "Project-Id-Version: PROJECT VERSION\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
 "POT-Creation-Date: 2025-08-15 14:21+0800\n"
-"PO-Revision-Date: 2025-08-11 09:35+0800\n"
+"PO-Revision-Date: 2025-10-09 14:30+0800\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: en_US\n"
 "Language-Team: en_US <LL@li.org>\n"
@@ -365,32 +365,32 @@ msgstr "Affected"
 msgid "状态"
 msgstr "Status"
 
-#: cvekit/utils/apply_patch.py:161
+#: cvekit/utils/apply_patch.py:163
 #, python-format
 msgid "生成commit信息失败: %s"
 msgstr "Failed to generate commit information: %s"
 
-#: cvekit/utils/apply_patch.py:175
+#: cvekit/utils/apply_patch.py:177
 #, python-format
 msgid "配置用户信息失败: %s"
 msgstr "Failed to config user information: %s"
 
-#: cvekit/utils/apply_patch.py:193
+#: cvekit/utils/apply_patch.py:195
 #, python-format
 msgid "切换分支失败: %s"
 msgstr "Failed to switch branches: %s"
 
-#: cvekit/utils/apply_patch.py:207
+#: cvekit/utils/apply_patch.py:209
 #, python-format
 msgid "无法完成补丁应用，请检查冲突并重试: %s"
 msgstr "Can not apply patch, please check for conflicts and try again: %s"
 
-#: cvekit/utils/apply_patch.py:213
+#: cvekit/utils/apply_patch.py:215
 #, python-format
 msgid "无法应用补丁: %s"
 msgstr "Can not apply patch: %s"
 
-#: cvekit/utils/apply_patch.py:242
+#: cvekit/utils/apply_patch.py:244
 #, python-format
 msgid "无法推送变更: %s"
 msgstr "Unable to push changes: %s"
