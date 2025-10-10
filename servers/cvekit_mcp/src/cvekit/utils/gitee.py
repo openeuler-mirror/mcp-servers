@@ -7,7 +7,7 @@ import requests
 import logging
 from typing import Optional, Dict
 
-from .cache import get_cached_data, save_cache
+from .cache import get_cached_data, save_cache, _get_cache_key, ISSUE_CACHE
 from .locales import i18n
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,6 @@ def parse_gitee_issue_url(issue_url: str, gitee_token: Optional[str] = None, use
     Returns:
         dict: 包含issue信息的字典
     """
-    from .cache import _get_cache_key, ISSUE_CACHE
     cache_key = _get_cache_key(issue_url)
     if use_cache:
         cached = get_cached_data(ISSUE_CACHE, cache_key)
@@ -61,6 +60,7 @@ def parse_gitee_issue_url(issue_url: str, gitee_token: Optional[str] = None, use
     
     result_data = {
         "issue_id": issue_id,
+        "issue_url": issue_url,
         "cve_id": cve_id,
         "org_name": org,
         "repo_name": repo,
@@ -182,3 +182,29 @@ def setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name=None):
             repo.git.pull(fork_remote_name, branch_name, "--rebase")
     
     return repo, repo_path
+
+
+def get_issue_url_from_cve_id(cve_id, use_cache=True):
+    request_url = f"https://gitee.com/api/v5/search/issues?q={cve_id}&page=1&per_page=20&repo=src-openeuler%2Fkernel&order=desc"
+    
+    cache_key = _get_cache_key(request_url)
+    if use_cache:
+        cached = get_cached_data(ISSUE_CACHE, cache_key)
+        if cached:
+            return cached
+
+    try:
+        response = requests.get(request_url)
+        response.raise_for_status()
+        issue_data = response.json()
+    except Exception as e:
+        logger.error(f"搜索issues失败: {str(e)}")
+        raise ValueError(i18n("搜索issues失败: %s") % (str(e)))
+    if not issue_data:
+        raise ValueError(i18n("无法搜索到issue， cve id: %s") % cve_id)
+    html_url = issue_data[0].get('html_url')
+    if not html_url:
+        raise ValueError(i18n("获取html_url失败， cve id: %s") % cve_id)
+    if use_cache:
+        save_cache(ISSUE_CACHE, cache_key, html_url)
+    return html_url

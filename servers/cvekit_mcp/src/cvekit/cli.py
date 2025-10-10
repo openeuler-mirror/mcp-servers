@@ -5,7 +5,7 @@ import os
 import json
 
 from tabulate import tabulate
-from .utils.gitee import parse_gitee_issue_url, setup_repository
+from .utils.gitee import parse_gitee_issue_url, setup_repository, get_issue_url_from_cve_id
 from .utils.commits import get_vulnerability_commits
 from .utils.branches import process_branches
 from .utils.cache import get_cached_data, save_cache
@@ -152,6 +152,8 @@ def handle_action(args):
             'status': 'success',
             'repo_path': repo_path
         }
+    if args.cve_id and not args.issue_url:
+        args.issue_url = get_issue_url_from_cve_id(args.cve_id)
 
     cve_id = args.cve_id if args.cve_id else fetch_cve_id(args.issue_url, args.gitee_token, not args.no_cache)
 

@@ -29,8 +29,8 @@ def run_cvekit(action: str, params: dict) -> dict:
             cmd.append('--json')
         
         # 添加公共参数
-        if 'issue_url' in params:
-            cmd.append(f'--issue-url={params["issue_url"]}')
+        if 'cve_id' in params and params["cve_id"]:
+            cmd.append(f'--cve-id={params["cve_id"]}')
         if args.gitee_token:
             cmd.append(f'--gitee-token={args.gitee_token}')
         elif 'gitee_token' in params:
@@ -97,12 +97,12 @@ def run_cvekit(action: str, params: dict) -> dict:
         主要告知用户我们获取的issue_id, cve_id, org_name, repo_name, affected_versions这些是否正确，需要用户确认
     """))
 def parse_issue(
-    issue_url: str = Field(..., description="Gitee Issue URL"),
+    cve_id: str = Field(..., description="cve id"),
     gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
 ) -> str:
     
     result = run_cvekit('parse-issue', {
-        'issue_url': issue_url,
+        'cve_id': cve_id,
         'gitee_token': gitee_token
     })
     
@@ -112,6 +112,7 @@ def parse_issue(
     data = result.get('data', {})
     res = i18n("已解析Issue: %s\n") % (data.get('issue_id', ''))
     res += f"- CVE ID: {data.get('cve_id', '')}\n"
+    res += f"- Issue URL: {data.get('issue_url', '')}\n"
     res += i18n("- 组织: %s\n") % (data.get('org_name', ''))
     res += i18n("- 仓库: %s\n") % (data.get('repo_name', ''))
     res += i18n("- 受影响版本: %s\n") % (data.get('affected_versions', ''))
@@ -143,11 +144,11 @@ def setup_env(
         获取漏洞相关的真实上游提交信息，并将获取到的commit告知给用户
     """))
 def get_commits(
-    issue_url: str = Field(..., description="Gitee Issue URL"),
+    cve_id: str = Field(..., description="cve id"),
     gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
 ) -> str:
     result = run_cvekit('get-commits', {
-        'issue_url': issue_url,
+        'cve_id': cve_id,
         'gitee_token': gitee_token
     })
     
@@ -169,14 +170,14 @@ def get_commits(
         该步骤中的参数branches为kernel的分支名，和issue分析中的受影响版本并不一致，若用户未输入要分析的分支名，使用默认值即可
     """))
 def analyze_branches(
-    issue_url: str = Field(..., description="Gitee Issue URL"),
+    cve_id: str = Field(..., description="cve id"),
     branches: Optional[str] = Field('OLK-5.10,OLK-6.6,master', description=i18n("要分析的分支列表，逗号分隔")),
     signer_name: Optional[str] = Field(None, description=i18n("提交者姓名")),
     signer_email: Optional[str] = Field(None, description=i18n("提交者邮箱")),
     gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
 ) -> str:
     result = run_cvekit('analyze-branches', {
-        'issue_url': issue_url,
+        'cve_id': cve_id,
         'branches': branches,
         'signer_name': signer_name,
         'signer_email': signer_email,
@@ -218,7 +219,7 @@ def analyze_branches(
         若没有受影响分支，该步骤可跳过
     """))
 def apply_patch(
-    issue_url: str = Field(..., description="Gitee Issue URL"),
+    cve_id: str = Field(..., description="cve id"),
     branch: Optional[str] = Field(description=i18n("要应用patch的分支名")),
     fork_repo_url: Optional[str] = Field(description=i18n("fork仓库url")),
     patch_path: Optional[str] = Field(description=i18n("patch路径")),
@@ -227,7 +228,7 @@ def apply_patch(
     gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
 ) -> str:
     result = run_cvekit('apply-patch', {
-        'issue_url': issue_url,
+        'cve_id': cve_id,
         'branch': branch,
         'fork_repo_url': fork_repo_url,
         'patch_path': patch_path,
@@ -249,16 +250,16 @@ def apply_patch(
         参数中的branch是受影响分支名，提交pr的目标分支
     """))
 def create_pr(
-    issue_url: str = Field(..., description="Gitee Issue URL"),
+    cve_id: str = Field(..., description="cve id"),
     branch: Optional[str] = Field(None, description=i18n("受影响分支名，目标分支")),
     fork_repo_url: Optional[str] = Field(None, description=i18n("fork仓库url")),
     repo_url: Optional[str] = Field('https://gitee.com/openeuler/kernel', description=i18n("目标仓库url")),
     signer_name: Optional[str] = Field(None, description=i18n("提交者姓名")),
     signer_email: Optional[str] = Field(None, description=i18n("提交者邮箱")),
-    gitee_token: Optional[str] = Field(description=i18n("Gitee访问令牌"))
+    gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
 ) -> str:
     result = run_cvekit('create-pr', {
-        'issue_url': issue_url,
+        'cve_id': cve_id,
         'branch': branch,
         'fork_repo_url': fork_repo_url,
         'repo_url': repo_url,
