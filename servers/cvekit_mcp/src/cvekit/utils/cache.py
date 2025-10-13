@@ -7,6 +7,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 CACHE_DIR = os.path.expanduser("~/.cve_analyzer_cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
 ISSUE_CACHE = os.path.join(CACHE_DIR, "issue_cache.json")
 COMMITS_CACHE = os.path.join(CACHE_DIR, "COMMITS_CACHE.json")
 
