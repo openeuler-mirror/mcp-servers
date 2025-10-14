@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "patch_analyse": {
+      "type": "streamable-http",
+      "url": "http://0.0.0.0:8100/mcp",
+      "disabled": false,
+      "timeout": 3600,
+      "alwaysAllow": [
+      ]
+    }
+  }
+}

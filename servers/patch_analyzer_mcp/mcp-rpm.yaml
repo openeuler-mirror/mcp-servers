@@ -1,0 +1,22 @@
+name: "patch_analyzer_mcp"
+summary: "Package dependency analyzer for RPM/DNF/PIP"
+description: |
+  A MCP server that provides tools to analyze package dependencies
+  for RPM, DNF and PIP packages, including dependency tree generation.
+
+dependencies:
+  system:
+    - python3
+    - rpm
+    - dnf
+    - python3-pip
+  packages:
+    - fastmcp
+    - gitpython
+
+files:
+  required:
+    - mcp_config.json
+    - src/patch_assistant.py
+  optional:
+    - src/requirements.txt
