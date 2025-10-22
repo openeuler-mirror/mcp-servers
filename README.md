@@ -1,4 +1,4 @@
-# openEuler MCP Servers仓库，欢迎大家贡献,hello
+# openEuler MCP Servers仓库，欢迎大家贡献
 
 <div align="center">
 
