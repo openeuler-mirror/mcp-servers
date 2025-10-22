@@ -37,6 +37,7 @@ def get_vulnerability_commits(cve_id: str, use_cache=True) -> tuple[str, str]:
     cve_detail_link_pattern = re.compile(f".*?<pre>1.*?<b><a.*?href=\"(?P<href>.*?)\">{cve_id}.*?", re.S)
     commit_section_pattern = re.compile(
         ".*?Affected and fixed versions.*?===========================(?P<href_text>.*?)Please see <a", re.S)
+    commit_hash_pattern = re.compile(r'commit (\w+)', re.I)
     cve_detail_link_match = cve_detail_link_pattern.search(search_results_html)
     
     introduced_commit = None
@@ -58,24 +59,21 @@ def get_vulnerability_commits(cve_id: str, use_cache=True) -> tuple[str, str]:
                 line = commit_line.strip()
                 if not line:
                     continue
+                line = line.lower()
                     
-                # 移除开头的"Issue "（如果有）
-                if line.startswith("Issue "):
-                    line = line[6:]
-                parts = line.split(' and ')
-                
-                for part in parts:
-                    words = part.split()
-                    if len(words) < 5:
-                        continue
-                        
-                    if words[0] == 'introduced' and introduced_commit is None:
-                        commit_hash = words[5]
-                        commit_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id={commit_hash}"
+                if 'introduced' in line and not introduced_commit:
+                    intro_pos = line.find('introduced')
+                    hash_match = commit_hash_pattern.search(line, pos=intro_pos)
+                    if hash_match:
+                        commit_hash = hash_match.group(1)
+                        commit_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id={commit_hash}" 
                         introduced_commit = get_upstream_commit_from_url(commit_url)
-                        
-                    elif words[0] == 'fixed' and fixed_commit is None:
-                        commit_hash = words[5]
+            
+                if 'fixed' in line and not fixed_commit:
+                    fixed_pos = line.find('fixed')
+                    hash_match = commit_hash_pattern.search(line, pos=fixed_pos)
+                    if hash_match:
+                        commit_hash = hash_match.group(1)
                         commit_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id={commit_hash}"
                         fixed_commit = get_upstream_commit_from_url(commit_url)
     

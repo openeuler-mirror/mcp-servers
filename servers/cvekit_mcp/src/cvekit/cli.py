@@ -38,10 +38,10 @@ def main():
                       analyze-branches(分析分支,默认),
                       setup-env(设置仓库环境)''')
 
-    # 输入源参数组（互斥组：必须提供CVE ID或Issue URL）
-    input_group = parser.add_argument_group('输入源').add_mutually_exclusive_group(required=False)
+    # 输入源参数组（必须提供Issue URL,可以进一步提供CVE ID）
+    input_group = parser.add_argument_group('输入源')
     input_group.add_argument('--cve-id', type=str, help='CVE ID (例如: CVE-2025-38226)')
-    input_group.add_argument('--issue-url', type=str, help='Gitee Issue URL')
+    input_group.add_argument('--issue-url', type=str, required =True, help='Gitee Issue URL（必须提供，用于解析issue信息）')
 
     # 仓库环境参数
     env_group = parser.add_argument_group('仓库环境参数')
@@ -197,6 +197,18 @@ def handle_parse_issue(args):
 def handle_get_commits(cve_id, use_cache):
     """处理提交获取逻辑"""
     introduced, fixed = get_vulnerability_commits(cve_id, use_cache)
+    if not introduced:
+        return {
+            "action": "get-commits",
+            "cve_id": cve_id,
+            "error": "未能获取完整的引入提交(introduced)，无法继续流程"
+        }
+    if not fixed:
+        return {
+            "action": "get-commits",
+            "cve_id": cve_id,
+            "error": "未能获取完整的修复提交(fixed)，无法继续流程"
+        }
     return {
         "action": "get-commits",
         "cve_id": cve_id,
