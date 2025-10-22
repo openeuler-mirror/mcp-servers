@@ -38,10 +38,10 @@ def main():
                       analyze-branches(分析分支,默认),
                       setup-env(设置仓库环境)''')
 
-    # 输入源参数组（必须提供Issue URL,可以进一步提供CVE ID）
-    input_group = parser.add_argument_group('输入源')
+    # 输入源参数组（互斥组：必须提供CVE ID或Issue URL）
+    input_group = parser.add_argument_group('输入源').add_mutually_exclusive_group(required=False)
     input_group.add_argument('--cve-id', type=str, help='CVE ID (例如: CVE-2025-38226)')
-    input_group.add_argument('--issue-url', type=str, required =True, help='Gitee Issue URL（必须提供，用于解析issue信息）')
+    input_group.add_argument('--issue-url', type=str, help='Gitee Issue URL')
 
     # 仓库环境参数
     env_group = parser.add_argument_group('仓库环境参数')
