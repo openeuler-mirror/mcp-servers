@@ -72,9 +72,13 @@ def get_commit_reference(commit_id, repo_path):
         if '-rc' in name_rev:
             is_stable = False
         # 解析name_rev输出，格式通常为: <commit-hash> tags/<tag-name>~<number>
-        match = re.search(r'tags/([^~]+)', name_rev)
+        match = re.search(r'tags/(v[\d\.\-\w]+)', name_rev)
         if match:
             tag_name = match.group(1)
+            if re.match('v?\d*\.\d*\.\d*', tag_name) and is_stable:
+                is_stable = True
+            else:
+                is_stable = False
             return tag_name, is_stable
         return "unknown", is_stable
     except Exception as e:
