@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "efibootmgr_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/efibootmgr_mcp",
+        "run",
+        "src/server.py"
+      ],
+      "disabled": false
+    }
+  }
+}
