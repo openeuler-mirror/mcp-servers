@@ -61,6 +61,48 @@ def create_pr(
     issue_num = os.path.basename(issue_url)
     fix_branch = f"fix-{branch}-{issue_num}"
 
+
+    repo_path = os.path.join(clone_dir, "kernel")
+    repo = git.Repo(repo_path)
+    try:
+        fork_repo_with_token = fork_repo_url.replace(
+            "https://", 
+            f"https://oauth2:{gitee_token}@"
+        )
+
+        temp_remote_name = fix_branch
+        if temp_remote_name in repo.remotes:
+            repo.delete_remote(temp_remote_name)
+        temp_remote = repo.create_remote(temp_remote_name, url=fork_repo_with_token)
+
+        push_result = temp_remote.push(refspec=fix_branch, force=False)
+
+        for info in push_result:
+            if info.flags & git.PushInfo.ERROR:
+                raise git.GitCommandError(
+                    command="git push",
+                    status=f"推送失败，远程返回错误：{info.summary}"
+                )
+
+        logger.info(f"分支 {fix_branch} 已成功推送到远程 fork 仓库：{fork_repo_url}")
+
+    except git.GitCommandError as e:
+        logger.error(f"推送分支到远程 fork 仓库失败：{str(e)}")
+        # 提取 Git 命令的 stderr 信息（GitPython 错误对象的 stderr 属性）
+        stderr_info = e.stderr if hasattr(e, 'stderr') else "未获取到详细错误信息"
+        return {
+            "status": "error",
+            "error": i18n("推送分支到远程 fork 仓库失败：%s，stderr：%s") % (str(e), stderr_info)
+        }
+    except Exception as e:
+        logger.error(f"推送分支时发生未知错误：{str(e)}")
+        return {
+            "status": "error",
+            "error": i18n("推送分支时发生未知错误：%s") % str(e)
+        }
+    # =====================================================================================
+
+
     try:
         subprocess.run(
             ['oegitext', 'config', '-token', gitee_token],

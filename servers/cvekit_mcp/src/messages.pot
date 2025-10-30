@@ -1,18 +1,17 @@
-# Chinese (Simplified, China) translations for PROJECT.
+# Translations template for PROJECT.
 # Copyright (C) 2025 ORGANIZATION
 # This file is distributed under the same license as the PROJECT project.
 # FIRST AUTHOR <EMAIL@ADDRESS>, 2025.
 #
+#, fuzzy
 msgid ""
 msgstr ""
 "Project-Id-Version: PROJECT VERSION\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
 "POT-Creation-Date: 2025-10-30 10:18+0800\n"
-"PO-Revision-Date: 2025-10-11 16:27+0800\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
-"Language: zh_Hans_CN\n"
-"Language-Team: zh_Hans_CN <LL@li.org>\n"
-"Plural-Forms: nplurals=1; plural=0;\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
@@ -384,169 +383,4 @@ msgstr ""
 #, python-format
 msgid "获取html_url失败， cve id: %s"
 msgstr ""
-
-#~ msgid ""
-#~ "\n"
-#~ "    该函数是CVE修复流程的第四步：\n"
-#~ "        "
-#~ "分析introduced_commit在本地仓库的哪些分支被引入，如果引入的话，是否被fixed了，以此来分析哪些分支需要应用补丁\n"
-#~ ""
-#~ "        并检查从上游获取的补丁直接应用，是否存在冲突\n"
-#~ "        "
-#~ "该步骤中的参数branches为kernel的分支名，和issue分析中的受影响版本并不完全一致，若用户未指定要分析的分支名，采\n"
-#~ ""
-#~ "        用默认值即可\n"
-#~ "    "
-#~ msgstr ""
-
-#~ msgid ""
-#~ "\n"
-#~ "    该函数是CVE修复流程的第四步：\n"
-#~ "        "
-#~ "分析introduced_commit在本地仓库的哪些分支被引入，如果引入的话，是否被fixed了，以此来分析哪些分支需要应用补丁\n"
-#~ ""
-#~ "        并检查从上游获取的补丁直接应用，是否存在冲突\n"
-#~ "        "
-#~ "该步骤中的参数branches为kernel的分支名，和issue分析中的受影响版本并不完全一致，若用户未指定要分析的分支名，使用默认值即可"
-#~ "\n"
-#~ "    "
-#~ msgstr ""
-
-#~ msgid "提交pr源分支名和目标分支名"
-#~ msgstr ""
-
-#~ msgid ""
-#~ "\n"
-#~ "    该函数是CVE修复流程的第四步：\n"
-#~ "        "
-#~ "分析introduced_commit在本地仓库的哪些分支被引入，如果引入的话，是否被fixed了，以此来分析哪些分支需要应用补丁\n"
-#~ ""
-#~ "        并检查从上游获取的补丁直接应用，是否存在冲突\n"
-#~ "        "
-#~ "该步骤中的参数branches为kernel的分支名，和issue分析中的受影响版本并不完全一致，若用户未输入要分析的分支名，使用默认值即可"
-#~ "\n"
-#~ "    "
-#~ msgstr ""
-
-#~ msgid "patch应用成功"
-#~ msgstr ""
-
-#~ msgid "patch应用成功 branch: %s, patch: %s"
-#~ msgstr ""
-
-#~ msgid "cvekit执行失败: "
-#~ msgstr ""
-
-#~ msgid "解析Issue失败: "
-#~ msgstr ""
-
-#~ msgid "已解析Issue "
-#~ msgstr ""
-
-#~ msgid "- 组织: "
-#~ msgstr ""
-
-#~ msgid "- 仓库: "
-#~ msgstr ""
-
-#~ msgid "- 受影响版本: "
-#~ msgstr ""
-
-#~ msgid "已解析Issue %s:\n"
-#~ msgstr ""
-
-#~ msgid "本地仓库克隆目录"
-#~ msgstr ""
-
-#~ msgid ""
-#~ "\n"
-#~ "    该函数是CVE修复流程的第五步：\n"
-#~ "        对于第四步中分析出的受影响分支，分别应用相对应的patch，参数中的patch_path为第四步的冲突点，\n"
-#~ "        若patch应用成功，提交之后，把该分支推送到fork仓，若patch应用失败，尝试解决冲突后，重新执行该步骤\n"
-#~ "    "
-#~ msgstr ""
-
-#~ msgid ""
-#~ "\n"
-#~ "    该函数是CVE修复流程的第五步：\n"
-#~ "        对于第四步中分析出的受影响分支，分别应用相对应的patch，参数中的patch_path为第四步的冲突点\n"
-#~ "        若patch应用成功，提交之后，把该分支推送到fork仓，若patch应用失败，尝试解决冲突后，重新执行该步骤\n"
-#~ "        代码所在为工作空间里面的仓库名所在的目录\n"
-#~ "    "
-#~ msgstr ""
-
-#~ msgid "解析Issue失败: %s "
-#~ msgstr ""
-
-#~ msgid "需要调整"
-#~ msgstr ""
-
-#~ msgid ""
-#~ "\n"
-#~ "    该函数是CVE修复流程的第五步：\n"
-#~ "        对于第四步中分析出的受影响分支，分别应用相对应的patch，参数中的patch_path为第四步的冲突点\n"
-#~ "        若patch应用成功，提交之后，把该分支推送到fork仓，若patch应用失败，尝试解决冲突后，重新执行该步骤\n"
-#~ "        本地代码位于工作空间里面的仓库名所在的目录\n"
-#~ "    "
-#~ msgstr ""
-
-#~ msgid ""
-#~ "\n"
-#~ "    该函数是CVE修复流程的第六步：\n"
-#~ "        对于第五步中推送成功的分支，提交pr，若用户未提供目标仓库url，则使用默认的目标仓库\n"
-#~ "    "
-#~ msgstr ""
-
-#~ msgid "patch应用成功, branch: %s, patch: %s"
-#~ msgstr ""
-
-#~ msgid "提交pr的分支名"
-#~ msgstr ""
-
-#~ msgid ""
-#~ "\n"
-#~ "    该函数是CVE修复流程的第六步：\n"
-#~ "        对于第五步中推送成功的分支，提交pr，若用户未提供目标仓库url，则使用默认的目标仓库\n"
-#~ "        若所有分支均已修复，该步骤可跳过\n"
-#~ "    "
-#~ msgstr ""
-
-#~ msgid ""
-#~ "\n"
-#~ "    该函数是CVE修复流程的第六步：\n"
-#~ "        对于第五步中修复成功的分支，提交pr，若用户未提供目标仓库url，则使用默认的目标仓库\n"
-#~ "        若所有分支均已修复，该步骤可跳过\n"
-#~ "    "
-#~ msgstr ""
-
-#~ msgid "受影响分支名，源分支"
-#~ msgstr ""
-
-#~ msgid "patch应用成功, 源分支: %s, 修复分支: %s, patch: %s"
-#~ msgstr ""
-
-#~ msgid "oegitext配置token失败: %s"
-#~ msgstr ""
-
-#~ msgid "提交pr失败: %s"
-#~ msgstr ""
-
-#~ msgid ""
-#~ "\n"
-#~ "    该函数是CVE修复流程的第一步：\n"
-#~ "        通过调用gitee的api，解析gitee issue URL并获取基本信息\n"
-#~ "        在这里将通过issue_url解析得到的issue_info以json格式反馈给用户\n"
-#~ "        主要告知用户我们获取的issue_id, cve_id, org_name, "
-#~ "repo_name, affected_versions这些是否正确，需要用户确认\n"
-#~ "    "
-#~ msgstr ""
-
-#~ msgid "请确认以上信息是否正确"
-#~ msgstr ""
-
-#~ msgid "请确认以上提交信息是否正确"
-#~ msgstr ""
-
-#~ msgid "请确认以上分析结果"
-#~ msgstr ""
 

@@ -23,8 +23,9 @@ args, _ = parser.parse_known_args()
 @update_docstring(i18n("""执行cvekit命令并返回结果"""))
 def run_cvekit(action: str, params: dict) -> dict:
     try:
+        env = os.environ.copy()
         # 构建基础命令
-        cmd = ['cvekit', f'--action={action}']
+        cmd = ['/home/dev/exit/envs/camel_env/bin/python','-m','cvekit.cli',f'--action={action}']
         if action != 'setup-env':
             cmd.append('--json')
         
@@ -74,13 +75,14 @@ def run_cvekit(action: str, params: dict) -> dict:
         result = subprocess.run(
             cmd,
             check=True,
+            env = env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
         )
         
         return json.loads(result.stdout)
-        
+
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr if e.stderr else str(e)
         logging.error(i18n("cvekit执行失败: %s") % (str(error_msg)))
@@ -94,7 +96,7 @@ def run_cvekit(action: str, params: dict) -> dict:
     该函数是CVE修复流程的第一步：
         通过调用gitee的api，解析gitee issue URL并获取基本信息
         在这里将通过issue_url解析得到的issue_info以json格式反馈给用户
-        主要告知用户我们获取的issue_id, cve_id, org_name, repo_name, affected_versions这些是否正确，需要用户确认
+        主要告知用户我们获取的issue_id, cve_id, org_name, repo_name, affected_versions这些是否正确
     """))
 def parse_issue(
     cve_id: str = Field(..., description="cve id"),
@@ -116,7 +118,7 @@ def parse_issue(
     res += i18n("- 组织: %s\n") % (data.get('org_name', ''))
     res += i18n("- 仓库: %s\n") % (data.get('repo_name', ''))
     res += i18n("- 受影响版本: %s\n") % (data.get('affected_versions', ''))
-    res += i18n("请确认以上信息是否正确")
+    # res += i18n("请确认以上信息是否正确")
     return res
 
 @mcp.tool()
@@ -159,7 +161,7 @@ def get_commits(
     res = i18n("已获取CVE %s的提交信息:\n") % (result.get('cve_id', ''))
     res += i18n("- 引入漏洞的提交: %s\n") % (result.get('introduced', ''))
     res += i18n("- 修复漏洞的提交: %s\n") % (result.get('fixed', ''))
-    res += i18n("请确认以上提交信息是否正确")
+    # res += i18n("请确认以上提交信息是否正确")
     return res
 
 @mcp.tool()
@@ -207,7 +209,7 @@ def analyze_branches(
 
     res = i18n("分支分析完成，共发现 %d 个受影响的分支:\n\n") % (len(result))
     res += table
-    res += i18n("请确认以上分析结果")
+    # res += i18n("请确认以上分析结果")
     return res
 
 @mcp.tool()
