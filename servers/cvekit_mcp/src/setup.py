@@ -5,6 +5,7 @@ setup(
     version="1.0.0",
     description="CVE analysis and management toolkit",
     packages=find_packages(),
+    include_package_data=True,
     install_requires=[
         "tabulate",
     ],

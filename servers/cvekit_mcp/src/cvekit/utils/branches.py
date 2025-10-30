@@ -4,6 +4,7 @@ import os
 from .gitee import setup_repository
 from .patch import get_cve_patch, getUrlText
 from .commits import get_vulnerability_commits
+from .locales import i18n
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,20 @@ def get_branches_containing_commit(repo, commit_hash):
     except Exception as e:
         logger.error(f"获取包含commit的分支失败: {str(e)}")
         return []
+
+def get_branches_containing_fixed_commit(repo, branches, commit_hash):
+    """获取包含指定commit的所有分支（包括远程分支）"""
+    result = []
+    for branch in branches:
+        try:
+            # 获取所有包含该commit的分支（包括远程分支
+            res = repo.git.log("--grep", commit_hash, f"origin/{branch}")
+            if res:
+                result.append(branch)
+        except Exception as e:
+            logger.error(f"获取包含commit的分支失败: {str(e)}")
+            return result
+    return result
 
 def git_apply_check_patch(
         fork_repo_url: str,
@@ -115,8 +130,9 @@ def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, si
     
     vulnerable_branches = get_branches_containing_commit(repo, issue_info.introduced_commit)
     logger.info(f"包含引入commit的分支: {vulnerable_branches}")
-    
-    fixed_branches = get_branches_containing_commit(repo, issue_info.fixed_commit)
+
+    analyse_fix_brancees = [branch for branch in vulnerable_branches if branch in branchList]
+    fixed_branches = get_branches_containing_fixed_commit(repo, analyse_fix_brancees, issue_info.fixed_commit)
     logger.info(f"包含修复commit的分支: {fixed_branches}")
     
     needs_patch_branches = [branch for branch in vulnerable_branches
@@ -144,44 +160,44 @@ def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, si
         for patch in patchs:
             if patch['status'] == 'success':
                 items.append({
-                    "补丁ID": issue_info.cve_id,
-                    "目标分支": branch,
-                    "是否受影响": "受影响",
-                    "适配状态": "成功",
-                    "冲突点": patch['patch_path'],
-                    "建议调整文件": "N/A",
+                    i18n("补丁ID"): issue_info.cve_id,
+                    i18n("目标分支"): branch,
+                    i18n("是否受影响"): i18n("受影响"),
+                    i18n("适配状态"): i18n("成功"),
+                    i18n("冲突点"): patch['patch_path'],
+                    i18n("建议调整文件"): "N/A",
                 })
             else:
                 items.append({
-                    "补丁ID": issue_info.cve_id,
-                    "目标分支": branch,
-                    "是否受影响": "受影响",
-                    "适配状态": "需要调整",
-                    "冲突点": patch['patch_path'],
-                    "建议调整文件": "",
+                    i18n("补丁ID"): issue_info.cve_id,
+                    i18n("目标分支"): branch,
+                    i18n("是否受影响"): i18n("受影响"),
+                    i18n("适配状态"): i18n("需要调整"),
+                    i18n("冲突点"): patch['patch_path'],
+                    i18n("建议调整文件"): "",
                 })
     
     fixed_in_branches = [branch for branch in branchList if branch in fixed_branches]
     for branch in fixed_in_branches:
         items.append({
-            "补丁ID": issue_info.cve_id,
-            "目标分支": branch,
-            "是否受影响": "已修复",
-            "适配状态": "",
-            "冲突点": "已修复",
-            "建议调整文件": "N/A",
+            i18n("补丁ID"): issue_info.cve_id,
+            i18n("目标分支"): branch,
+            i18n("是否受影响"): i18n("已修复"),
+            i18n("适配状态"): "",
+            i18n("冲突点"): i18n("已修复"),
+            i18n("建议调整文件"): "N/A",
         })
     
     unaffected_branches = [branch for branch in branchList
                           if branch not in vulnerable_branches and branch not in fixed_branches]
     for branch in unaffected_branches:
         items.append({
-            "补丁ID": issue_info.cve_id,
-            "目标分支": branch,
-            "是否受影响": "不受影响",
-            "适配状态": "",
-            "冲突点": "无",
-            "建议调整文件": "N/A",
+            i18n("补丁ID"): issue_info.cve_id,
+            i18n("目标分支"): branch,
+            i18n("是否受影响"): i18n("不受影响"),
+            i18n("适配状态"): "",
+            i18n("冲突点"): i18n("无"),
+            i18n("建议调整文件"): "N/A",
         })
     
     return items

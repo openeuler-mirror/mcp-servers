@@ -5,8 +5,10 @@ import subprocess
 import git
 import requests
 import logging
-from .cache import get_cached_data, save_cache
 from typing import Optional, Dict
+
+from .cache import get_cached_data, save_cache, _get_cache_key, ISSUE_CACHE
+from .locales import i18n
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +24,6 @@ def parse_gitee_issue_url(issue_url: str, gitee_token: Optional[str] = None, use
     Returns:
         dict: 包含issue信息的字典
     """
-    from .cache import _get_cache_key, ISSUE_CACHE
     cache_key = _get_cache_key(issue_url)
     if use_cache:
         cached = get_cached_data(ISSUE_CACHE, cache_key)
@@ -32,13 +33,13 @@ def parse_gitee_issue_url(issue_url: str, gitee_token: Optional[str] = None, use
         pattern = r"https://gitee.com/([^/]+)/([^/]+)/issues/([^/]+)"
         match = re.match(pattern, issue_url)
         if not match:
-            raise ValueError("无效的gitee issue URL格式")
+            raise ValueError(i18n("无效的gitee issue URL格式"))
         org = match.group(1)
         repo = match.group(2)
         issue_id = match.group(3)
     except Exception as e:
         logger.error(f"解析issue URL失败: {str(e)}")
-        raise ValueError(f"无法解析issue URL: {str(e)}")
+        raise ValueError(i18n("解析issue URL失败: %s") % (str(e)))
     
     # 从Gitee API获取issue描述
     try:
@@ -59,6 +60,7 @@ def parse_gitee_issue_url(issue_url: str, gitee_token: Optional[str] = None, use
     
     result_data = {
         "issue_id": issue_id,
+        "issue_url": issue_url,
         "cve_id": cve_id,
         "org_name": org,
         "repo_name": repo,
@@ -116,16 +118,16 @@ def _clone_repository(
         )
         
         if not os.path.exists(os.path.join(local_path, '.git')):
-            raise RuntimeError(f"仓库克隆失败: {local_path}")
+            raise RuntimeError(i18n("仓库克隆失败: %s") % (local_path))
         
         return local_path
     
     except subprocess.CalledProcessError as e:
         logger.error(f"克隆命令执行失败: {str(e)}")
-        raise RuntimeError(f"无法克隆仓库: {str(e)}")
+        raise RuntimeError(i18n("无法克隆仓库: %s") % (str(e)))
     except Exception as e:
         logger.error(f"克隆操作失败: {str(e)}")
-        raise RuntimeError(f"无法克隆仓库: {str(e)}")
+        raise RuntimeError(i18n("无法克隆仓库: %s") % (str(e)))
 
 
 def setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name=None):
@@ -171,12 +173,38 @@ def setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name=None):
     # 创建或切换到本地分支
     if branch_name:
         remote_branch_ref = f"{fork_remote_name}/{branch_name}"
-        if branch_name not in repo.heads:
+        if branch_name not in repo.git.branch().split():
             logging.info(f"设置仓库，切换分支：{branch_name}， 同步远程分支：{remote_branch_ref}")
             repo.git.checkout('-b', branch_name, remote_branch_ref)
         else:
             logging.info(f"设置仓库，切换本地分支：{branch_name}，同步{fork_remote_name}代码")
             repo.git.checkout(branch_name)
-            repo.git.pull(fork_remote_name, branch_name)
+            repo.git.pull(fork_remote_name, branch_name, "--rebase")
     
     return repo, repo_path
+
+
+def get_issue_url_from_cve_id(cve_id, use_cache=True):
+    request_url = f"https://gitee.com/api/v5/search/issues?q={cve_id}&page=1&per_page=20&repo=src-openeuler%2Fkernel&order=desc"
+    
+    cache_key = _get_cache_key(request_url)
+    if use_cache:
+        cached = get_cached_data(ISSUE_CACHE, cache_key)
+        if cached:
+            return cached
+
+    try:
+        response = requests.get(request_url)
+        response.raise_for_status()
+        issue_data = response.json()
+    except Exception as e:
+        logger.error(f"搜索issues失败: {str(e)}")
+        raise ValueError(i18n("搜索issues失败: %s") % (str(e)))
+    if not issue_data:
+        raise ValueError(i18n("无法搜索到issue， cve id: %s") % cve_id)
+    html_url = issue_data[0].get('html_url')
+    if not html_url:
+        raise ValueError(i18n("获取html_url失败， cve id: %s") % cve_id)
+    if use_cache:
+        save_cache(ISSUE_CACHE, cache_key, html_url)
+    return html_url

@@ -1,0 +1,16 @@
+name: "efibootmgr_mcp"
+summary: "EFI Boot Manager MCP"
+description: |
+  An MCP server that manages EFI boot entries using efibootmgr.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - efibootmgr
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py

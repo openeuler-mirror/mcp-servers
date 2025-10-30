@@ -3,9 +3,11 @@ import logging
 import subprocess
 import re
 import json
+import os
 
 from .patch import getUrlText
 from .commits import get_vulnerability_commits
+from .locales import i18n
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +47,7 @@ def create_pr(
         clone_dir: 本地克隆目录
 
     Returns:
-        是否合并提交成功
+        PR创建结果字典
     """
     # 解析repo URL获取组织名和仓库名
     parts = fork_repo_url.strip().rstrip('/').split('/')
@@ -56,6 +58,8 @@ def create_pr(
     base_repo_name = parts[-1].replace('.git', '')
     title = f"Fix {cve_id}"
     body = generate_pr_body(cve_id, issue_url)
+    issue_num = os.path.basename(issue_url)
+    fix_branch = f"fix-{branch}-{issue_num}"
 
     try:
         subprocess.run(
@@ -69,12 +73,12 @@ def create_pr(
         logger.error(f"oegitext配置token失败: {str(e)}")
         return {
             "status": "error",
-            "error": f"oegitext配置token失败: {str(e)}"
+            "error": i18n("oegitext配置token失败: %s, stderr: %s") % (str(e), str(e.stderr))
         }
 
     cmd = [
         'oegitext', 'pull', '-cmd', 'create', '-user', base_org_name, '-repo', base_repo_name,
-        '-title', title, '-head', f'{head_org_name}/{head_repo_name}:{branch}', '-base', f'{branch}',
+        '-title', title, '-head', f'{head_org_name}/{head_repo_name}:{fix_branch}', '-base', f'{branch}',
         '-body', body, '-show'
         ]
 
@@ -90,7 +94,7 @@ def create_pr(
         logger.error(f"提交pr失败: {str(e)}")
         return {
             "status": "error",
-            "error": f"提交pr失败: {str(e)}"
+            "error": i18n("提交pr失败: %s, stderr: %s") % (str(e), str(e.stderr))
         }
     result = json.loads(result.stdout)
 

@@ -5,12 +5,13 @@ import os
 import json
 
 from tabulate import tabulate
-from .utils.gitee import parse_gitee_issue_url, setup_repository
+from .utils.gitee import parse_gitee_issue_url, setup_repository, get_issue_url_from_cve_id
 from .utils.commits import get_vulnerability_commits
 from .utils.branches import process_branches
 from .utils.cache import get_cached_data, save_cache
 from .utils.apply_patch import apply_patch
 from .utils.create_pr import create_pr
+from .utils.locales import i18n
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,10 @@ def main():
                       parse-issue(解析issue),
                       get-commits(获取提交),
                       analyze-branches(分析分支,默认),
-                      setup-env(设置仓库环境)''')
+                      setup-env(设置仓库环境),
+                      apply-patch(应用patch),
+                      create-pr(创建PR)''')
+
 
     # 输入源参数组（互斥组：必须提供CVE ID或Issue URL）
     input_group = parser.add_argument_group('输入源').add_mutually_exclusive_group(required=False)
@@ -52,7 +56,7 @@ def main():
     env_group.add_argument('--gitee-token', type=str,
                          help='Gitee访问令牌(也可通过GITEE_TOKEN环境变量设置)')
     env_group.add_argument('--clone-dir', type=str,
-                         help='本地仓库克隆目录 (也可通过CLONE_DIR环境变量设置)')
+                         help='克隆仓库工作目录 (也可通过CLONE_DIR环境变量设置)，仓库目录该目录下仓库名文件夹中')
 
     # 分支分析专用参数
     branch_group = parser.add_argument_group('分支分析参数')
@@ -126,6 +130,12 @@ def main():
         logger.error(f"执行失败: {str(e)}")
         if args.debug:
             logger.exception("错误详情")
+        result = {
+            'status': 'failed',
+            'action': args.action,
+            'message': str(e)
+        }
+        format_output(result, args)
         sys.exit(1)
 
 def handle_action(args):
@@ -142,6 +152,8 @@ def handle_action(args):
             'status': 'success',
             'repo_path': repo_path
         }
+    if args.cve_id and not args.issue_url:
+        args.issue_url = get_issue_url_from_cve_id(args.cve_id)
 
     cve_id = args.cve_id if args.cve_id else fetch_cve_id(args.issue_url, args.gitee_token, not args.no_cache)
 
@@ -220,7 +232,7 @@ def fetch_cve_id(issue_url, gitee_token, use_cache):
     """从issue URL自动获取CVE ID"""
     issue_data = parse_gitee_issue_url(issue_url, gitee_token, use_cache)
     if not issue_data.get('cve_id'):
-        raise ValueError("提供的issue中未找到CVE ID")
+        raise ValueError(i18n("提供的issue中未找到CVE ID"))
     return issue_data['cve_id']
 
 def handle_analyze_branches(args):
@@ -270,21 +282,21 @@ def format_output(result, args):
     elif args.table and isinstance(result, list):
         _display_branch_table(result)
     else:
-        print("\n分析结果:")
-        print(result) if result else print("无结果输出")
+        print(i18n("\n分析结果:"))
+        print(result) if result else print(i18n("无结果输出"))
 
 def _display_branch_table(branches):
     """显示分支分析表格"""
     table_data = []
     for branch in branches:
         table_data.append([
-            branch['目标分支'],
-            branch['是否受影响'],
-            branch['适配状态'],
-            branch['冲突点'][:50] + '...' if len(branch['冲突点']) > 50 else branch['冲突点']
+            branch[i18n('目标分支')],
+            branch[i18n('是否受影响')],
+            branch[i18n('适配状态')],
+            branch[i18n('冲突点')][:50] + '...' if len(branch[i18n('冲突点')]) > 50 else branch[i18n('冲突点')]
         ])
     print(tabulate(table_data,
-                  headers=['分支', '受影响', '状态', '冲突点'],
+                  headers=[i18n('分支'), i18n('受影响'), i18n('状态'), i18n('冲突点')],
                   tablefmt='grid'))
 
 if __name__ == "__main__":
