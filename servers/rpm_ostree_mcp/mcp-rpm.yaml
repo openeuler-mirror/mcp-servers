@@ -1,4 +1,4 @@
-name: "rpm-oetree-mcp"
+name: "rpm-ostree-mcp"
 summary: "MCP server for rpm-ostree management"
 description: |
   Provides MCP tools for managing rpm-ostree operations,
