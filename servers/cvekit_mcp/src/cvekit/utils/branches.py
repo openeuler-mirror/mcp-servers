@@ -1,52 +1,190 @@
 import git
 import logging
 import os
+from datetime import datetime
+
 from .gitee import setup_repository
 from .patch import get_cve_patch, getUrlText
 from .commits import get_vulnerability_commits
 from .locales import i18n
+from .cache import BRANCHES_ANALYSIS_CACHE, _get_cache_key, cached
+from .tools.project import safe_git_reset_hard
 
 logger = logging.getLogger(__name__)
 
-def get_branches_containing_commit(repo, commit_hash):
-    """获取包含指定commit的所有分支（包括远程分支）"""
-    try:
-        # 获取所有包含该commit的分支（包括远程分支）
-        output = repo.git.branch("-a", "--contains", commit_hash)
-        branches = []
-        for branch in output.splitlines():
-            branch = branch.strip('*').strip()
-            # 处理远程分支（格式：remotes/origin/分支名）
-            if branch.startswith('remotes/'):
-                # 提取最后一部分作为分支名
-                branch = branch.split('/')[-1]
-            branches.append(branch)
-        
-        # 去重并保持顺序
-        seen = set()
-        unique_branches = []
-        for branch in branches:
-            if branch not in seen:
-                seen.add(branch)
-                unique_branches.append(branch)
-                
-        return unique_branches
-    except Exception as e:
-        logger.error(f"获取包含commit的分支失败: {str(e)}")
-        return []
-
-def get_branches_containing_fixed_commit(repo, branches, commit_hash):
-    """获取包含指定commit的所有分支（包括远程分支）"""
-    result = []
-    for branch in branches:
+def get_commit_date(repo, commit_hash, linux_repo=None):
+    """获取commit的提交时间（Unix时间戳）
+    
+    Args:
+        repo: Git仓库对象（kernel仓库，用于回退）
+        commit_hash: 要查询的commit hash
+        linux_repo: 可选，linux仓库对象，优先从linux仓库查询
+    """
+    # 优先从linux仓库查询
+    if linux_repo is not None:
         try:
-            # 获取所有包含该commit的分支（包括远程分支
-            res = repo.git.log("--grep", commit_hash, f"origin/{branch}")
-            if res:
-                result.append(branch)
+            commit = linux_repo.commit(commit_hash)
+            return commit.committed_date
         except Exception as e:
-            logger.error(f"获取包含commit的分支失败: {str(e)}")
-            return result
+            logger.debug(f"无法从linux仓库获取commit {commit_hash} 的提交时间: {str(e)}，尝试从kernel仓库查询")
+    
+    # 如果linux仓库查询失败，从kernel仓库查询
+    try:
+        commit = repo.commit(commit_hash)
+        return commit.committed_date
+    except Exception as e:
+        logger.warning(f"无法获取commit {commit_hash} 的提交时间: {str(e)}")
+        return None
+
+def get_commit_message(repo, commit_hash, linux_repo=None, max_length=200):
+    """获取commit的提交信息（commit message）
+    
+    Args:
+        repo: Git仓库对象（kernel仓库，用于回退）
+        commit_hash: 要查询的commit hash
+        linux_repo: 可选，linux仓库对象，优先从linux仓库查询
+        max_length: 最大长度，超过则截断
+    """
+    # 优先从linux仓库查询
+    if linux_repo is not None:
+        try:
+            commit = linux_repo.commit(commit_hash)
+            message = commit.message.strip()
+            # 只取第一行（标题）
+            first_line = message.split('\n')[0]
+            if len(first_line) > max_length:
+                return first_line[:max_length] + "..."
+            return first_line
+        except Exception as e:
+            logger.debug(f"无法从linux仓库获取commit {commit_hash} 的提交信息: {str(e)}，尝试从kernel仓库查询")
+    
+    # 如果linux仓库查询失败，从kernel仓库查询
+    try:
+        commit = repo.commit(commit_hash)
+        message = commit.message.strip()
+        # 只取第一行（标题）
+        first_line = message.split('\n')[0]
+        if len(first_line) > max_length:
+            return first_line[:max_length] + "..."
+        return first_line
+    except Exception as e:
+        logger.debug(f"无法获取commit {commit_hash} 的提交信息: {str(e)}")
+        return None
+
+def get_branches_containing_commit(repo, commit_hash, target_branches, linux_repo=None):
+    """获取包含指定commit的分支，使用时间范围优化查询
+    
+    Args:
+        repo: Git仓库对象（kernel仓库）
+        commit_hash: 要查询的commit hash
+        target_branches: 指定要查询的分支列表
+        linux_repo: 可选，linux仓库对象，用于查询commit时间
+    """
+    if not target_branches:
+        return []
+    
+    result = []
+    
+    # 获取commit的提交时间（优先从linux仓库查询）
+    commit_date = get_commit_date(repo, commit_hash, linux_repo=linux_repo)
+    
+    # 为每个分支找到正确的分支引用
+    unique_branches = []
+    for branch_name in target_branches:
+        # 尝试多种分支引用格式
+        branch_refs = [
+            branch_name,  # 本地分支
+            f"origin/{branch_name}",  # origin远程分支
+        ]
+        # 查找fork远程名称
+        try:
+            remotes = repo.git.remote().splitlines()
+            for remote in remotes:
+                if remote != 'origin':
+                    branch_refs.append(f"{remote}/{branch_name}")
+        except Exception:
+            pass
+        
+        # 尝试每个分支引用，找到第一个存在的
+        found = False
+        for branch_ref in branch_refs:
+            try:
+                # 尝试检查分支是否存在（通过尝试获取分支的HEAD）
+                repo.git.rev_parse(branch_ref)
+                unique_branches.append((branch_name, branch_ref))
+                found = True
+                break
+            except git.exc.GitCommandError:
+                continue
+        
+        if not found:
+            logger.debug(f"分支 {branch_name} 不存在，跳过")
+    
+    if not unique_branches:
+        return []
+    
+    # 如果无法获取commit时间，回退到原始方法
+    if commit_date is None:
+        logger.debug(f"无法获取commit时间，使用原始方法查询: {commit_hash}")
+        for branch_name, branch_ref in unique_branches:
+            try:
+                if repo.git.branch("--contains", commit_hash, branch_ref):
+                    result.append(branch_name)
+            except Exception:
+                continue
+        return result
+    
+    # 将Unix时间戳转换为日期格式（YYYY-MM-DD）
+    date_str = datetime.fromtimestamp(commit_date).strftime('%Y-%m-%d')
+    logger.debug(f"使用时间范围优化查询: commit={commit_hash}, date={date_str}")
+    
+    # 对每个分支，使用时间范围查询
+    for branch_name, branch_ref in unique_branches:
+        found = False
+        try:
+            # 方法1: 直接检查commit是否在分支历史中
+            # 使用 --since 参数限制查询范围，只查询该commit提交时间之后的commit
+            # 直接查询该时间之后的commit hash列表，然后检查目标commit是否在其中
+            log_output = repo.git.log(
+                "--since", date_str,
+                "--format=%H",
+                branch_ref
+            )
+            # 检查目标commit是否在结果中
+            if log_output and (commit_hash in log_output or commit_hash[:12] in log_output):
+                found = True
+        except git.exc.GitCommandError:
+            pass
+        except Exception as e:
+            logger.debug(f"查询分支 {branch_name} 的commit历史时出错: {str(e)}")
+        
+        # 方法2: 如果方法1没找到，检查commit message中是否提到这个commit hash
+        # 这适用于通过PR合入的情况，commit message中可能会提到上游commit hash
+        if not found:
+            try:
+                grep_output = repo.git.log(
+                    "--since", date_str,
+                    "--grep", commit_hash,
+                    branch_ref
+                )
+                if grep_output:
+                    found = True
+            except git.exc.GitCommandError:
+                pass
+            except Exception as e:
+                logger.debug(f"查询分支 {branch_name} 的commit message时出错: {str(e)}")
+        
+        # 如果两种方法都没找到，尝试使用原始方法（不使用时间范围）
+        if not found:
+            try:
+                if repo.git.branch("--contains", commit_hash, branch_ref):
+                    found = True
+            except Exception:
+                pass
+        
+        if found:
+            result.append(branch_name)
+    
     return result
 
 def git_apply_check_patch(
@@ -56,6 +194,7 @@ def git_apply_check_patch(
         branch_name: str,
         clone_dir: str = os.path.join(os.path.expanduser("~"), "Image"),
         patch_url: str = "",
+        repo: git.Repo = None,
 ):
     logger.info(f"检查补丁能否应用: {commit_hash}")
     if not patch_url:
@@ -67,7 +206,21 @@ def git_apply_check_patch(
     with open(patch_path, "w") as f:
         f.write(getUrlText(patch_url))
  
-    repo, repo_path = setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name)
+    # 如果提供了 repo，直接使用；否则调用 setup_repository（会使用缓存）
+    if repo is None:
+        repo, repo_path = setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name)
+    else:
+        repo_path = repo.working_dir
+        # 确保切换到正确的分支（如果提供了 repo）
+        try:
+            current_branch = repo.active_branch.name if not repo.head.is_detached else None
+            if current_branch != branch_name:
+                logger.debug(f"切换到分支: {branch_name}")
+                repo.git.checkout(branch_name)
+        except Exception as e:
+            # 如果分支不存在，调用 setup_repository 来创建分支
+            logger.debug(f"分支 {branch_name} 不存在，调用 setup_repository 创建: {str(e)}")
+            repo, repo_path = setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name)
     
     # 检查补丁是否可应用
     try:
@@ -92,7 +245,8 @@ def check_cve_patch_apply_status(
         gitee_token: str,
         branch_name: str,
         fixed_commit: str = "",
-        clone_dir: str = os.path.join(os.path.expanduser("~"), "Image")
+        clone_dir: str = os.path.join(os.path.expanduser("~"), "Image"),
+        repo: git.Repo = None,
 ):
     try:
         patch_api_url = 'https://api.openeuler.org/cve-manager/v1/cve/detail/patch?cve_num=' + cve_id
@@ -108,7 +262,7 @@ def check_cve_patch_apply_status(
             commit_hash = patch_info["hash"]
             patch_url = patch_info["patch_url"]
         
-        # 处理单个补丁
+        # 处理单个补丁，传递 repo 参数避免重复调用 setup_repository
         item = git_apply_check_patch(
             fork_repo_url,
             commit_hash,
@@ -116,6 +270,7 @@ def check_cve_patch_apply_status(
             branch_name,
             clone_dir,
             patch_url,
+            repo=repo,
         )
         return [item]
         
@@ -123,16 +278,54 @@ def check_cve_patch_apply_status(
         logger.error(f"获取补丁信息失败: {str(e)}")
         return []
 
-def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, signer_name, signer_email, branchList):
-    """处理所有需要补丁的分支"""
+@cached(
+    BRANCHES_ANALYSIS_CACHE,
+    key_builder=lambda repo, issue_info, fork_repo_url, gitee_token, clone_dir, branchList, use_cache=True: _get_cache_key(
+        issue_info.cve_id, ",".join(sorted(branchList))
+    ),
+    use_cache_kw="use_cache",
+)
+def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, branchList, use_cache=True):
+    """处理所有需要补丁的分支
+    
+    Args:
+        repo: Git仓库对象
+        issue_info: 问题信息对象
+        fork_repo_url: Fork仓库URL
+        gitee_token: Gitee访问令牌
+        clone_dir: 克隆目录
+        branchList: 分支列表
+        use_cache: 是否使用缓存
+    """
     logger.info(f"分析分支: {branchList}")
+    
+    # 缓存未命中，执行分析
     items = []
     
-    vulnerable_branches = get_branches_containing_commit(repo, issue_info.introduced_commit)
+    # 尝试从linux仓库获取commit时间
+    linux_repo = None
+    linux_repo_path = os.path.join(clone_dir, "linux")
+    if os.path.exists(linux_repo_path):
+        try:
+            linux_repo = git.Repo(linux_repo_path)
+            logger.debug(f"使用linux仓库查询commit时间: {linux_repo_path}")
+        except Exception as e:
+            logger.debug(f"无法打开linux仓库: {linux_repo_path}, {str(e)}")
+    
+    # 获取修复commit的提交信息，用于展示给用户
+    fixed_commit_message = None
+    if issue_info.fixed_commit:
+        fixed_commit_message = get_commit_message(repo, issue_info.fixed_commit, linux_repo=linux_repo)
+        if fixed_commit_message:
+            logger.debug(f"修复commit的提交信息: {fixed_commit_message}")
+    
+    # 只查询指定的分支，而不是所有分支
+    vulnerable_branches = get_branches_containing_commit(repo, issue_info.introduced_commit, target_branches=branchList, linux_repo=linux_repo)
     logger.info(f"包含引入commit的分支: {vulnerable_branches}")
 
+    # 对于包含引入commit的分支，检查是否包含修复commit
     analyse_fix_brancees = [branch for branch in vulnerable_branches if branch in branchList]
-    fixed_branches = get_branches_containing_fixed_commit(repo, analyse_fix_brancees, issue_info.fixed_commit)
+    fixed_branches = get_branches_containing_commit(repo, issue_info.fixed_commit, target_branches=analyse_fix_brancees, linux_repo=linux_repo)
     logger.info(f"包含修复commit的分支: {fixed_branches}")
     
     needs_patch_branches = [branch for branch in vulnerable_branches
@@ -144,6 +337,12 @@ def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, si
     for branch in needs_patch_branches:
         remote_branch = f"origin/{branch}"
         try:
+            # 重置工作区，清理未提交的改动（使用安全函数处理锁文件问题）
+            safe_git_reset_hard(repo)
+        except Exception as e:
+            logger.warning(f"重置工作区失败: {str(e)}")
+        
+        try:
             # 尝试切换到本地分支（如果存在）
             repo.git.checkout(branch)
         except Exception:
@@ -154,50 +353,60 @@ def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, si
                 logger.error(f"创建并切换分支 {branch} 失败: {str(e)}")
                 continue
             
-        patchs = check_cve_patch_apply_status(fork_repo_url, issue_info.cve_id, gitee_token, branch, issue_info.fixed_commit, clone_dir)
+        # 传递 repo 参数，避免重复调用 setup_repository
+        patchs = check_cve_patch_apply_status(fork_repo_url, issue_info.cve_id, gitee_token, branch, issue_info.fixed_commit, clone_dir, repo=repo)
         logger.info(f"分支 {branch} 的补丁信息: {patchs}")
         
         for patch in patchs:
+            item = {
+                i18n("补丁ID"): issue_info.cve_id,
+                i18n("目标分支"): branch,
+                i18n("是否受影响"): i18n("受影响"),
+                i18n("冲突点"): patch['patch_path'],
+            }
+            
             if patch['status'] == 'success':
-                items.append({
-                    i18n("补丁ID"): issue_info.cve_id,
-                    i18n("目标分支"): branch,
-                    i18n("是否受影响"): i18n("受影响"),
-                    i18n("适配状态"): i18n("成功"),
-                    i18n("冲突点"): patch['patch_path'],
-                    i18n("建议调整文件"): "N/A",
-                })
+                item[i18n("适配状态")] = i18n("成功")
+                item[i18n("建议调整文件")] = "N/A"
             else:
-                items.append({
-                    i18n("补丁ID"): issue_info.cve_id,
-                    i18n("目标分支"): branch,
-                    i18n("是否受影响"): i18n("受影响"),
-                    i18n("适配状态"): i18n("需要调整"),
-                    i18n("冲突点"): patch['patch_path'],
-                    i18n("建议调整文件"): "",
-                })
+                item[i18n("适配状态")] = i18n("需要调整")
+                item[i18n("建议调整文件")] = ""
+            
+            # 添加commit message
+            if fixed_commit_message:
+                item[i18n("提交信息")] = fixed_commit_message
+            
+            items.append(item)
     
     fixed_in_branches = [branch for branch in branchList if branch in fixed_branches]
     for branch in fixed_in_branches:
-        items.append({
+        item = {
             i18n("补丁ID"): issue_info.cve_id,
             i18n("目标分支"): branch,
             i18n("是否受影响"): i18n("已修复"),
             i18n("适配状态"): "",
             i18n("冲突点"): i18n("已修复"),
             i18n("建议调整文件"): "N/A",
-        })
+        }
+        # 添加commit message
+        if fixed_commit_message:
+            item[i18n("提交信息")] = fixed_commit_message
+        items.append(item)
     
     unaffected_branches = [branch for branch in branchList
                           if branch not in vulnerable_branches and branch not in fixed_branches]
     for branch in unaffected_branches:
-        items.append({
+        item = {
             i18n("补丁ID"): issue_info.cve_id,
             i18n("目标分支"): branch,
             i18n("是否受影响"): i18n("不受影响"),
             i18n("适配状态"): "",
             i18n("冲突点"): i18n("无"),
             i18n("建议调整文件"): "N/A",
-        })
+        }
+        # 添加commit message
+        if fixed_commit_message:
+            item[i18n("提交信息")] = fixed_commit_message
+        items.append(item)
     
     return items

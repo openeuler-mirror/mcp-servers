@@ -5,14 +5,28 @@ import subprocess
 import git
 import requests
 import logging
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 
-from .cache import get_cached_data, save_cache, _get_cache_key, ISSUE_CACHE
+from .cache import cached, _get_cache_key, ISSUE_CACHE
+from .http import get_with_retry
 from .locales import i18n
 
 logger = logging.getLogger(__name__)
 
-def parse_gitee_issue_url(issue_url: str, gitee_token: Optional[str] = None, use_cache=True) -> Dict[str, str]:
+# 缓存已设置的仓库，避免重复调用 setup_repository
+_repo_cache: Dict[Tuple[str, str, Optional[str]], Tuple[git.Repo, str]] = {}
+
+
+@cached(
+    ISSUE_CACHE,
+    key_builder=lambda issue_url, gitee_token=None, use_cache=True: _get_cache_key(
+        issue_url
+    ),
+    use_cache_kw="use_cache",
+)
+def parse_gitee_issue_url(
+    issue_url: str, gitee_token: Optional[str] = None, use_cache: bool = True
+) -> Dict[str, str]:
     """
     解析gitee issue URL并获取基本信息
     
@@ -24,11 +38,6 @@ def parse_gitee_issue_url(issue_url: str, gitee_token: Optional[str] = None, use
     Returns:
         dict: 包含issue信息的字典
     """
-    cache_key = _get_cache_key(issue_url)
-    if use_cache:
-        cached = get_cached_data(ISSUE_CACHE, cache_key)
-        if cached:
-            return cached
     try:
         pattern = r"https://gitee.com/([^/]+)/([^/]+)/issues/([^/]+)"
         match = re.match(pattern, issue_url)
@@ -43,13 +52,17 @@ def parse_gitee_issue_url(issue_url: str, gitee_token: Optional[str] = None, use
     
     # 从Gitee API获取issue描述
     try:
-        issue_api_url = issue_url.replace("gitee.com", "gitee.com/api/v5/repos") + "?access_token=" + gitee_token
+        issue_api_url = (
+            issue_url.replace("gitee.com", "gitee.com/api/v5/repos")
+            + "?access_token="
+            + gitee_token
+        )
         logger.info(f"issue_api_url: {issue_api_url}")
-        response = requests.get(issue_api_url)
+        response = get_with_retry(issue_api_url)
         response.raise_for_status()
         issue_data = response.json()
-        cve_id = issue_data['title']
-        body_text = issue_data['body']
+        cve_id = issue_data["title"]
+        body_text = issue_data["body"]
         version_start = body_text.find("漏洞归属的版本：") + len("漏洞归属的版本：")
         version_end = body_text.find("\n", version_start)
         version_str = body_text[version_start:version_end].strip()
@@ -57,18 +70,15 @@ def parse_gitee_issue_url(issue_url: str, gitee_token: Optional[str] = None, use
     except Exception as e:
         logger.error(f"获取issue信息失败: {str(e)}")
         raise
-    
-    result_data = {
+
+    result_data: Dict[str, str] = {
         "issue_id": issue_id,
         "issue_url": issue_url,
         "cve_id": cve_id,
         "org_name": org,
         "repo_name": repo,
-        "affected_versions": version_str
+        "affected_versions": version_str,
     }
-    if use_cache:
-        save_cache(ISSUE_CACHE, cache_key, result_data)
-
     return result_data
 
 def _clone_repository(
@@ -130,21 +140,37 @@ def _clone_repository(
         raise RuntimeError(i18n("无法克隆仓库: %s") % (str(e)))
 
 
-def setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name=None):
+def setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name=None, force_refresh=False):
     """
     设置仓库环境，克隆官方仓库，添加fork远程，如果明确说明要检出某个分支的情况下，检出分支
     
     Args:
         fork_repo_url: fork仓库URL
         gitee_token: Gitee访问令牌
-        branch_name: 要检出的分支名,默认可以不执行检出分支
         clone_dir: 本地克隆目录
-        official_org: 官方仓库组织名，默认为"openeuler"
+        branch_name: 要检出的分支名,默认可以不执行检出分支
+        force_refresh: 是否强制刷新（忽略缓存）
         
     Returns:
         repo: git.Repo对象
         repo_path: 仓库本地路径
     """
+    # 使用缓存 key: (fork_repo_url, clone_dir, branch_name)
+    cache_key = (fork_repo_url, clone_dir, branch_name)
+    
+    # 检查缓存
+    if not force_refresh and cache_key in _repo_cache:
+        cached_repo, cached_repo_path = _repo_cache[cache_key]
+        # 验证缓存的 repo 是否仍然有效
+        try:
+            if cached_repo_path == os.path.join(clone_dir, "kernel") and os.path.exists(cached_repo_path):
+                logger.debug(f"使用缓存的仓库设置: {cache_key}")
+                return cached_repo, cached_repo_path
+        except Exception:
+            # 如果缓存无效，继续执行设置流程
+            logger.debug(f"缓存无效，重新设置仓库: {cache_key}")
+            del _repo_cache[cache_key]
+    
     parts = fork_repo_url.strip().rstrip('/').split('/')
     fork_org = parts[-2]
     repo_name = parts[-1].replace('.git', '')
@@ -161,40 +187,59 @@ def setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name=None):
         )
     
     repo = git.Repo(repo_path)
-    repo.git.fetch('origin')
     
+    # 只在第一次设置时执行 fetch，或者如果强制刷新
     fork_remote_name = f"fork-{fork_org}"
     if fork_remote_name not in [remote.name for remote in repo.remotes]:
+        logger.debug(f"添加远程仓库: {fork_remote_name}")
         auth_url = f"https://oauth2:{gitee_token}@gitee.com/{fork_org}/{repo_name}.git"
         repo.create_remote(fork_remote_name, auth_url)
-    
-    repo.remote(fork_remote_name).fetch()
+        repo.git.fetch('origin')
+        repo.remote(fork_remote_name).fetch()
+    elif force_refresh:
+        # 强制刷新时才执行 fetch
+        logger.debug(f"强制刷新，执行 fetch 操作")
+        repo.git.fetch('origin')
+        repo.remote(fork_remote_name).fetch()
+    else:
+        # 如果远程已存在且不强制刷新，跳过 fetch 操作
+        logger.debug(f"远程仓库已存在，跳过 fetch 操作以节省时间")
     
     # 创建或切换到本地分支
     if branch_name:
         remote_branch_ref = f"{fork_remote_name}/{branch_name}"
-        if branch_name not in repo.git.branch().split():
-            logging.info(f"设置仓库，切换分支：{branch_name}， 同步远程分支：{remote_branch_ref}")
+        current_branches = repo.git.branch().split()
+        if branch_name not in current_branches:
+            logger.info(f"设置仓库，切换分支：{branch_name}， 同步远程分支：{remote_branch_ref}")
             repo.git.checkout('-b', branch_name, remote_branch_ref)
         else:
-            logging.info(f"设置仓库，切换本地分支：{branch_name}，同步{fork_remote_name}代码")
-            repo.git.checkout(branch_name)
-            repo.git.pull(fork_remote_name, branch_name, "--rebase")
+            # 只在强制刷新时才执行 pull
+            if force_refresh:
+                logger.info(f"设置仓库，切换本地分支：{branch_name}，同步{fork_remote_name}代码")
+                repo.git.checkout(branch_name)
+                repo.git.pull(fork_remote_name, branch_name, "--rebase")
+            else:
+                logger.debug(f"切换到已存在的分支：{branch_name}（跳过 pull 以节省时间）")
+                repo.git.checkout(branch_name)
+    
+    # 缓存结果
+    _repo_cache[cache_key] = (repo, repo_path)
     
     return repo, repo_path
 
 
-def get_issue_url_from_cve_id(cve_id, use_cache=True):
+@cached(
+    ISSUE_CACHE,
+    key_builder=lambda cve_id, use_cache=True: _get_cache_key(
+        f"search_{cve_id}"
+    ),
+    use_cache_kw="use_cache",
+)
+def get_issue_url_from_cve_id(cve_id: str, use_cache: bool = True) -> str:
     request_url = f"https://gitee.com/api/v5/search/issues?q={cve_id}&page=1&per_page=20&repo=src-openeuler%2Fkernel&order=desc"
     
-    cache_key = _get_cache_key(request_url)
-    if use_cache:
-        cached = get_cached_data(ISSUE_CACHE, cache_key)
-        if cached:
-            return cached
-
     try:
-        response = requests.get(request_url)
+        response = get_with_retry(request_url)
         response.raise_for_status()
         issue_data = response.json()
     except Exception as e:
@@ -205,6 +250,4 @@ def get_issue_url_from_cve_id(cve_id, use_cache=True):
     html_url = issue_data[0].get('html_url')
     if not html_url:
         raise ValueError(i18n("获取html_url失败， cve id: %s") % cve_id)
-    if use_cache:
-        save_cache(ISSUE_CACHE, cache_key, html_url)
     return html_url
