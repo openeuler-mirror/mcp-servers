@@ -8,6 +8,7 @@ from .gitee import setup_repository
 from .patch import getUrlText
 from .commits import get_vulnerability_commits
 from .locales import i18n
+from .tools.project import safe_git_reset_hard
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,7 @@ CVE: {cve_id}
 
 Reference: {patch_url}
 
--------------------
+--------------------------------
 
 {msg}
 """
@@ -180,6 +181,19 @@ def apply_patch(
                 "status": "error",
                 "error": i18n("配置用户信息失败: %s") % (str(e))
             }
+    
+    # 清理工作区，确保没有未提交的文件导致后续操作失败
+    try:
+        logger.info("清理工作区，重置所有更改...")
+        # 重置所有更改（使用安全函数处理锁文件问题）
+        safe_git_reset_hard(repo)
+        # 清理未跟踪的文件和目录
+        repo.git.clean('-fdx')
+        logger.info("工作区清理完成")
+    except Exception as e:
+        logger.warning(f"清理工作区时出现警告（可能工作区已经是干净的）: {str(e)}")
+        # 清理工作区失败不应该阻止后续操作，只记录警告
+    
     branches = repo.git.branch().split()
     issue_num = os.path.basename(issue_url)
     fix_branch = f"fix-{branch}-{issue_num}"
@@ -230,7 +244,7 @@ def apply_patch(
         if repo_remote.name == remote:
             break
     if not repo_remote:
-        repo_remote = repo.create_remote(remote, fork_url)
+        repo_remote = repo.create_remote(remote, fork_repo_url)
     try:
         logger.info(f"开始推送变更到远程仓库: {repo_remote.url}")
         repo.git.push(remote, fix_branch)

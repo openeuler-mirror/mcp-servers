@@ -8,10 +8,10 @@ from tabulate import tabulate
 from .utils.gitee import parse_gitee_issue_url, setup_repository, get_issue_url_from_cve_id
 from .utils.commits import get_vulnerability_commits
 from .utils.branches import process_branches
-from .utils.cache import get_cached_data, save_cache
 from .utils.apply_patch import apply_patch
 from .utils.create_pr import create_pr
 from .utils.locales import i18n
+from .utils.backporting import run_backport_from_config
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ def main():
 
     # 操作模式参数
     parser.add_argument('--action', type=str,
-                      choices=['parse-issue', 'get-commits', 'analyze-branches', 'setup-env', 'apply-patch', 'create-pr'],
+                      choices=['parse-issue', 'get-commits', 'analyze-branches', 'setup-env', 'apply-patch', 'create-pr', 'backport'],
                       default='analyze-branches',
                       help='''执行模式: 
                       parse-issue(解析issue),
@@ -39,7 +39,8 @@ def main():
                       analyze-branches(分析分支,默认),
                       setup-env(设置仓库环境),
                       apply-patch(应用patch),
-                      create-pr(创建PR)''')
+                      create-pr(创建PR),
+                      backport(补丁回移植)''')
 
 
     # 输入源参数组（互斥组：必须提供CVE ID或Issue URL）
@@ -79,23 +80,51 @@ def main():
     pr_group.add_argument('--patch-path', type=str, help='patch文件路径')
     pr_group.add_argument('--branch', type=str, help='pr提交分支')
 
+    # 补丁回移植参数
+    backport_group = parser.add_argument_group('补丁回移植参数')
+    backport_group.add_argument('--openai-key', type=str,
+                               help='OpenAI API密钥 (也可通过OPENAI_KEY环境变量设置)')
+    backport_group.add_argument('--llm-provider', type=str, default='openai',
+                               choices=['openai', 'deepseek'],
+                               help='LLM提供商 (默认: openai)')
+    backport_group.add_argument('--patch-dataset-dir', type=str,
+                               help='补丁数据集目录 (也可通过PATCH_DATASET_DIR环境变量设置)')
+    backport_group.add_argument('--error-message', type=str,
+                               help='错误信息 (可选)')
+    backport_group.add_argument('--sanitizer', type=str,
+                               help='Sanitizer类型 (可选)')
+
     args = parser.parse_args()
 
     # 从环境变量获取参数默认值
-    args.fork_repo_url = args.fork_repo_url or os.environ.get('FORK_REPO_URL', "https://gitee.com/lw520203/kernel_4")
+    args.fork_repo_url = args.fork_repo_url or os.environ.get('FORK_REPO_URL')
     args.repo_url = args.repo_url or os.environ.get('REPO_URL', "https://gitee.com/openeuler/kernel")
     args.gitee_token = args.gitee_token or os.environ.get('GITEE_TOKEN')
     args.clone_dir = args.clone_dir or os.environ.get('CLONE_DIR', os.path.join(os.path.expanduser("~"), "Image"))
     args.branches = args.branches or os.environ.get('BRANCHES', "OLK-5.10,OLK-6.6,master")
-    args.signer_name = args.signer_name or os.environ.get('SIGNER_NAME', "suyibk")
-    args.signer_email = args.signer_email or os.environ.get('SIGNER_EMAIL', "suyibk@qq.com")
+    args.signer_name = args.signer_name or os.environ.get('SIGNER_NAME')
+    args.signer_email = args.signer_email or os.environ.get('SIGNER_EMAIL')
+    args.openai_key = args.openai_key or os.environ.get('OPENAI_KEY', "")
+    args.patch_dataset_dir = args.patch_dataset_dir or os.environ.get('PATCH_DATASET_DIR', os.path.join(os.path.expanduser("~"), "backports/patch_dataset"))
 
     # 检查必要的gitee-token
-    if not args.gitee_token and args.action != 'setup-env':
+    if not args.gitee_token and args.action != 'setup-env' and args.action != 'backport':
         parser.error("必须提供Gitee访问令牌(通过--gitee-token参数或GITEE_TOKEN环境变量)")
 
+    # 检查必要的cve-id或issue-url（setup-env模式不需要）
     if args.action != 'setup-env' and not (args.cve_id or args.issue_url):
         parser.error("非setup-env模式需提供--cve-id或--issue-url参数")
+    
+    # 检查必要的fork-repo-url（某些action需要）
+    if not args.fork_repo_url and args.action in ['setup-env', 'analyze-branches', 'apply-patch', 'create-pr']:
+        parser.error("必须提供Fork仓库URL(通过--fork-repo-url参数或FORK_REPO_URL环境变量)")
+    
+    # 检查必要的signer-name和signer-email（apply-patch需要）
+    if not args.signer_name and args.action == 'apply-patch':
+        parser.error("必须提供提交者姓名(通过--signer-name参数或SIGNER_NAME环境变量)")
+    
+    if not args.signer_email and args.action == 'apply-patch':
+        parser.error("必须提供提交者邮箱(通过--signer-email参数或SIGNER_EMAIL环境变量)")
 
     # 配置根logger
     root_logger = logging.getLogger()
@@ -161,12 +190,14 @@ def handle_action(args):
         return handle_parse_issue(args)
     elif args.action == 'get-commits':
         return handle_get_commits(cve_id, not args.no_cache)
-    elif args.action == 'analyze-branches':  # analyze-branches
+    elif args.action == 'analyze-branches':
         return handle_analyze_branches(args)
     elif args.action == 'apply-patch':
         return handle_apply_patch(cve_id, args)
     elif args.action == 'create-pr':
         return handle_create_pr(cve_id, args)
+    elif args.action == 'backport':
+        return handle_backport(cve_id, args)
     else:
         raise RuntimeError("action not supported: %s", args.action)
 
@@ -196,6 +227,80 @@ def handle_create_pr(cve_id, args):
         clone_dir=args.clone_dir,
         gitee_token=args.gitee_token
     )
+    return result
+
+def handle_backport(cve_id, args):
+    """处理补丁回移植逻辑"""
+    # 获取提交信息
+    commits = get_vulnerability_commits(cve_id, not args.no_cache)
+    if not commits or len(commits) != 2:
+        raise ValueError(f"无法获取提交信息: {commits}")
+    
+    introduced_commit, fixed_commit = commits
+    
+    # 确定目标分支
+    target_branch = args.branch
+    if not target_branch:
+        # 如果没有指定 --branch，尝试从 --branches 中取第一个
+        if args.branches:
+            target_branch = args.branches.split(',')[0].strip()
+        else:
+            raise ValueError("backport模式需要指定目标分支，请使用--branch参数")
+    
+    # 构建配置字典
+    config_dict = {
+        "project": "linux",
+        "project_url": "",
+        "project_dir": os.path.join(args.clone_dir, "linux"),
+        "target_path": os.path.join(args.clone_dir, "kernel"),
+        "new_patch": fixed_commit,
+        "target_release": target_branch,
+        "openai_key": args.openai_key,
+        "llm_provider": args.llm_provider,
+        "tag": cve_id,
+        "patch_dataset_dir": os.path.join(args.patch_dataset_dir, cve_id) if args.patch_dataset_dir else os.path.join(os.path.expanduser("~"), "backports/patch_dataset", cve_id),
+    }
+    
+    # 添加可选参数
+    if args.error_message:
+        config_dict["error_message"] = args.error_message
+    if args.sanitizer:
+        config_dict["sanitizer"] = args.sanitizer
+    
+    # 运行回移植
+    backport_result = run_backport_from_config(config_dict, debug_mode=args.debug)
+    
+    # 构建与分支分析结果对应的返回结构
+    result = {
+        i18n("补丁ID"): cve_id,
+        i18n("目标分支"): target_branch,
+        i18n("是否受影响"): i18n("受影响"),
+        i18n("适配状态"): i18n("成功") if backport_result.get('status') == 'success' else i18n("需要调整"),
+        i18n("冲突点"): backport_result.get('backported_patch_path', backport_result.get('original_patch_path', '')),
+        i18n("建议调整文件"): "N/A" if backport_result.get('status') == 'success' else "",
+    }
+    
+    # 添加详细信息
+    result['details'] = {
+        'action': 'backport',
+        'cve_id': cve_id,
+        'target_branch': target_branch,
+        'fixed_commit': fixed_commit,
+        'original_patch_path': backport_result.get('original_patch_path'),
+        'backported_patch_path': backport_result.get('backported_patch_path'),
+        'diff_path': backport_result.get('diff_path'),
+        'logfile': backport_result.get('logfile'),
+        'time_cost': backport_result.get('time_cost'),
+        'status': backport_result.get('status'),
+    }
+    
+    if 'cost' in backport_result:
+        result['details']['cost'] = backport_result['cost']
+    if 'tokens' in backport_result:
+        result['details']['tokens'] = backport_result['tokens']
+    if 'error' in backport_result:
+        result['details']['error'] = backport_result['error']
+    
     return result
 
 def handle_parse_issue(args):
@@ -258,9 +363,8 @@ def handle_analyze_branches(args):
                 fork_repo_url=args.fork_repo_url,
                 gitee_token=args.gitee_token,
                 clone_dir=args.clone_dir,
-                signer_name=args.signer_name,
-                signer_email=args.signer_email,
-                branchList=branch_list
+                branchList=branch_list,
+                use_cache=not args.no_cache
             )
 
 def format_output(result, args):
@@ -277,14 +381,23 @@ def _display_branch_table(branches):
     """显示分支分析表格"""
     table_data = []
     for branch in branches:
-        table_data.append([
+        row = [
             branch[i18n('目标分支')],
             branch[i18n('是否受影响')],
             branch[i18n('适配状态')],
             branch[i18n('冲突点')][:50] + '...' if len(branch[i18n('冲突点')]) > 50 else branch[i18n('冲突点')]
-        ])
+        ]
+        # 如果有提交信息，添加到表格中
+        if i18n('提交信息') in branch and branch[i18n('提交信息')]:
+            commit_msg = branch[i18n('提交信息')]
+            row.append(commit_msg[:80] + '...' if len(commit_msg) > 80 else commit_msg)
+        else:
+            row.append('N/A')
+        table_data.append(row)
+    
+    headers = [i18n('分支'), i18n('受影响'), i18n('状态'), i18n('冲突点'), i18n('提交信息')]
     print(tabulate(table_data,
-                  headers=[i18n('分支'), i18n('受影响'), i18n('状态'), i18n('冲突点')],
+                  headers=headers,
                   tablefmt='grid'))
 
 if __name__ == "__main__":

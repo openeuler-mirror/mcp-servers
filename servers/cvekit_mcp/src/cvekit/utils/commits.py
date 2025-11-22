@@ -1,12 +1,28 @@
 import re
 import logging
 import time
-from .cache import get_cached_data, save_cache
+from .cache import (
+    cached,
+    _get_cache_key,
+    COMMITS_CACHE,
+)
 from .patch import getUrlText, get_upstream_commit_from_url
 
 logger = logging.getLogger(__name__)
 
-def get_vulnerability_commits(cve_id: str, use_cache=True) -> tuple[str, str]:
+
+@cached(
+    COMMITS_CACHE,
+    key_builder=lambda cve_id, use_cache=True: _get_cache_key(cve_id),
+    use_cache_kw="use_cache",
+    # 兼容旧版本缓存结构：{"introduced": "...", "fixed": "..."}
+    load_transform=lambda v: (
+        (v.get("introduced"), v.get("fixed"))
+        if isinstance(v, dict) and "introduced" in v and "fixed" in v
+        else v
+    ),
+)
+def get_vulnerability_commits(cve_id: str, use_cache: bool = True) -> tuple[str, str]:
     """
     获取漏洞相关的真实上游提交信息
     
@@ -17,15 +33,6 @@ def get_vulnerability_commits(cve_id: str, use_cache=True) -> tuple[str, str]:
     Returns:
         (introduced_commit, fixed_commit): 真实的上游引入提交和修复提交
     """
-    from .cache import _get_cache_key, COMMITS_CACHE
-    cache_key = _get_cache_key(cve_id)
-
-    if use_cache:
-        cached = get_cached_data(COMMITS_CACHE, cache_key)
-        if cached and "introduced" in cached and "fixed" in cached:
-            logger.debug(f"[缓存命中] CVE {cve_id}")
-            return cached["introduced"], cached["fixed"]
-    
     logger.info(f"==========解析linux-cve-announce页面的两组commit id============")
     cve_announce_base_url = "https://lore.kernel.org/linux-cve-announce/"
     try:
@@ -72,19 +79,23 @@ def get_vulnerability_commits(cve_id: str, use_cache=True) -> tuple[str, str]:
                     if words[0] == 'introduced' and introduced_commit is None:
                         commit_hash = words[5]
                         commit_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id={commit_hash}"
-                        introduced_commit = get_upstream_commit_from_url(commit_url)
+                        upstream_commit = get_upstream_commit_from_url(commit_url)
+                        # 如果找不到upstream commit，使用原始commit作为备选
+                        if upstream_commit:
+                            introduced_commit = upstream_commit
+                        else:
+                            logger.error(f"无法获取introduced commit的upstream版本，使用原始commit: {commit_hash}")
                         
                     elif words[0] == 'fixed' and fixed_commit is None:
                         commit_hash = words[5]
                         commit_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id={commit_hash}"
-                        fixed_commit = get_upstream_commit_from_url(commit_url)
+                        upstream_commit = get_upstream_commit_from_url(commit_url)
+                        # 如果找不到upstream commit，使用原始commit作为备选
+                        if upstream_commit:
+                            fixed_commit = upstream_commit
+                        else:
+                            logger.error(f"无法获取fixed commit的upstream版本，使用原始commit: {commit_hash}")
     
     logger.info(f"introduced_commit: {introduced_commit}, fixed_commit: {fixed_commit}")
     
-    if use_cache and introduced_commit and fixed_commit:
-        save_cache(COMMITS_CACHE, cache_key, {
-            "introduced": introduced_commit,
-            "fixed": fixed_commit
-        })
-
     return introduced_commit, fixed_commit
