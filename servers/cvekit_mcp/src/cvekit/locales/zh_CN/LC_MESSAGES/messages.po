@@ -47,12 +47,12 @@ msgstr ""
 msgid "提取的JSON片段无法解析: %s"
 msgstr ""
 
-#: server.py:159
+#: server.py:161
 #, python-format
 msgid "JSON片段: %s"
 msgstr ""
 
-#: server.py:161
+#: server.py:163
 #, python-format
 msgid "cvekit输出非JSON格式: %s"
 msgstr ""

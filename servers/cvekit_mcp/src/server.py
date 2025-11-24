@@ -33,6 +33,7 @@ args, _ = parser.parse_known_args()
 @update_docstring(i18n("""执行cvekit命令并返回结果"""))
 def run_cvekit(action: str, params: dict) -> dict:
     try:
+        env = os.environ.copy()
         # 构建基础命令
         cmd = ['cvekit', f'--action={action}']
         # 所有action都使用JSON格式输出，确保解析一致性
@@ -102,6 +103,7 @@ def run_cvekit(action: str, params: dict) -> dict:
         result = subprocess.run(
             cmd,
             check=True,
+            env = env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
