@@ -3,7 +3,6 @@ import os
 import shutil
 import subprocess
 import git
-import requests
 import logging
 from typing import Optional, Dict, Tuple
 
