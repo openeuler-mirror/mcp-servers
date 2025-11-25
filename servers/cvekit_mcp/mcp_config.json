@@ -9,7 +9,10 @@
         "--directory",
         "/opt/mcp-servers/servers/cvekit_mcp/src",
         "run",
-        "server.py"
+        "server.py",
+        "--llm-provider", "deepseek",
+        "--gitee-token", "",
+        "--openai-key", ""
       ],
       "disabled": false,
       "alwaysAllow": [],
