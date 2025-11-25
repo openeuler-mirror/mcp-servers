@@ -314,6 +314,18 @@ def handle_parse_issue(args):
 def handle_get_commits(cve_id, use_cache):
     """处理提交获取逻辑"""
     introduced, fixed = get_vulnerability_commits(cve_id, use_cache)
+    if not introduced:
+        return {
+            "action": "get-commits",
+            "cve_id": cve_id,
+            "error": "未能获取完整的引入提交(introduced)，无法继续流程"
+        }
+    if not fixed:
+        return {
+            "action": "get-commits",
+            "cve_id": cve_id,
+            "error": "未能获取完整的修复提交(fixed)，无法继续流程"
+        }
     return {
         "action": "get-commits",
         "cve_id": cve_id,
