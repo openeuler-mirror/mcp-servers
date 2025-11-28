@@ -1,0 +1,34 @@
+name: "discount_mcp"
+summary: "MCP server for Discount command-line operations"
+description: |-
+  Provides MCP tools that wrap Discount command-line operations, so AI can call it safely.
+
+version: "1.0.0"
+release: "1"
+
+license: "MIT"
+
+build_dependencies:
+  system:
+    - python3
+    - uv
+
+runtime_dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+  packages:
+    - discount
+
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+
+install_script: |
+  mkdir -p /opt/mcp-servers/servers/discount_mcp/src
+  cp mcp_config.json /opt/mcp-servers/servers/discount_mcp/
+  cp src/server.py /opt/mcp-servers/servers/discount_mcp/src/
+  chmod +x /opt/mcp-servers/servers/discount_mcp/src/server.py
