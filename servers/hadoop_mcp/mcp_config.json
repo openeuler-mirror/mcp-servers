@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "hadoop_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/hadoop_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": []
+    }
+  }
+}
