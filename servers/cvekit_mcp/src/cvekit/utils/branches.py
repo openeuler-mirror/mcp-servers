@@ -193,19 +193,9 @@ def git_apply_check_patch(
         gitee_token: str,
         branch_name: str,
         clone_dir: str = os.path.join(os.path.expanduser("~"), "Image"),
-        patch_url: str = "",
+        patch_path: str = "",
         repo: git.Repo = None,
 ):
-    logger.info(f"检查补丁能否应用: {commit_hash}")
-    if not patch_url:
-        patch_url = f'https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/patch/?id={commit_hash}'
-
-    # 创建补丁文件
-    patch_filename = f"commit_patch_{commit_hash}.patch"
-    patch_path = os.path.join(clone_dir, patch_filename)
-    with open(patch_path, "w") as f:
-        f.write(getUrlText(patch_url))
- 
     # 如果提供了 repo，直接使用；否则调用 setup_repository（会使用缓存）
     if repo is None:
         repo, repo_path = setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name)
@@ -250,17 +240,44 @@ def check_cve_patch_apply_status(
 ):
     try:
         patch_api_url = 'https://api.openeuler.org/cve-manager/v1/cve/detail/patch?cve_num=' + cve_id
-        
+        image_dir = os.path.join(os.path.expanduser("~"), "Image")
+
         if fixed_commit:
             commit_hash = fixed_commit
-            patch_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/patch/?id={commit_hash}"
+            
+            patch_filename = f"commit_patch_{commit_hash}.patch"
+            patch_path = os.path.abspath(os.path.join(image_dir, patch_filename))
+            repo_linux = git.Repo(clone_dir)
+            patch_file = repo_linux.git.format_patch(
+                "-1",               
+                commit_hash,           
+                o= image_dir,
+                quiet=True
+            )
+        
+            if patch_file:
+                default_patch_name = patch_file.split("\n")[0].strip()
+                default_patch_path = os.path.abspath(os.path.join(image_dir, default_patch_name))
+                if os.path.exists(patch_path):
+                    os.remove(patch_path) 
+                os.rename(default_patch_path, patch_path)
+
+            else:
+                patch_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/patch/?id={commit_hash}"
+                with open(patch_path, "w") as f:
+                    f.write(getUrlText(patch_url))
         else:
             patch_info = get_cve_patch(patch_api_url)
             if not patch_info:
                 logger.error("无法获取补丁信息")
                 return []
             commit_hash = patch_info["hash"]
+            patch_filename = f"commit_patch_{commit_hash}.patch"
+            patch_path = os.path.abspath(os.path.join(image_dir, patch_filename))
             patch_url = patch_info["patch_url"]
+            with open(patch_path, "w") as f:
+                f.write(getUrlText(patch_url))
+            logger.info(f"检查补丁能否应用: {commit_hash}")
         
         # 处理单个补丁，传递 repo 参数避免重复调用 setup_repository
         item = git_apply_check_patch(
@@ -269,7 +286,7 @@ def check_cve_patch_apply_status(
             gitee_token,
             branch_name,
             clone_dir,
-            patch_url,
+            patch_path,
             repo=repo,
         )
         return [item]
