@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PROJECT VERSION\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2025-11-25 09:44+0800\n"
+"POT-Creation-Date: 2025-12-03 10:57+0800\n"
 "PO-Revision-Date: 2025-10-11 16:27+0800\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_Hans_CN\n"
@@ -247,19 +247,19 @@ msgstr ""
 msgid "未找到受影响的分支"
 msgstr ""
 
-#: cvekit/cli.py:278 cvekit/cli.py:399 cvekit/utils/branches.py:369
-#: cvekit/utils/branches.py:372 cvekit/utils/branches.py:387
-#: cvekit/utils/branches.py:403 server.py:350 server.py:381 server.py:411
+#: cvekit/cli.py:278 cvekit/cli.py:399 cvekit/utils/branches.py:386
+#: cvekit/utils/branches.py:389 cvekit/utils/branches.py:404
+#: cvekit/utils/branches.py:420 server.py:350 server.py:381 server.py:411
 #: server.py:438
 msgid "适配状态"
 msgstr ""
 
-#: cvekit/cli.py:278 cvekit/utils/branches.py:372 server.py:351
+#: cvekit/cli.py:278 cvekit/utils/branches.py:389 server.py:351
 msgid "需要调整"
 msgstr ""
 
-#: cvekit/cli.py:276 cvekit/cli.py:397 cvekit/utils/branches.py:363
-#: cvekit/utils/branches.py:385 cvekit/utils/branches.py:401 server.py:352
+#: cvekit/cli.py:276 cvekit/cli.py:397 cvekit/utils/branches.py:380
+#: cvekit/utils/branches.py:402 cvekit/utils/branches.py:418 server.py:352
 #: server.py:409 server.py:436
 msgid "目标分支"
 msgstr ""
@@ -270,17 +270,17 @@ msgid "backport_result结构: %s"
 msgstr ""
 
 #: cvekit/cli.py:279 cvekit/cli.py:400 cvekit/cli.py:410
-#: cvekit/utils/branches.py:365 cvekit/utils/branches.py:388
-#: cvekit/utils/branches.py:404 server.py:380 server.py:412 server.py:439
+#: cvekit/utils/branches.py:382 cvekit/utils/branches.py:405
+#: cvekit/utils/branches.py:421 server.py:380 server.py:412 server.py:439
 msgid "冲突点"
 msgstr ""
 
-#: cvekit/cli.py:278 cvekit/utils/branches.py:369 server.py:381
+#: cvekit/cli.py:278 cvekit/utils/branches.py:386 server.py:381
 msgid "成功"
 msgstr ""
 
-#: cvekit/cli.py:280 cvekit/utils/branches.py:370 cvekit/utils/branches.py:373
-#: cvekit/utils/branches.py:389 cvekit/utils/branches.py:405 server.py:382
+#: cvekit/cli.py:280 cvekit/utils/branches.py:387 cvekit/utils/branches.py:390
+#: cvekit/utils/branches.py:406 cvekit/utils/branches.py:422 server.py:382
 #: server.py:413
 msgid "建议调整文件"
 msgstr ""
@@ -317,20 +317,20 @@ msgstr ""
 msgid "| 补丁ID | 目标分支 | 是否受影响 | 适配状态 | 冲突点 | 建议调整文件 | 提交信息 | 差异文件 |\n"
 msgstr ""
 
-#: cvekit/cli.py:275 cvekit/utils/branches.py:362 cvekit/utils/branches.py:384
-#: cvekit/utils/branches.py:400 server.py:408
+#: cvekit/cli.py:275 cvekit/utils/branches.py:379 cvekit/utils/branches.py:401
+#: cvekit/utils/branches.py:417 server.py:408
 msgid "补丁ID"
 msgstr ""
 
-#: cvekit/cli.py:277 cvekit/cli.py:398 cvekit/utils/branches.py:364
-#: cvekit/utils/branches.py:386 cvekit/utils/branches.py:402 server.py:410
+#: cvekit/cli.py:277 cvekit/cli.py:398 cvekit/utils/branches.py:381
+#: cvekit/utils/branches.py:403 cvekit/utils/branches.py:419 server.py:410
 #: server.py:437
 msgid "是否受影响"
 msgstr ""
 
 #: cvekit/cli.py:403 cvekit/cli.py:404 cvekit/cli.py:410
-#: cvekit/utils/branches.py:377 cvekit/utils/branches.py:393
-#: cvekit/utils/branches.py:409 server.py:414
+#: cvekit/utils/branches.py:394 cvekit/utils/branches.py:410
+#: cvekit/utils/branches.py:426 server.py:414
 msgid "提交信息"
 msgstr ""
 
@@ -349,7 +349,7 @@ msgstr ""
 msgid "请选择要在哪些分支应用补丁（可多选，输入分支名，用逗号分隔）：\n"
 msgstr ""
 
-#: cvekit/cli.py:277 cvekit/cli.py:410 cvekit/utils/branches.py:364
+#: cvekit/cli.py:277 cvekit/cli.py:410 cvekit/utils/branches.py:381
 #: server.py:448
 msgid "受影响"
 msgstr ""
@@ -582,15 +582,15 @@ msgstr ""
 msgid "无法推送变更: %s"
 msgstr ""
 
-#: cvekit/utils/branches.py:386 cvekit/utils/branches.py:388
+#: cvekit/utils/branches.py:403 cvekit/utils/branches.py:405
 msgid "已修复"
 msgstr ""
 
-#: cvekit/utils/branches.py:402
+#: cvekit/utils/branches.py:419
 msgid "不受影响"
 msgstr ""
 
-#: cvekit/utils/branches.py:404
+#: cvekit/utils/branches.py:421
 msgid "无"
 msgstr ""
 
