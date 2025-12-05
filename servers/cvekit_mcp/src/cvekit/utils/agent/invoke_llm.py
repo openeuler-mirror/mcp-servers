@@ -36,7 +36,7 @@ def _get_llm_config(provider: str = "openai"):
     获取不同 LLM 提供商的配置信息
     
     Args:
-        provider: 模型提供商，可选值: "openai", "deepseek"
+        provider: 模型提供商，可选值: "openai", "deepseek","siliconflow"
     
     Returns:
         tuple: (base_url, model_name) 配置元组
@@ -51,7 +51,11 @@ def _get_llm_config(provider: str = "openai"):
         "deepseek": {
             "base_url": "https://api.deepseek.com/v1",
             "model": "deepseek-chat"
-        }
+        },
+        "siliconflow":{
+            "base_url": "https://api.siliconflow.cn/v1/",
+            "model":"deepseek-ai/DeepSeek-V3"
+        },
     }
     logger.debug(f"[_get_llm_config] 可用配置列表: {list(configs.keys())}")
     logger.debug(f"[_get_llm_config] 完整配置信息: {configs}")

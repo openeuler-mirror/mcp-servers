@@ -85,7 +85,7 @@ def main():
     backport_group.add_argument('--openai-key', type=str,
                                help='OpenAI API密钥 (也可通过OPENAI_KEY环境变量设置)')
     backport_group.add_argument('--llm-provider', type=str, default='openai',
-                               choices=['openai', 'deepseek'],
+                               choices=['openai', 'deepseek','siliconflow'],
                                help='LLM提供商 (默认: openai)')
     backport_group.add_argument('--patch-dataset-dir', type=str,
                                help='补丁数据集目录 (也可通过PATCH_DATASET_DIR环境变量设置)')
