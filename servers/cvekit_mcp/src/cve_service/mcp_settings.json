@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "cvekit_mcp": {
+      "command": ".venv/bin/python",
+      "env": {
+        "LANG": "en_CN.UTF-8",
+        "PYTHONPATH": "./cvekit_mcp/src"
+      },
+      "args": [
+        "./cvekit_mcp/src/server.py",
+        "--gitee-token", 
+        "xxx",
+        "--llm-provider",
+        "deepseek",
+        "--openai-key",
+        "xxx"
+      ],
+      "disabled": false,
+      "alwaysAllow": [],
+      "description": "Gitee代码仓CVE补丁处理服务",
+      "timeout": 1200
+    }
+  }
+}
