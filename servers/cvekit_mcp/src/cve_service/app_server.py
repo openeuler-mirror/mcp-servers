@@ -28,6 +28,7 @@ DEFAULT_CLONE_PATH = os.path.expanduser("~/Image")
 DEFAULT_TARGET_REPO = "https://gitee.com/shenyue_ustc/kernel"
 DEFAULT_FORK_REPO = "https://gitee.com/shenyuebak/kernel_1"
 DEFAULT_BRANCHES = "OLK-6.6, OLK-5.10, openEuler-1.0-LTS"
+TIMEOUT=900
 
 SYS_MSG = """
 You are a helpful assistant, and you prefer to use tools provided by the user 
@@ -220,7 +221,7 @@ class CVEAgentExecutor(AgentExecutor):
             try:
                 response = await asyncio.wait_for(agent_run(), timeout=300)  # 5分钟超时
             except asyncio.TimeoutError:
-                error_msg = f"任务 {task.id} 执行超时（超过5分钟）"
+                error_msg = f"Task {task.id} execution timeout (exceeded {TIMEOUT/60} minutes)"
                 logging.error(error_msg)
                 error_message = local_task_updater.new_agent_message(parts=[TextPart(text=error_msg)])
                 await local_task_updater.failed(message=error_message)
