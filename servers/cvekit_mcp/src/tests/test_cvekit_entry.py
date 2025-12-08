@@ -310,6 +310,24 @@ def test_handle_action_backport_builds_config_and_calls_run_backport(monkeypatch
     assert result["details"]["status"] == "success"
 
 
+def test_handle_action_invalid_action_raises_runtime_error():
+    """
+    当传入未知 action 时，handle_action 应抛出 RuntimeError。
+    为避免真实网络访问，这里直接提供 cve_id 且不提供 issue_url。
+    """
+    from cvekit import cli
+
+    # 这里同时提供 cve_id 和 issue_url，避免在 handle_action 内部触发
+    # get_issue_url_from_cve_id / fetch_cve_id 等真实网络调用。
+    args = _make_args(
+        action="invalid-action",
+        cve_id="CVE-TEST-INVALID",
+    )
+
+    with pytest.raises(RuntimeError):
+        cli.handle_action(args)
+
+
 def test_format_output_json(capsys, monkeypatch):
     """
     当指定 --json 参数时，应以 JSON 形式输出。
@@ -369,3 +387,38 @@ def test_format_output_default_prints_human_readable(capsys, monkeypatch):
     captured = capsys.readouterr()
     assert "分析结果:" in captured.out
     assert "'status': 'success'" in captured.out
+
+
+def test_main_backport_calls_handle_action_and_format_output(monkeypatch):
+    """
+    验证 cli.main 在 backport 模式下会调用 handle_action 和 format_output，
+    且传入的 args.action 为 backport。
+    """
+    from cvekit import cli
+
+    fake_result = {"status": "success", "action": "backport"}
+
+    argv_backup = sys.argv[:]
+    try:
+        sys.argv = [
+            "cvekit",
+            "--action",
+            "backport",
+            "--cve-id",
+            "CVE-TEST-MAIN",
+            "--gitee-token",
+            "fake-token",
+        ]
+
+        with mock.patch.object(cli, "handle_action", return_value=fake_result) as mock_handle, \
+                mock.patch.object(cli, "format_output") as mock_format:
+
+            cli.main()
+    finally:
+        sys.argv = argv_backup
+
+    mock_handle.assert_called_once()
+    mock_format.assert_called_once()
+    called_result, called_args = mock_format.call_args[0]
+    assert called_result == fake_result
+    assert called_args.action == "backport"
