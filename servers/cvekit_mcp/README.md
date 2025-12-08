@@ -38,7 +38,7 @@ export LANG=zh_CN.UTF-8
 ```
 设置英文：
 ```bash
-export LANG=zh_CN.UTF-8
+export LANG=en_US.UTF-8
 ```
 
 在mcp配置文件中，可通过增加env字段设置语言
