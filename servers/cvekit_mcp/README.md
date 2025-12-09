@@ -55,3 +55,57 @@ mcp设置为英文
         "LANG": "en_US.UTF-8"
       },
 ```
+
+## 功能简介
+
+1. 激活虚拟环境，配置环境变量
+```bash
+# 安装mcp-servers-cvekit后，激活虚拟python环境
+source /opt/mcp-servers/servers/cvekit_mcp/.venv/bin/activate
+# 配置仓库地址
+export REPO_URL=${REPO_URL} 
+# 配置fork仓库地址
+export FORK_REPO_URL=${FORK_REPO_URL}
+# 配置gitee私人令牌
+export GITEE_TOKEN=${GITEE_TOKEN}
+# 配置用户签名
+export SIGNER_NAME=${SIGNER_NAME}
+# 配置用户邮箱
+export SIGNER_EMALI=${SIGNER_EMAIL}
+```
+
+2. 解析issue
+```bash
+cvekit --action parse-issue --cve-id ${CVE_ID}
+```
+其中，CVE_ID是要修复的CVE id
+
+3. 克隆linux和kernel源码
+```bash
+cvekit --action setup-env
+```
+
+4. 获取引入和修复commit id
+```bash
+cvekit --action get-commits --cve-id ${CVE_ID}
+```
+
+5. 分析修复分支
+```bash
+cvekit --action analyze-branches --cve-id ${CVE_ID}
+```
+
+6. 应用补丁
+```bash
+cvekit --action apply-patch --cve-id ${CVE_ID} --patch-path ${PATCH_PATH}
+```
+
+7. 创建PR
+```bash
+cvekit --action create-pr --cve-id ${CVE_ID} --branch ${BRANCH_NAME}
+```
+
+8. 修复补丁冲突
+```bash
+cvekit --action backport --cve-id ${CVE_ID} --branch ${BRANCH_NAME} --openai-key ${OPENAI_KEY} --llm-provider ${LLVM_PROVIDER}
+```
