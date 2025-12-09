@@ -367,9 +367,9 @@ msgstr "target_branch"
 msgid "backport_result结构: %s"
 msgstr "backport_result structure: %s"
 
-#: cvekit/cli.py:279 cvekit/cli.py:400 cvekit/cli.py:410
-#: cvekit/utils/branches.py:382 cvekit/utils/branches.py:405
-#: cvekit/utils/branches.py:421 server.py:380 server.py:412 server.py:439
+#: cvekit/cli.py:279 cvekit/cli.py:400 cvekit/utils/branches.py:382
+#: cvekit/utils/branches.py:405 cvekit/utils/branches.py:421 server.py:380
+#: server.py:412 server.py:439
 msgid "冲突点"
 msgstr "conflict_point"
 
@@ -412,11 +412,10 @@ msgid "backport失败: %s"
 msgstr "backport failed: %s"
 
 #: server.py:404
-msgid "| 补丁ID | 目标分支 | 是否受影响 | 适配状态 | 冲突点 | 建议调整文件 | 提交信息 | 差异文件 |\n"
+msgid "| 补丁ID | 目标分支 | 是否受影响 | 适配状态 | 补丁路径 | 建议调整文件 | 提交信息 | 差异文件 |\n"
 msgstr ""
-"| Patch ID | Target Branch | Whether Affected | Adaptation Status | "
-"Conflict Point | Suggested Adjustment Files | Commit Message | Diff File "
-"|\n"
+"| Patch ID | Target Branch | Whether Affected | Adaptation Status | Patch"
+" Path | Suggested Adjustment Files | Commit Message | Diff File |\n"
 
 #: cvekit/cli.py:275 cvekit/utils/branches.py:379 cvekit/utils/branches.py:401
 #: cvekit/utils/branches.py:417 server.py:408
@@ -724,32 +723,36 @@ msgstr "Branch"
 msgid "状态"
 msgstr "Status"
 
-#: cvekit/utils/apply_patch.py:168
+#: cvekit/cli.py:410
+msgid "补丁路径"
+msgstr "Patch path"
+
+#: cvekit/utils/apply_patch.py:169
 #, python-format
 msgid "生成commit信息失败: %s"
 msgstr "Failed to generate commit information: %s"
 
-#: cvekit/utils/apply_patch.py:182
+#: cvekit/utils/apply_patch.py:183
 #, python-format
 msgid "配置用户信息失败: %s"
 msgstr "Failed to config user information: %s"
 
-#: cvekit/utils/apply_patch.py:213
+#: cvekit/utils/apply_patch.py:214
 #, python-format
 msgid "切换分支失败: %s"
 msgstr "Failed to switch branches: %s"
 
-#: cvekit/utils/apply_patch.py:227
+#: cvekit/utils/apply_patch.py:228
 #, python-format
 msgid "无法完成补丁应用，请检查冲突并重试: %s"
 msgstr "Can not apply patch, please check for conflicts and try again: %s"
 
-#: cvekit/utils/apply_patch.py:233
+#: cvekit/utils/apply_patch.py:234
 #, python-format
 msgid "无法应用补丁: %s"
 msgstr "Can not apply patch: %s"
 
-#: cvekit/utils/apply_patch.py:262
+#: cvekit/utils/apply_patch.py:263
 #, python-format
 msgid "无法推送变更: %s"
 msgstr "Unable to push changes: %s"

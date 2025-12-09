@@ -113,6 +113,7 @@ def generate_patch_header(commit_id, cve_id, bugzilla_url, repo_path):
 {inclusion_type}
 {from_line}
 commit {commit_id}
+category: bugfix
 bugzilla: {bugzilla_url}
 CVE: {cve_id}
 
