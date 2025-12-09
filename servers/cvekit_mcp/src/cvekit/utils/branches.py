@@ -247,7 +247,7 @@ def check_cve_patch_apply_status(
             
             patch_filename = f"commit_patch_{commit_hash}.patch"
             patch_path = os.path.abspath(os.path.join(image_dir, patch_filename))
-            repo_linux = git.Repo(clone_dir)
+            repo_linux = git.Repo(os.path.join(clone_dir, "linux"))
             patch_file = repo_linux.git.format_patch(
                 "-1",               
                 commit_hash,           

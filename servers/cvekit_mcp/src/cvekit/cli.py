@@ -407,7 +407,7 @@ def _display_branch_table(branches):
             row.append('N/A')
         table_data.append(row)
     
-    headers = [i18n('分支'), i18n('受影响'), i18n('状态'), i18n('冲突点'), i18n('提交信息')]
+    headers = [i18n('分支'), i18n('受影响'), i18n('状态'), i18n('补丁路径'), i18n('提交信息')]
     print(tabulate(table_data,
                   headers=headers,
                   tablefmt='grid'))
