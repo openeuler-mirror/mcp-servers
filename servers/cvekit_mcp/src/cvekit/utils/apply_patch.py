@@ -133,6 +133,41 @@ def generate_commit_message(cve_id, issue_url, repo_path):
     return message
 
 
+def get_patch(fixed_commit, clone_dir):
+    patch_path = os.path.abspath(os.path.join(clone_dir, f"commit_patch_{fixed_commit}.patch"))
+    if os.path.exists(patch_path):
+        return patch_path
+    patch_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/patch/?id={fixed_commit}"
+    with open(patch_path, "w") as f:
+        f.write(getUrlText(patch_url))
+    return patch_path
+
+
+def get_conflict_file_message(cve_id, repo, clone_dir):
+    introduced_commit, fixed_commit = get_vulnerability_commits(cve_id)
+    patch_path = get_patch(fixed_commit, clone_dir)
+    conflict_message = ""
+    try:
+        res = repo.git.apply("--check", patch_path)
+    except git.exc.GitCommandError as e:
+        error_info = e.stderr
+        for line in e.stderr.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            res = re.match(r'error: (.*): patch does not apply', line)
+            if not res:
+                res = re.match(r'错误：(.*)：补丁未应用', line)
+            if not res:
+                continue
+            if conflict_message:
+                conflict_message = f"{conflict_message}\n    {res.group(1)}"
+            else:
+                conflict_message = f"\nConflicts:\n     {res.group(1)}"
+    conflict_message = f"{conflict_message}\n[ Context conflict ]"
+    return conflict_message
+
+
 def apply_patch(
         fork_repo_url: str,
         gitee_token: str,
@@ -214,6 +249,12 @@ def apply_patch(
                 "error": i18n("切换分支失败: %s") % (str(e))
             }
     try:
+        conflict_message = get_conflict_file_message(cve_id, repo, clone_dir)
+    except Exception as e:
+        logger.warning(f"get conflict file message failed: {str(e)}")
+        conflict_message = ""
+
+    try:
         # 执行 git am patch_path
         repo.git.apply(patch_path)
         logger.info("补丁成功应用")
@@ -236,7 +277,7 @@ def apply_patch(
 
     # 添加所有变更并提交
     repo.git.add("--all")
-    repo.git.commit("-m", commit_msg, "-s", f"--author={signer_name} <{signer_email}>")
+    repo.git.commit("-m", f"{commit_msg}{conflict_message}", "-s", f"--author={signer_name} <{signer_email}>")
 
     remote = f"fork-{org_name}"
     # 推送变更到远程仓库
