@@ -13,6 +13,7 @@ base_dir = os.path.dirname(__file__)
 os.environ["PYTHONPATH"] = base_dir
 
 from cvekit.utils.locales import i18n, update_docstring
+from cvekit.utils.cache import BRANCHES_ANALYSIS_CACHE, _get_cache_key, get_cached_data, save_cache, delete_cache_key
 
 mcp = FastMCP(i18n("CVE修复流程自动化工具，提供CVE分析、补丁适配等功能"))
 
@@ -26,7 +27,9 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--gitee-token', help=i18n('Gitee访问令牌'))
 parser.add_argument('--llm-provider', help=i18n('LLM提供商(可选，默认openai)'))
 parser.add_argument('--openai-key', help=i18n('OpenAI API密钥(可选，用于自动调整补丁)'))
+parser.add_argument('--branches-to-analyze', default="OLK-6.6,OLK-5.10,openEuler-1.0-LTS", help=i18n('用于分析的分支列表，逗号分隔'))
 parser.add_argument('--test-analyze-branches', help=i18n('测试模式：直接调用analyze_branches函数，传入JSON文件路径'))
+parser.add_argument('--test-apply-patch',help=i18n("""测试模式：直接调用apply_patch函数，传入JSON文件路径"""))
 args, _ = parser.parse_known_args()
 
 
@@ -284,7 +287,7 @@ def get_commits(
 
 @mcp.tool()
 @update_docstring(i18n("""
-    该函数是CVE修复流程的第四步，必须严格按照顺序执行（仅当前面步骤用户确认后才可执行）：
+    该函数是CVE修复流程的第四步，必须严格按照顺序执行：
         1. 分析introduced_commit在本地仓库的哪些分支被引入
         2. 检查每个分支是否已经被fixed（已修复）
         3. 对于未修复的分支，检查从上游获取的补丁直接应用是否存在冲突
@@ -328,6 +331,15 @@ def analyze_branches(
         openai_key = default_openai_key
     if not llm_provider:
         llm_provider = default_llm_provider or 'openai'
+    
+    sorted_branches = sorted([branch.strip() for branch in branches.split(",")])
+    cache_key = _get_cache_key(cve_id, ",".join(sorted_branches))
+    cached_result = get_cached_data(BRANCHES_ANALYSIS_CACHE, cache_key)
+   
+    if cached_result:
+        logging.info(f"[缓存命中] CVE {cve_id}, 分支: {branches}")
+        return str(cached_result)
+    
     result = run_cvekit('analyze-branches', {
         'cve_id': cve_id,
         'branches': branches,
@@ -377,10 +389,15 @@ def analyze_branches(
                     # 获取调整后的补丁路径
                     backported_patch_path = details.get('backported_patch_path') or backport_result.get('backported_patch_path')
                     if backported_patch_path:
+                        cached_result = get_cached_data(BRANCHES_ANALYSIS_CACHE, cache_key)
                         item[i18n('冲突点')] = backported_patch_path
                         item[i18n('适配状态')] = i18n('成功')
                         item[i18n('建议调整文件')] = 'N/A'
                         logging.info(i18n("backport成功: 更新冲突点为 %s") % backported_patch_path)
+                        cached_result["冲突点"] = backported_patch_path 
+                        cached_result["适配状态"] = i18n('成功')
+                        cached_result["建议调整文件"] = 'N/A'
+                        logging.info(f"缓存已更新: {cache_key} 中的冲突点为 {backported_patch_path}")
                     else:
                         logging.warning(i18n("backport成功但未找到backported_patch_path"))
                     
@@ -389,10 +406,14 @@ def analyze_branches(
                     if diff_path:
                         item[i18n('差异文件')] = diff_path
                         logging.info(i18n("backport成功: 差异文件为 %s") % diff_path)
+                        cached_result["差异文件"] = diff_path
                     else:
                         item[i18n('差异文件')] = 'N/A'
                         logging.warning(i18n("backport成功但未找到diff_path"))
+                        cached_result["差异文件"] = 'N/A'
+                    save_cache(BRANCHES_ANALYSIS_CACHE, cache_key, cached_result)
                 else:
+                    delete_cache_key(BRANCHES_ANALYSIS_CACHE, cache_key)
                     error_msg = backport_result.get('error', '未知错误')
                     item[i18n('差异文件')] = i18n("backport失败: %s") % error_msg
                     logging.error(i18n("backport失败: %s") % error_msg)
@@ -473,7 +494,7 @@ def analyze_branches(
 
 @mcp.tool()
 @update_docstring(i18n("""
-    该函数是CVE修复流程的第五步，必须严格按照顺序执行（仅当第四步用户选择分支后才可执行）：
+    该函数是CVE修复流程的第五步，必须严格按照顺序执行：
         1. 对于用户在第四步中选择的分支，应用相对应的patch
         2. 参数说明：
            - branch: 用户在第四步中选择的分支名（必须从第四步的选择结果中获取）
@@ -492,7 +513,6 @@ def analyze_branches(
         5. 若patch应用失败，提示用户尝试解决冲突后重新执行该步骤
         6. 对于用户在第四步中选择的每个分支，都需要单独调用此函数执行
         注意：本地代码位于工作空间里面的仓库名所在的目录
-        注意：必须等待用户确认补丁应用成功后才能执行后续步骤
     """))
 def apply_patch(
     cve_id: str = Field(..., description="cve id"),
@@ -503,6 +523,17 @@ def apply_patch(
     signer_email: Optional[str] = Field(None, description=i18n("提交者邮箱")),
     gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
 ) -> str:
+    
+    if not os.path.exists(patch_path):
+        branches = sorted([branch.strip() for branch in args.branches_to_analyze.split(',')])
+        cache_key = _get_cache_key(cve_id, ','.join(branches))
+        cached_result = get_cached_data(BRANCHES_ANALYSIS_CACHE, cache_key)
+        patch_path = ""
+        for res in cached_result:
+            if res[i18n('目标分支')]==branch:
+                patch_path = res[i18n("冲突点")]
+                break
+    
     result = run_cvekit('apply-patch', {
         'cve_id': cve_id,
         'branch': branch,
@@ -527,7 +558,6 @@ def apply_patch(
     res += i18n("- 目标分支: %s\n") % (branch)
     res += i18n("- 修复分支: %s\n") % (fix_branch)
     res += i18n("- 补丁路径: %s\n") % (patch_path)
-    res += i18n("请确认补丁应用是否成功")
     return res
 
 @mcp.tool()
@@ -548,7 +578,6 @@ def apply_patch(
            - PR编号和标题
            - 如果失败，明确告知失败原因
         5. 对于第五步中每个成功应用补丁的分支，都需要单独调用此函数创建PR
-        注意：必须等待用户确认PR创建成功后才算完成整个流程
     """))
 def create_pr(
     cve_id: str = Field(..., description="cve id"),
@@ -636,6 +665,44 @@ def _run_test_analyze_branches(config_path: str) -> int:
         logger.exception("错误: %s", e)
         return 1
 
+def _run_test_apply_patch(config_path: str) -> int:
+    """测试模式：从JSON文件读取参数并调用 apply_patch"""
+    import sys
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            test_data = json.load(f)
+
+        logger.info("=" * 60)
+        logger.info("测试模式：直接调用 apply-patch 函数")
+        logger.info("=" * 60)
+        logger.info("测试参数: %s", json.dumps(test_data, indent=2, ensure_ascii=False))
+        logger.info("=" * 60)
+        result = apply_patch(
+            cve_id=test_data.get("cve_id", ""),
+            branch=test_data.get("branch", "OLK-6.6"),
+            gitee_token=test_data.get("gitee_token") or default_gitee_token,
+            fork_repo_url=test_data.get("fork_repo_url"),
+            signer_name=test_data.get("signer_name"),
+            signer_email=test_data.get("signer_email")
+        )
+
+        logger.info("=" * 60)
+        logger.info("函数执行结果:")
+        logger.info("=" * 60)
+        logger.info("%s", result)
+        logger.info("=" * 60)
+        return 0
+
+    except FileNotFoundError:
+        logger.error("错误: 找不到文件 %s", config_path)
+        return 1
+    except json.JSONDecodeError as e:
+        logger.error("错误: JSON解析失败: %s", e)
+        return 1
+    except Exception as e:  # noqa: BLE001
+        logger.exception("错误: %s", e)
+        return 1
 
 def main() -> None:
     """脚本入口：根据参数决定运行模式。"""
@@ -646,7 +713,12 @@ def main() -> None:
 
         exit_code = _run_test_analyze_branches(args.test_analyze_branches)
         sys.exit(exit_code)
+    
+    if args.test_apply_patch:
+        import sys
 
+        exit_code = _run_test_apply_patch(args.test_apply_patch)
+        sys.exit(exit_code)
     # 正常模式：运行MCP服务器
     mcp.run()
 

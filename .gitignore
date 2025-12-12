@@ -1,1 +1,24 @@
+.gitignore
+
+__pycache__/
+*.log
+.env
+logs/
+.venv/
+# 缓存文件
 *.pyc
+.pytest_cache/
+.coverage
+# IDE配置文件（若用VSCode/PyCharm）
+.idea/
+.vscode/
+*.swp
+*.swo
+# 打包/分发文件
+dist/
+build/
+*.egg-info/
+servers/cvekit_mcp/src/build
+servers/cvekit_mcp/src/cvekit/locales/**/messages.mo
+servers/cvekit_mcp/src/messages.pot
+servers/cvekit_mcp/src/cve_service/camel

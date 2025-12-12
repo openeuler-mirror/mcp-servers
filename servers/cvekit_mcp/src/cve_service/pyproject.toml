@@ -1,7 +1,7 @@
 [project]
-name = "camelfork-bak"
+name = "cve-service"
 version = "0.1.0"
-description = "Add your description here"
+description = "This is a CVE service designed for the end-to-end CVE handling process."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

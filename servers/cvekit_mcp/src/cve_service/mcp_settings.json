@@ -4,14 +4,14 @@
       "command": ".venv/bin/python",
       "env": {
         "LANG": "en_CN.UTF-8",
-        "PYTHONPATH": "./cvekit_mcp/src"
+        "PYTHONPATH": "path/to/cvekit_mcp/src"
       },
       "args": [
-        "./cvekit_mcp/src/server.py",
+        "path/to/cvekit_mcp/src/server.py",
         "--gitee-token", 
         "xxx",
         "--llm-provider",
-        "deepseek",
+        "xxx",
         "--openai-key",
         "xxx"
       ],
