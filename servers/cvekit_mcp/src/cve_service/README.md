@@ -1,5 +1,5 @@
 # 安装步骤
-## 安装仓库所需依赖
+## 安装服务所需依赖
 安装oegitext插件用于提交pr
 ```bash
 yum install oegitext
@@ -29,59 +29,59 @@ yum install -y uv
 安装python依赖
 ```bash
 # 启动虚拟环境
+cd cve_service
 uv venv
 # 安装依赖
-uv sync
+uv sync -i https://mirrors.aliyun.com/pypi/simple/
 
 # 激活环境
-cd cve_service
 source .venv/bin/activate
 ``` 
-## 代码还原操作指南
-### 前置说明
-本操作用于将 `cvekit_mcp` 文件夹还原为服务运行所需的版本，并迁移至 `cve-service` 目录下，依赖 `folder_diff.diff` 差异文件完成还原。
-
-### 操作步骤
-#### 步骤 1：解压压缩包
+解压压缩包
 将 `cve_service` 目录下的 `camel.tar.gz` 压缩包解压至 `cve_service` 目录（保留原目录结构）：
 ```bash
-# 进入 cve_service 目录（请替换为实际路径）
-cd /path/to/cve_service
-# 解压压缩包
-tar -zxvf camel.tar.gz -C ./
+tar -zxvf camel.tar.gz
+```
+## 部署cvekit_mcp工具
+1. 安装依赖
+```bash
+cd servers/cvekit_mcp/src && pip install babel
+```
+2. 编译语言包
+
+cvekit使用gettext模块实现多语言的支持，在代码正式执行前，需编译语言包，把文本格式PO文件编译为MO文件
+
+提取可翻译字符串
+```bash
+pybabel extract -k i18n -o messages.pot .
+```
+更新翻译目录
+```bash
+pybabel update -i messages.pot -d cvekit/locales
+```
+编译消息目录
+```bash
+pybabel compile -d cvekit/locales
+```
+注意：若代码未修改，只需翻译消息目录即可；若有新增翻译字符串，需修改cvekit/locales下对应语言中的messages.po文件
+
+3. 安装
+```bash
+python3 setup.py install
 ```
 
-#### 步骤 2：统一文件目录
-将 `cve_service` 文件夹、`folder_diff.diff` 差异文件**移动至** `mcp-servers/servers` 目录下，确保以下文件/文件夹处于**同一级目录**：
-```
-mcp-servers/servers/
-├── cvekit_mcp/          # 待还原的基准文件夹
-├── cve_service/         # 目标版本文件夹
-└── folder_diff.diff     # 差异文件（核心）
-```
-执行命令示例（请替换为实际路径）：
-```bash
-mv /path/to/cve_service /path/to/mcp-servers/servers/
-mv /path/to/folder_diff.diff /path/to/mcp-servers/servers/
-```
+## 设置语言
 
-#### 步骤 3：还原 cvekit_mcp 文件夹
-1. 进入 `mcp-servers/servers` 目录：
-```bash
-cd /path/to/mcp-servers/servers
-```
-2. 执行 patch 命令，将 `cvekit_mcp` 还原为服务所需版本：
-```bash
-patch -p0 < folder_diff.diff
-```
-> 说明：`-p0` 参数保留 diff 文件中的相对路径，确保能精准匹配待修改文件。
+cvekit通过读取环境变量中的LANG设置语言
 
-#### 步骤 4：迁移还原后的文件夹
-将还原完成的 `cvekit_mcp` 文件夹移动至 `cve_service` 目录下：
+设置中文：
 ```bash
-mv cvekit_mcp cve_service/
+export LANG=zh_CN.UTF-8
 ```
-
+设置英文：
+```bash
+export LANG=en_US.UTF-8
+```
 
 ## 其他配置
 在仓库当前目录下，配置环境文件.env，里面需要配置以下参数:

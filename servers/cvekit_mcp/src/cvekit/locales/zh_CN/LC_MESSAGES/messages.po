@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PROJECT VERSION\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2025-12-03 10:57+0800\n"
+"POT-Creation-Date: 2025-12-12 09:24+0800\n"
 "PO-Revision-Date: 2025-10-11 16:27+0800\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_Hans_CN\n"
@@ -18,61 +18,69 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: Babel 2.17.0\n"
 
-#: server.py:17
+#: server.py:18
 msgid "CVE修复流程自动化工具，提供CVE分析、补丁适配等功能"
 msgstr ""
 
-#: server.py:26
+#: server.py:27
 msgid "Gitee访问令牌"
 msgstr ""
 
-#: server.py:27 server.py:322
+#: server.py:28 server.py:325
 msgid "LLM提供商(可选，默认openai)"
 msgstr ""
 
-#: server.py:28 server.py:321
+#: server.py:29 server.py:324
 msgid "OpenAI API密钥(可选，用于自动调整补丁)"
 msgstr ""
 
-#: server.py:29
+#: server.py:30
+msgid "用于分析的分支列表，逗号分隔"
+msgstr ""
+
+#: server.py:31
 msgid "测试模式：直接调用analyze_branches函数，传入JSON文件路径"
 msgstr ""
 
-#: server.py:33
+#: server.py:32
+msgid "测试模式：直接调用apply_patch函数，传入JSON文件路径"
+msgstr ""
+
+#: server.py:36
 msgid "执行cvekit命令并返回结果"
-msgstr ""
-
-#: server.py:160
-#, python-format
-msgid "提取的JSON片段无法解析: %s"
-msgstr ""
-
-#: server.py:161
-#, python-format
-msgid "JSON片段: %s"
 msgstr ""
 
 #: server.py:163
 #, python-format
-msgid "cvekit输出非JSON格式: %s"
+msgid "提取的JSON片段无法解析: %s"
 msgstr ""
 
 #: server.py:164
 #, python-format
+msgid "JSON片段: %s"
+msgstr ""
+
+#: server.py:166
+#, python-format
+msgid "cvekit输出非JSON格式: %s"
+msgstr ""
+
+#: server.py:167
+#, python-format
 msgid "输出内容前500字符: %s"
 msgstr ""
 
-#: server.py:165
+#: server.py:168
 #, python-format
 msgid "输出内容后500字符: %s"
 msgstr ""
 
-#: server.py:182
+#: server.py:185
 #, python-format
 msgid "cvekit执行失败: %s"
 msgstr ""
 
-#: server.py:192
+#: server.py:195
 msgid ""
 "\n"
 "    该函数是CVE修复流程的第一步，必须严格按照顺序执行：\n"
@@ -88,37 +96,37 @@ msgid ""
 "    "
 msgstr ""
 
-#: server.py:206 server.py:240 server.py:269 server.py:318 server.py:504
-#: server.py:558
+#: server.py:209 server.py:243 server.py:272 server.py:321 server.py:524
+#: server.py:587
 msgid "Gitee访问令牌(可选)"
-msgstr ""
-
-#: server.py:215
-#, python-format
-msgid "解析Issue失败: %s"
 msgstr ""
 
 #: server.py:218
 #, python-format
-msgid "已解析Issue: %s\n"
+msgid "解析Issue失败: %s"
 msgstr ""
 
 #: server.py:221
 #, python-format
+msgid "已解析Issue: %s\n"
+msgstr ""
+
+#: server.py:224
+#, python-format
 msgid "- 组织: %s\n"
 msgstr ""
 
-#: server.py:222
+#: server.py:225
 #, python-format
 msgid "- 仓库: %s\n"
 msgstr ""
 
-#: server.py:223
+#: server.py:226
 #, python-format
 msgid "- 受影响版本: %s\n"
 msgstr ""
 
-#: server.py:227
+#: server.py:230
 msgid ""
 "\n"
 "    该函数是CVE修复流程的第二步，必须严格按照顺序执行：\n"
@@ -132,34 +140,34 @@ msgid ""
 "    "
 msgstr ""
 
-#: server.py:238
+#: server.py:241
 msgid "Fork仓库URL"
 msgstr ""
 
-#: server.py:239
+#: server.py:242
 msgid "工作空间或克隆目录，本地克隆仓库在该目录所在的仓库名文件夹中"
-msgstr ""
-
-#: server.py:250
-#, python-format
-msgid "环境设置失败: %s"
-msgstr ""
-
-#: server.py:252
-msgid "环境设置成功！\n"
 msgstr ""
 
 #: server.py:253
 #, python-format
+msgid "环境设置失败: %s"
+msgstr ""
+
+#: server.py:255
+msgid "环境设置成功！\n"
+msgstr ""
+
+#: server.py:256
+#, python-format
 msgid "- 仓库已克隆到: %s\n"
 msgstr ""
 
-#: server.py:254
+#: server.py:257
 #, python-format
 msgid "- Fork远程仓库: %s\n"
 msgstr ""
 
-#: server.py:258
+#: server.py:261
 msgid ""
 "\n"
 "    该函数是CVE修复流程的第三步，必须严格按照顺序执行：\n"
@@ -172,30 +180,30 @@ msgid ""
 "    "
 msgstr ""
 
-#: server.py:278
+#: server.py:281
 #, python-format
 msgid "获取提交信息失败: %s"
 msgstr ""
 
-#: server.py:280
+#: server.py:283
 #, python-format
 msgid "已获取CVE %s的提交信息:\n"
 msgstr ""
 
-#: server.py:281
+#: server.py:284
 #, python-format
 msgid "- 引入漏洞的提交: %s\n"
 msgstr ""
 
-#: server.py:282
+#: server.py:285
 #, python-format
 msgid "- 修复漏洞的提交: %s\n"
 msgstr ""
 
-#: server.py:286
+#: server.py:289
 msgid ""
 "\n"
-"    该函数是CVE修复流程的第四步，必须严格按照顺序执行（仅当前面步骤用户确认后才可执行）：\n"
+"    该函数是CVE修复流程的第四步，必须严格按照顺序执行：\n"
 "        1. 分析introduced_commit在本地仓库的哪些分支被引入\n"
 "        2. 检查每个分支是否已经被fixed（已修复）\n"
 "        3. 对于未修复的分支，检查从上游获取的补丁直接应用是否存在冲突\n"
@@ -226,169 +234,169 @@ msgid ""
 "    "
 msgstr ""
 
-#: server.py:317
+#: server.py:320
 msgid "要分析的分支列表，逗号分隔"
 msgstr ""
 
-#: server.py:319
+#: server.py:322
 msgid "克隆目录(可选)"
 msgstr ""
 
-#: server.py:320
+#: server.py:323
 msgid "Fork仓库URL(可选)"
 msgstr ""
 
-#: server.py:340
+#: server.py:352
 #, python-format
 msgid "分支分析失败: %s"
 msgstr ""
 
-#: server.py:346
+#: server.py:358
 msgid "未找到受影响的分支"
 msgstr ""
 
 #: cvekit/cli.py:278 cvekit/cli.py:399 cvekit/utils/branches.py:386
 #: cvekit/utils/branches.py:389 cvekit/utils/branches.py:404
-#: cvekit/utils/branches.py:420 server.py:350 server.py:381 server.py:411
-#: server.py:438
+#: cvekit/utils/branches.py:420 server.py:362 server.py:394 server.py:432
+#: server.py:459
 msgid "适配状态"
 msgstr ""
 
-#: cvekit/cli.py:278 cvekit/utils/branches.py:389 server.py:351
+#: cvekit/cli.py:278 cvekit/utils/branches.py:389 server.py:363
 msgid "需要调整"
 msgstr ""
 
 #: cvekit/cli.py:276 cvekit/cli.py:397 cvekit/utils/branches.py:380
-#: cvekit/utils/branches.py:402 cvekit/utils/branches.py:418 server.py:352
-#: server.py:409 server.py:436
+#: cvekit/utils/branches.py:402 cvekit/utils/branches.py:418 server.py:364
+#: server.py:430 server.py:457 server.py:533
 msgid "目标分支"
 msgstr ""
 
-#: server.py:367
+#: server.py:379
 #, python-format
 msgid "backport_result结构: %s"
 msgstr ""
 
 #: cvekit/cli.py:279 cvekit/cli.py:400 cvekit/utils/branches.py:382
-#: cvekit/utils/branches.py:405 cvekit/utils/branches.py:421 server.py:380
-#: server.py:412 server.py:439
+#: cvekit/utils/branches.py:405 cvekit/utils/branches.py:421 server.py:393
+#: server.py:433 server.py:460 server.py:534
 msgid "冲突点"
 msgstr ""
 
-#: cvekit/cli.py:278 cvekit/utils/branches.py:386 server.py:381
+#: cvekit/cli.py:278 cvekit/utils/branches.py:386 server.py:394 server.py:398
 msgid "成功"
 msgstr ""
 
 #: cvekit/cli.py:280 cvekit/utils/branches.py:387 cvekit/utils/branches.py:390
-#: cvekit/utils/branches.py:406 cvekit/utils/branches.py:422 server.py:382
-#: server.py:413
+#: cvekit/utils/branches.py:406 cvekit/utils/branches.py:422 server.py:395
+#: server.py:434
 msgid "建议调整文件"
 msgstr ""
 
-#: server.py:383
+#: server.py:396
 #, python-format
 msgid "backport成功: 更新冲突点为 %s"
 msgstr ""
 
-#: server.py:385
+#: server.py:402
 msgid "backport成功但未找到backported_patch_path"
 msgstr ""
 
-#: server.py:390 server.py:393 server.py:397 server.py:401 server.py:415
-#: server.py:440
+#: server.py:407 server.py:411 server.py:418 server.py:422 server.py:436
+#: server.py:461
 msgid "差异文件"
 msgstr ""
 
-#: server.py:391
+#: server.py:408
 #, python-format
 msgid "backport成功: 差异文件为 %s"
 msgstr ""
 
-#: server.py:394
+#: server.py:412
 msgid "backport成功但未找到diff_path"
 msgstr ""
 
-#: server.py:397 server.py:398
+#: server.py:418 server.py:419
 #, python-format
 msgid "backport失败: %s"
 msgstr ""
 
-#: server.py:404
+#: server.py:425
 msgid "| 补丁ID | 目标分支 | 是否受影响 | 适配状态 | 补丁路径 | 建议调整文件 | 提交信息 | 差异文件 |\n"
 msgstr ""
 
 #: cvekit/cli.py:275 cvekit/utils/branches.py:379 cvekit/utils/branches.py:401
-#: cvekit/utils/branches.py:417 server.py:408
+#: cvekit/utils/branches.py:417 server.py:429
 msgid "补丁ID"
 msgstr ""
 
 #: cvekit/cli.py:277 cvekit/cli.py:398 cvekit/utils/branches.py:381
-#: cvekit/utils/branches.py:403 cvekit/utils/branches.py:419 server.py:410
-#: server.py:437
+#: cvekit/utils/branches.py:403 cvekit/utils/branches.py:419 server.py:431
+#: server.py:458
 msgid "是否受影响"
 msgstr ""
 
 #: cvekit/cli.py:403 cvekit/cli.py:404 cvekit/cli.py:410
 #: cvekit/utils/branches.py:394 cvekit/utils/branches.py:410
-#: cvekit/utils/branches.py:426 server.py:414
+#: cvekit/utils/branches.py:426 server.py:435
 msgid "提交信息"
 msgstr ""
 
-#: server.py:425
+#: server.py:446
 msgid "【重要】分支分析结果 - 请完整展示以下所有信息给用户：\n"
 msgstr ""
 
-#: server.py:427
+#: server.py:448
 #, python-format
 msgid ""
 "分支分析完成，共发现 %d 个受影响的分支:\n"
 "\n"
 msgstr ""
 
-#: server.py:430
+#: server.py:451
 msgid "请选择要在哪些分支应用补丁（可多选，输入分支名，用逗号分隔）：\n"
 msgstr ""
 
 #: cvekit/cli.py:277 cvekit/cli.py:410 cvekit/utils/branches.py:381
-#: server.py:448
+#: server.py:469
 msgid "受影响"
 msgstr ""
 
-#: server.py:448
+#: server.py:469
 msgid "是"
 msgstr ""
 
-#: server.py:453
+#: server.py:474
 #, python-format
 msgid "适配状态: %s"
 msgstr ""
 
-#: server.py:455
+#: server.py:476
 #, python-format
 msgid ", 补丁路径: %s"
 msgstr ""
 
-#: server.py:457
+#: server.py:478
 #, python-format
 msgid ", 差异文件: %s"
 msgstr ""
 
-#: server.py:465
+#: server.py:486
 msgid "未找到需要应用补丁的分支"
 msgstr ""
 
-#: server.py:467
+#: server.py:488
 msgid "请输入要选择的分支选项（例如: A,B,C 或直接输入分支名，用逗号分隔）"
 msgstr ""
 
-#: server.py:470
+#: server.py:491
 msgid "【重要提示】以上信息必须完整展示给用户，包括完整的分析表格和多选题格式，不能简化或省略任何信息。"
 msgstr ""
 
-#: server.py:475
+#: server.py:496
 msgid ""
 "\n"
-"    该函数是CVE修复流程的第五步，必须严格按照顺序执行（仅当第四步用户选择分支后才可执行）：\n"
+"    该函数是CVE修复流程的第五步，必须严格按照顺序执行：\n"
 "        1. 对于用户在第四步中选择的分支，应用相对应的patch\n"
 "        2. 参数说明：\n"
 "           - branch: 用户在第四步中选择的分支名（必须从第四步的选择结果中获取）\n"
@@ -407,67 +415,62 @@ msgid ""
 "        5. 若patch应用失败，提示用户尝试解决冲突后重新执行该步骤\n"
 "        6. 对于用户在第四步中选择的每个分支，都需要单独调用此函数执行\n"
 "        注意：本地代码位于工作空间里面的仓库名所在的目录\n"
-"        注意：必须等待用户确认补丁应用成功后才能执行后续步骤\n"
 "    "
 msgstr ""
 
-#: server.py:499
+#: server.py:519
 msgid "要应用patch的分支名"
 msgstr ""
 
-#: server.py:500 server.py:556
+#: server.py:520 server.py:585
 msgid "fork仓库url"
 msgstr ""
 
-#: server.py:501
+#: server.py:521
 msgid "patch路径"
 msgstr ""
 
-#: server.py:502
+#: server.py:522
 msgid "提交者姓名"
 msgstr ""
 
-#: server.py:503
+#: server.py:523
 msgid "提交者邮箱"
 msgstr ""
 
-#: server.py:518
+#: server.py:549
 msgid "应用patch失败！\n"
 msgstr ""
 
-#: server.py:519 server.py:527 server.py:570 server.py:582
+#: server.py:550 server.py:558 server.py:599 server.py:611
 #, python-format
 msgid "- 目标分支: %s\n"
 msgstr ""
 
-#: server.py:520 server.py:529
+#: server.py:551 server.py:560
 #, python-format
 msgid "- 补丁路径: %s\n"
 msgstr ""
 
-#: server.py:521 server.py:572
+#: server.py:552 server.py:601
 #, python-format
 msgid "- 失败原因: %s\n"
 msgstr ""
 
-#: server.py:522
+#: server.py:553
 msgid "请尝试解决冲突后重新执行该步骤"
 msgstr ""
 
-#: server.py:526
+#: server.py:557
 msgid "补丁应用成功！\n"
 msgstr ""
 
-#: server.py:528
+#: server.py:559
 #, python-format
 msgid "- 修复分支: %s\n"
 msgstr ""
 
-#: server.py:530
-msgid "请确认补丁应用是否成功"
-msgstr ""
-
-#: server.py:534
+#: server.py:564
 msgid ""
 "\n"
 "    该函数是CVE修复流程的第六步，必须严格按照顺序执行（仅当第五步补丁应用成功后才可执行）：\n"
@@ -486,47 +489,46 @@ msgid ""
 "           - PR编号和标题\n"
 "           - 如果失败，明确告知失败原因\n"
 "        5. 对于第五步中每个成功应用补丁的分支，都需要单独调用此函数创建PR\n"
-"        注意：必须等待用户确认PR创建成功后才算完成整个流程\n"
 "    "
 msgstr ""
 
-#: server.py:555
+#: server.py:584
 msgid "受影响分支名，目标分支"
 msgstr ""
 
-#: server.py:557
+#: server.py:586
 msgid "目标仓库url"
 msgstr ""
 
-#: server.py:569
+#: server.py:598
 msgid "PR提交失败！\n"
 msgstr ""
 
-#: server.py:571
+#: server.py:600
 #, python-format
 msgid "- 目标仓库: %s\n"
 msgstr ""
 
-#: server.py:578
+#: server.py:607
 msgid "PR已成功提交！\n"
 msgstr ""
 
-#: server.py:579
+#: server.py:608
 #, python-format
 msgid "- PR编号: %s\n"
 msgstr ""
 
-#: server.py:580
+#: server.py:609
 #, python-format
 msgid "- PR标题: %s\n"
 msgstr ""
 
-#: server.py:581
+#: server.py:610
 #, python-format
 msgid "- PR链接: %s\n"
 msgstr ""
 
-#: server.py:583
+#: server.py:612
 msgid "请确认PR是否创建成功"
 msgstr ""
 
@@ -651,4 +653,88 @@ msgstr ""
 #, python-format
 msgid "获取html_url失败， cve id: %s"
 msgstr ""
+
+#~ msgid ""
+#~ "\n"
+#~ "    该函数是CVE修复流程的第四步，必须严格按照顺序执行（仅当前面步骤用户确认后才可执行）：\n"
+#~ "        1. 分析introduced_commit在本地仓库的哪些分支被引入\n"
+#~ "        2. 检查每个分支是否已经被fixed（已修复）\n"
+#~ "        3. 对于未修复的分支，检查从上游获取的补丁直接应用是否存在冲突\n"
+#~ "        4. 对于需要调整的补丁，自动调用backport进行调整\n"
+#~ "        5. **必须完整展示分析结果**，包括：\n"
+#~ "           - 完整的分析结果表格，包含以下列：\n"
+#~ "             * 补丁ID\n"
+#~ "             * 目标分支\n"
+#~ "             * 是否受影响\n"
+#~ "             * 适配状态\n"
+#~ "             * 冲突点（补丁路径）\n"
+#~ "             * 建议调整文件\n"
+#~ "             * 提交信息\n"
+#~ "             * 差异文件路径\n"
+#~ "           - 每个分支的详细信息（受影响状态、适配状态、补丁路径、差异文件等）\n"
+#~ "        6. **必须完整展示多选题格式**，清晰展示所有需要应用补丁的分支，格式如下：\n"
+#~ "           \"请选择要在哪些分支应用补丁（可多选，输入分支名，用逗号分隔）：\n"
+#~ "           [A] 分支名1 - 适配状态: xxx, 补丁路径: xxx, 差异文件: xxx\n"
+#~ "           [B] 分支名2 - 适配状态: xxx, 补丁路径: xxx, 差异文件: xxx\n"
+#~ "           [C] 分支名3 - 适配状态: xxx, 补丁路径: xxx, 差异文件: xxx\n"
+#~ "           ...\"\n"
+#~ "        7. **重要**：必须将函数返回的完整结果（包括表格和多选题）完整展示给用户，不能简化或省略任何信息\n"
+#~ "        8. 等待用户明确选择要应用补丁的分支，只有用户选择后才可进入第五步\n"
+#~ "        "
+#~ "注意：该步骤中的参数branches为kernel的分支名，和issue分析中的受影响版本并不一致，若用户未输入要分析的分支名，使用默认值即可"
+#~ "\n"
+#~ "        注意：必须等待用户明确选择分支后才能执行后续步骤\n"
+#~ "        注意：函数返回的结果包含完整的分析表格和多选题格式，必须完整展示给用户，不能只显示简单的选项\n"
+#~ "    "
+#~ msgstr ""
+
+#~ msgid ""
+#~ "\n"
+#~ "    该函数是CVE修复流程的第五步，必须严格按照顺序执行（仅当第四步用户选择分支后才可执行）：\n"
+#~ "        1. 对于用户在第四步中选择的分支，应用相对应的patch\n"
+#~ "        2. 参数说明：\n"
+#~ "           - branch: 用户在第四步中选择的分支名（必须从第四步的选择结果中获取）\n"
+#~ "           - patch_path: 第四步分析结果中该分支对应的冲突点或补丁路径\n"
+#~ "        3. 执行补丁应用操作：\n"
+#~ "           - 切换到指定分支\n"
+#~ "           - 应用补丁文件\n"
+#~ "           - 若patch应用成功，提交更改\n"
+#~ "           - 将修复后的分支推送到fork仓库\n"
+#~ "        4. 明确反馈执行结果：\n"
+#~ "           - 补丁应用是否成功\n"
+#~ "           - 目标分支名称\n"
+#~ "           - 修复分支名称（如果创建了新分支）\n"
+#~ "           - 应用的补丁路径\n"
+#~ "           - 如果失败，明确告知失败原因和解决建议\n"
+#~ "        5. 若patch应用失败，提示用户尝试解决冲突后重新执行该步骤\n"
+#~ "        6. 对于用户在第四步中选择的每个分支，都需要单独调用此函数执行\n"
+#~ "        注意：本地代码位于工作空间里面的仓库名所在的目录\n"
+#~ "        注意：必须等待用户确认补丁应用成功后才能执行后续步骤\n"
+#~ "    "
+#~ msgstr ""
+
+#~ msgid "请确认补丁应用是否成功"
+#~ msgstr ""
+
+#~ msgid ""
+#~ "\n"
+#~ "    该函数是CVE修复流程的第六步，必须严格按照顺序执行（仅当第五步补丁应用成功后才可执行）：\n"
+#~ "        1. 对于第五步中修复成功的分支，创建并提交Pull Request\n"
+#~ "        2. 参数说明：\n"
+#~ "           - branch: 受影响分支名，作为提交PR的目标分支\n"
+#~ "           - repo_url: 目标仓库URL（若用户未提供，使用默认值）\n"
+#~ "           - fork_repo_url: fork仓库URL\n"
+#~ "        3. 执行PR创建操作：\n"
+#~ "           - 创建PR标题（包含CVE ID和分支信息）\n"
+#~ "           - 创建PR描述（包含修复详情）\n"
+#~ "           - 提交PR到目标仓库\n"
+#~ "        4. 明确反馈执行结果：\n"
+#~ "           - PR是否创建成功\n"
+#~ "           - PR的完整URL链接\n"
+#~ "           - PR编号和标题\n"
+#~ "           - 如果失败，明确告知失败原因\n"
+#~ "        5. 对于第五步中每个成功应用补丁的分支，都需要单独调用此函数创建PR\n"
+#~ "        注意：必须等待用户确认PR创建成功后才算完成整个流程\n"
+#~ "    "
+#~ msgstr ""
 

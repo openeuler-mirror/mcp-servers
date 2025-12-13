@@ -74,6 +74,26 @@ def save_cache(cache_file: str, key: str, value: Any) -> None:
         logger.error(traceback.format_exc())
         # 不抛出异常，只记录错误，避免影响主流程
 
+def delete_cache_key(cache_file: str, key: str) -> None:
+    """删除指定缓存文件中的某个key"""
+    try:
+        if not os.path.exists(cache_file):
+            logger.info(f"缓存文件不存在，无需删除key: {cache_file}")
+            return
+        
+        # 加载现有缓存
+        data = load_cache(cache_file)
+        if key in data:
+            del data[key]  # 删除目标key
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            logger.info(f"已删除缓存key: {key}，缓存文件: {cache_file}")
+        else:
+            logger.info(f"缓存key不存在，无需删除: {key} (文件: {cache_file})")
+    except Exception as e:
+        logger.error(f"删除缓存key失败: {cache_file}, key: {key}, 错误: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 def get_cached_data(cache_file: str, key: str, max_age_hours: int = 24) -> Any:
     """获取缓存数据"""
