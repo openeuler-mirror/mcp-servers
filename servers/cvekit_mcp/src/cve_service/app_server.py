@@ -22,13 +22,7 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.utils import new_task
 from typing_extensions import override
 
-DEFAULT_MODEL_TYPE = "deepseek-ai/DeepSeek-V3"
-DEFAULT_LOCAL_CONFIG = "mcp_settings.json"
-DEFAULT_CLONE_PATH = os.path.expanduser("~/Image")
-DEFAULT_TARGET_REPO = "https://gitee.com/shenyue_ustc/kernel"
-DEFAULT_FORK_REPO = "https://gitee.com/shenyuebak/kernel_1"
-DEFAULT_BRANCHES = "OLK-6.6, OLK-5.10, openEuler-1.0-LTS"
-TIMEOUT=900
+
 
 SYS_MSG = """
 You are a helpful assistant, and you prefer to use tools provided by the user 
@@ -76,9 +70,9 @@ def build_config_from_request(data: Dict) -> Dict:
         raise ValueError("必须提供 GITEE_TOKEN(环境变量或请求参数)")
     
     return {
-        "fork_repo_url": data.get("fork_repo", DEFAULT_FORK_REPO),
-        "target_repo_url": data.get("target_repo", DEFAULT_TARGET_REPO),
-        "clone_path": data.get("clone_path", DEFAULT_CLONE_PATH),
+        "fork_repo_url": data.get("fork_repo", os.getenv("DEFAULT_FORK_REPO")),
+        "target_repo_url": data.get("target_repo", os.getenv("DEFAULT_TARGET_REPO")),
+        "clone_path": data.get("clone_path", os.getenv("DEFAULT_CLONE_PATH")),
         "gitee_token": gitee_token,
         "signer_name": data.get("signer_name"),
         "signer_email": data.get("signer_email"),
@@ -104,7 +98,7 @@ def build_agent_message(action: str, data: Dict, config: Dict) -> str:
         return (
             f"【任务】CVE分支分析与适配检查\n"
             f"【核心指令】1. 基于CVE-ID分析指定分支的漏洞引入情况与补丁适配状态；2. 生成含完整字段的分析表格；3. 以多选题格式列出待应用分支（含适配状态/补丁路径/差异文件）；4. 展示全部信息，等待用户选择分支；5. 暂不执行补丁应用与PR提交\n"
-            f"【参数】CVE_ID: {data.get('cve_id')}, 全量分支列表: {DEFAULT_BRANCHES}\n"
+            f"【参数】CVE_ID: {data.get('cve_id')}, 全量分支列表: {os.getenv('DEFAULT_BRANCHES')}\n"
             f"【基础配置】{base_config}\n"
             f"【注意】为了完成这一步，你需要依次执行前置CVE修复流程的前四步，而不是直接执行第四步 analyze_branches"
         )
@@ -121,18 +115,18 @@ def build_agent_message(action: str, data: Dict, config: Dict) -> str:
         return (
             f"【任务】CVE修复流程\n"
             f"【核心指令】1. 分析CVE补丁；2. 适配CVE补丁；3. 应用CVE补丁；4. 创建PR\n"
-            f"【参数】CVE_ID: {data.get('cve_id')}， 全量分支列表{DEFAULT_BRANCHES}， 待应用补丁和提交pr分支列表{data.get('branches')} \n"
+            f"【参数】CVE_ID: {data.get('cve_id')}， 全量分支列表{os.getenv('DEFAULT_BRANCHES')}， 待应用补丁和提交pr分支列表{data.get('branches')} \n"
             f"【基础配置】{base_config}\n"
             f"【注意】请依次执行CVE修复流程的所有步骤，直至pr创建完毕\n"
-            f"【注意】分支分析（analyze_branches）需覆盖全量分支 {DEFAULT_BRANCHES}；\n"
+            f"【注意】分支分析（analyze_branches）需覆盖全量分支 {os.getenv('DEFAULT_BRANCHES')}；\n"
             f"【注意】补丁应用（apply-patch）与PR创建（create-pr）仅针对目标分支列表 {data.get('branches')}；\n"
             f"【注意】所有步骤自动串联执行，直至PR创建完成，无需中途等待用户确认。"
         )
 
 
 async def create_mcp_agent(
-    model_type: str = DEFAULT_MODEL_TYPE,
-    local_config: str = DEFAULT_LOCAL_CONFIG,
+    model_type: str = "",
+    local_config: str = "",
     task_updater: Optional[TaskUpdater] = None 
 ) -> CallbackMCPAgent:
     """创建 MCP Agent"""
@@ -210,18 +204,18 @@ class CVEAgentExecutor(AgentExecutor):
             print(f"【任务 {task.id}】Agent Message:{agent_message}")
 
             local_agent = await create_mcp_agent(
-                model_type=DEFAULT_MODEL_TYPE,
-                local_config=DEFAULT_LOCAL_CONFIG,
+                model_type=os.getenv("DEFAULT_MODEL_TYPE"),
+                local_config=os.getenv("DEFAULT_LOCAL_CONFIG"),
                 task_updater=local_task_updater
             )
 
             async def agent_run():
                 return await local_agent.astep(agent_message)
-
+            timeout = int(os.getenv("TIMEOUT", 300)) 
             try:
-                response = await asyncio.wait_for(agent_run(), timeout=300)  # 5分钟超时
+                response = await asyncio.wait_for(agent_run(), timeout=timeout) 
             except asyncio.TimeoutError:
-                error_msg = f"Task {task.id} execution timeout (exceeded {TIMEOUT/60} minutes)"
+                error_msg = f"Task {task.id} execution timeout (exceeded {timeout/60} minutes)"
                 logging.error(error_msg)
                 error_message = local_task_updater.new_agent_message(parts=[TextPart(text=error_msg)])
                 await local_task_updater.failed(message=error_message)
