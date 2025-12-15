@@ -394,9 +394,7 @@ def analyze_branches(
                         item[i18n('适配状态')] = i18n('成功')
                         item[i18n('建议调整文件')] = 'N/A'
                         logging.info(i18n("backport成功: 更新冲突点为 %s") % backported_patch_path)
-                        cached_result["冲突点"] = backported_patch_path 
-                        cached_result["适配状态"] = i18n('成功')
-                        cached_result["建议调整文件"] = 'N/A'
+                    
                         logging.info(f"缓存已更新: {cache_key} 中的冲突点为 {backported_patch_path}")
                     else:
                         logging.warning(i18n("backport成功但未找到backported_patch_path"))
@@ -410,8 +408,21 @@ def analyze_branches(
                     else:
                         item[i18n('差异文件')] = 'N/A'
                         logging.warning(i18n("backport成功但未找到diff_path"))
-                        cached_result["差异文件"] = 'N/A'
-                    save_cache(BRANCHES_ANALYSIS_CACHE, cache_key, cached_result)
+
+                    # 更新缓存
+                    cached_result = get_cached_data(BRANCHES_ANALYSIS_CACHE, cache_key)
+                    if cached_result:  
+                        for cache_item in cached_result:
+                            if cache_item.get("目标分支") == target_branch:
+                                if backported_patch_path:
+                                    cache_item["冲突点"] = backported_patch_path
+                                    cache_item["适配状态"] = i18n('成功')
+                                    cache_item["建议调整文件"] = 'N/A'
+                                
+                                cache_item["差异文件"] = diff_path if diff_path else 'N/A'
+                                break 
+                        save_cache(BRANCHES_ANALYSIS_CACHE, cache_key, cached_result)
+                        logging.info(f"缓存已更新: {cache_key} 中分支 {target_branch} 的字段已同步")
                 else:
                     delete_cache_key(BRANCHES_ANALYSIS_CACHE, cache_key)
                     error_msg = backport_result.get('error', '未知错误')
