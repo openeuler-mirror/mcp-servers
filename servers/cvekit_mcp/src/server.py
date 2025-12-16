@@ -389,7 +389,6 @@ def analyze_branches(
                     # 获取调整后的补丁路径
                     backported_patch_path = details.get('backported_patch_path') or backport_result.get('backported_patch_path')
                     if backported_patch_path:
-                        cached_result = get_cached_data(BRANCHES_ANALYSIS_CACHE, cache_key)
                         item[i18n('冲突点')] = backported_patch_path
                         item[i18n('适配状态')] = i18n('成功')
                         item[i18n('建议调整文件')] = 'N/A'
@@ -404,7 +403,6 @@ def analyze_branches(
                     if diff_path:
                         item[i18n('差异文件')] = diff_path
                         logging.info(i18n("backport成功: 差异文件为 %s") % diff_path)
-                        cached_result["差异文件"] = diff_path
                     else:
                         item[i18n('差异文件')] = 'N/A'
                         logging.warning(i18n("backport成功但未找到diff_path"))
@@ -638,7 +636,6 @@ def _init_defaults_from_args() -> None:
 def _run_test_analyze_branches(config_path: str) -> int:
     """测试模式：从JSON文件读取参数并调用 analyze_branches。"""
     import sys
-
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             test_data = json.load(f)
