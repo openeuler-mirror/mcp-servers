@@ -12,7 +12,7 @@
         "server.py",
         "--llm-provider", "deepseek",
         "--gitee-token", "",
-        "--openai-key", ""
+        "--api-key", ""
       ],
       "disabled": false,
       "alwaysAllow": [],

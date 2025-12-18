@@ -19,14 +19,14 @@ mcp = FastMCP(i18n("CVE修复流程自动化工具，提供CVE分析、补丁适
 
 # 全局变量，用于存储命令行参数
 default_llm_provider = None
-default_openai_key = None
+default_api_key = None
 default_gitee_token = None
 
 # 配置参数解析
 parser = argparse.ArgumentParser()
 parser.add_argument('--gitee-token', help=i18n('Gitee访问令牌'))
 parser.add_argument('--llm-provider', help=i18n('LLM提供商(可选，默认openai)'))
-parser.add_argument('--openai-key', help=i18n('OpenAI API密钥(可选，用于自动调整补丁)'))
+parser.add_argument('--api-key', help=i18n('LLM API密钥(可选，用于自动调整补丁)'))
 parser.add_argument('--branches-to-analyze', default="OLK-6.6,OLK-5.10,openEuler-1.0-LTS", help=i18n('用于分析的分支列表，逗号分隔'))
 parser.add_argument('--test-analyze-branches', help=i18n('测试模式：直接调用analyze_branches函数，传入JSON文件路径'))
 parser.add_argument('--test-apply-patch',help=i18n("""测试模式：直接调用apply_patch函数，传入JSON文件路径"""))
@@ -76,8 +76,8 @@ def run_cvekit(action: str, params: dict) -> dict:
                 cmd.append(f'--branch={params["branch"]}')
             if 'clone_dir' in params:
                 cmd.append(f'--clone-dir={params["clone_dir"]}')
-            if 'openai_key' in params:
-                cmd.append(f'--openai-key={params["openai_key"]}')
+            if 'api_key' in params:
+                cmd.append(f'--api-key={params["api_key"]}')
             if 'llm_provider' in params:
                 cmd.append(f'--llm-provider={params["llm_provider"]}')
             if 'fork_repo_url' in params:
@@ -321,14 +321,15 @@ def analyze_branches(
     gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)")),
     clone_dir: Optional[str] = Field(None, description=i18n("克隆目录(可选)")),
     fork_repo_url: Optional[str] = Field(None, description=i18n("Fork仓库URL(可选)")),
-    openai_key: Optional[str] = Field(None, description=i18n("OpenAI API密钥(可选，用于自动调整补丁)")),
+    api_key: Optional[str] = Field(None, description=i18n("LLM API密钥(可选，用于自动调整补丁)")),
     llm_provider: Optional[str] = Field(None, description=i18n("LLM提供商(可选，默认openai)"))
 ) -> str:
     # 使用全局变量作为默认值
     if not gitee_token:
         gitee_token = default_gitee_token
-    if not openai_key:
-        openai_key = default_openai_key
+    if api_key is None:
+        # 若未显式传入 api_key，则回退到全局默认值（可能为空字符串，用于本地免鉴权模型）
+        api_key = default_api_key
     if not llm_provider:
         llm_provider = default_llm_provider or 'openai'
     
@@ -357,22 +358,38 @@ def analyze_branches(
     if not result:
         return i18n("未找到受影响的分支")
     
-    # 对于需要调整的分支，自动调用backport
+    # 对于需要调整的分支，自动调用 backport（仅在有可用 LLM 配置时）
     for item in result:
         adapt_status = item.get(i18n('适配状态'), '')
-        if adapt_status == i18n('需要调整') and openai_key:
+        if adapt_status == i18n('需要调整'):
             target_branch = item.get(i18n('目标分支'), '')
             if target_branch:
+                # 如果使用非本地 LLM 且未提供 api_key，则无法自动回移植，给出提示但不调用 backport
+                if not api_key and (llm_provider or "").lower() != "local":
+                    warn_msg = i18n(
+                        "检测到分支 %s 需要适配，但未配置 LLM API_KEY（API_KEY 环境变量或命令行 --api-key）。"
+                        " 已保留原始补丁路径，请手工在本地完成补丁适配，并在解决冲突后重新执行 `/create_pr`。"
+                    ) % target_branch
+                    logging.warning(warn_msg)
+                    item[i18n('差异文件')] = warn_msg
+                    # 保持适配状态为“需要调整”，提示用户手动处理
+                    continue
+
                 # 调用backport进行调整
-                backport_result = run_cvekit('backport', {
-                    'cve_id': cve_id,
-                    'branch': target_branch,
-                    'clone_dir': clone_dir,
-                    'openai_key': openai_key,
-                    'llm_provider': llm_provider,
-                    'fork_repo_url': fork_repo_url,
-                    'gitee_token': gitee_token
-                })
+                backport_result = run_cvekit(
+                    'backport',
+                    {
+                        'cve_id': cve_id,
+                        'branch': target_branch,
+                        'clone_dir': clone_dir,
+                        # 这里使用统一的 api_key 命名，run_cvekit 会映射为 --api-key 传给 cvekit CLI，
+                        # 再由 CLI 映射为内部 openai_key 配置字段。
+                        'api_key': api_key,
+                        'llm_provider': llm_provider,
+                        'fork_repo_url': fork_repo_url,
+                        'gitee_token': gitee_token,
+                    },
+                )
                 
                 if 'error' not in backport_result:
                     # 调试信息：打印backport_result的完整结构
@@ -623,14 +640,14 @@ def create_pr(
 
 def _init_defaults_from_args() -> None:
     """根据命令行参数初始化全局默认配置。"""
-    global default_gitee_token, default_llm_provider, default_openai_key
+    global default_gitee_token, default_llm_provider, default_api_key
 
     if args.gitee_token:
         default_gitee_token = args.gitee_token
     if args.llm_provider:
         default_llm_provider = args.llm_provider
-    if args.openai_key:
-        default_openai_key = args.openai_key
+    if args.api_key:
+        default_api_key = args.api_key
 
 
 def _run_test_analyze_branches(config_path: str) -> int:
@@ -652,7 +669,8 @@ def _run_test_analyze_branches(config_path: str) -> int:
             gitee_token=test_data.get("gitee_token") or default_gitee_token,
             clone_dir=test_data.get("clone_dir"),
             fork_repo_url=test_data.get("fork_repo_url"),
-            openai_key=test_data.get("openai_key") or default_openai_key,
+            # 兼容旧字段 openai_key，同时支持新的 api_key
+            api_key=test_data.get("api_key") or test_data.get("openai_key") or default_api_key,
             llm_provider=test_data.get("llm_provider") or default_llm_provider,
         )
 
