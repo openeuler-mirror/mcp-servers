@@ -84,12 +84,60 @@ export LANG=en_US.UTF-8
 ```
 
 ## 其他配置
-在仓库当前目录下，配置环境文件.env，里面需要配置以下参数:
-```
-SILICONFLOW_API_KEY=<api_key>
+在仓库当前目录下，新建并配置环境文件 `.env`，常用配置示例如下：
+```bash
+# Gitee 访问令牌（用于读取 Issue / 提交评论 / 操作仓库等）
 GITEE_TOKEN=<gitee_token>
-LLM_PROVIDER = "deepseek"
+
+# 大模型提供商，可选值：
+#   - openai      使用 OpenAI 官方接口（默认）
+#   - deepseek    使用 DeepSeek 官方接口
+#   - siliconflow 使用 SiliconFlow 托管的 DeepSeek 模型（推荐国内环境）
+LLM_PROVIDER=openai
+
+# 统一的大模型 API Key（无论使用哪个 LLM_PROVIDER，都通过它传递）
+API_KEY=<llm_api_key>
+
+# 默认模型类型（仅在部分 Provider 下会用到，一般保持默认即可）
+DEFAULT_MODEL_TYPE="deepseek-ai/DeepSeek-V3"
+
+# 本地配置文件（一般不需要修改）
+DEFAULT_LOCAL_CONFIG="mcp_settings.json"
+
+# 代码克隆目录（CVE 处理时会把目标仓库克隆到该目录）
+DEFAULT_CLONE_PATH="~/Image"
+
+# 默认目标仓库与 Fork 仓库
+DEFAULT_TARGET_REPO="https://gitee.com/openeuler/kernel"
+DEFAULT_FORK_REPO="https://gitee.com/devstation_robot/kernel"
+
+# 默认需要关注的分支列表
+DEFAULT_BRANCHES="OLK-6.6, OLK-5.10, openEuler-1.0-LTS"
 ```
+
+### 使用本地 LLM 模型（local provider）
+
+如果你有自己部署的本地大模型服务，并且它提供 **OpenAI 兼容接口**（如 `/v1/chat/completions`），
+可以通过 `LLM_PROVIDER=local` 的方式启用本地模型：
+
+```bash
+# 使用本地模型（免鉴权示例）
+LLM_PROVIDER=local
+
+# 本地模型名称（可按需要修改成你自己的模型名）
+MODEL_NAME="codellama-32b-instruct"
+
+# 如果本地服务不需要鉴权，可以不设置 API_KEY（留空即可）；
+# 如需鉴权，也可以在这里配置本地服务接受的任意 Token：
+# API_KEY="<your_local_llm_token>"
+```
+
+要求：
+- 本地服务必须实现 OpenAI 兼容的 Chat Completion 接口，例如：
+  - `http://127.0.0.1:5000/v1/chat/completions`
+- `MODEL_NAME` 要与你本地服务实际提供的模型名称一致；
+- 当 `LLM_PROVIDER=local` 且未配置 `API_KEY` 时，系统会使用占位密钥，后端请求中仍会带上一个 Authorization 头，
+  本地服务可以选择忽略或校验该头部。
 接着配置mcp配置文件mcp_settings.json
 ```
 {
@@ -98,15 +146,15 @@ LLM_PROVIDER = "deepseek"
       "command": ".venv/bin/python",
       "env": {
         "LANG": "en_CN.UTF-8",
-        "PYTHONPATH": "./cvekit_mcp/src"
+        "PYTHONPATH": "../cvekit_mcp/src"
       },
       "args": [
-        "./cvekit_mcp/src/server.py",
+        "path_to/cvekit_mcp/src/server.py",
         "--gitee-token", 
         "xxx",
         "--llm-provider",
         "deepseek",
-        "--openai-key",
+        "--api-key",
         "xxx"
       ],
       "disabled": false,

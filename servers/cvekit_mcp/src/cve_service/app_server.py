@@ -68,7 +68,25 @@ def build_config_from_request(data: Dict) -> Dict:
     gitee_token = os.getenv("GITEE_TOKEN") or data.get("gitee_token")
     if not gitee_token:
         raise ValueError("必须提供 GITEE_TOKEN(环境变量或请求参数)")
-    
+
+    # 统一使用 api_key / llm_provider 命名，并做约束：
+    # - 当 LLM_PROVIDER != local 时，必须提供 api_key；
+    # - 当 LLM_PROVIDER == local 时，允许不提供 api_key（支持本地免鉴权模型）。
+    api_key = (
+        data.get("api_key")
+        or data.get("openai_key")
+        or os.getenv("API_KEY")
+        or os.getenv("OPENAI_KEY")
+        or os.getenv("SILICONFLOW_API_KEY")
+    )
+    llm_provider = data.get("llm_provider") or os.getenv("LLM_PROVIDER") or "openai"
+    provider_lower = str(llm_provider).strip().lower()
+
+    if not api_key and provider_lower != "local":
+        raise ValueError(
+            "当 LLM_PROVIDER 不为 'local' 时，必须提供大模型 API_KEY（可通过环境变量 API_KEY/OPENAI_KEY 或请求参数 api_key/openai_key 配置）。"
+        )
+
     return {
         "fork_repo_url": data.get("fork_repo", os.getenv("DEFAULT_FORK_REPO")),
         "target_repo_url": data.get("target_repo", os.getenv("DEFAULT_TARGET_REPO")),
@@ -77,8 +95,8 @@ def build_config_from_request(data: Dict) -> Dict:
         "signer_name": data.get("signer_name"),
         "signer_email": data.get("signer_email"),
         "branches": data.get("branches"),
-        "openai_key": data.get("openai_key", os.getenv("SILICONFLOW_API_KEY")),
-        "llm_provider": data.get("llm_provider", os.getenv("LLM_PROVIDER"))
+        "api_key": api_key,
+        "llm_provider": llm_provider,
     }
 
 def build_agent_message(action: str, data: Dict, config: Dict) -> str:
@@ -90,7 +108,7 @@ def build_agent_message(action: str, data: Dict, config: Dict) -> str:
         "clone_path": config["clone_path"],
         "gitee_token": config["gitee_token"],
         "llm_provider": config["llm_provider"],
-        "openai_key": config["openai_key"],
+        "api_key": config["api_key"],
         "signer": {"name": data.get("signer_name"), "email":data.get("signer_email")}
     }, ensure_ascii=False)
 
@@ -127,24 +145,70 @@ def build_agent_message(action: str, data: Dict, config: Dict) -> str:
 async def create_mcp_agent(
     model_type: str = "",
     local_config: str = "",
-    task_updater: Optional[TaskUpdater] = None 
+    task_updater: Optional[TaskUpdater] = None,
+    api_key: Optional[str] = None,
+    llm_provider: Optional[str] = None,
 ) -> CallbackMCPAgent:
-    """创建 MCP Agent"""
+    """创建 MCP Agent（封装 Camel 的 SiliconFlowModel）
+
+    - 优先使用调用方传入的 api_key，其次读取环境变量：
+      SILICONFLOW_API_KEY / API_KEY / OPENAI_KEY。
+    - 为兼容 Camel 内部的 @api_keys_required 装饰器，这里直接将 api_key
+      传入 ModelFactory.create，避免强依赖特定环境变量名。
+    """
     try:
         load_dotenv()
+
+        # 确定 MCP 配置文件路径：
+        # 1. 优先使用调用方传入的 local_config（通常来自 DEFAULT_LOCAL_CONFIG 环境变量）
+        # 2. 然后尝试环境变量 DEFAULT_LOCAL_CONFIG
+        # 3. 最后回退到当前目录下的 mcp_settings.json
+        config_path = (
+            local_config
+            or os.getenv("DEFAULT_LOCAL_CONFIG")
+            or os.path.join(os.path.dirname(__file__), "mcp_settings.json")
+        )
+
+        provider_lower = (llm_provider or os.getenv("LLM_PROVIDER") or "siliconflow").strip().lower()
+
+        # 统一模型名称：
+        # - 优先使用调用方显式传入的 model_type；
+        # - 其次使用环境变量 DEFAULT_MODEL_TYPE；
+        # - 最后在 siliconflow 场景下回退到合理默认值 deepseek-ai/DeepSeek-V3。
+        effective_model_type = (
+            model_type
+            or os.getenv("DEFAULT_MODEL_TYPE")
+            or ("deepseek-ai/DeepSeek-V3" if provider_lower == "siliconflow" else "gpt-4o-mini")
+        )
+
+        effective_api_key = (
+            api_key
+            or os.getenv("SILICONFLOW_API_KEY")
+            or os.getenv("API_KEY")
+            or os.getenv("OPENAI_KEY")
+        )
+
+        # 对于远程模型（当前 MCPAgent 只封装 SiliconFlow 远程模型），必须提供 API Key
+        if provider_lower != "local" and not effective_api_key:
+            raise RuntimeError(
+                "未配置大模型 API Key。请通过环境变量 SILICONFLOW_API_KEY / API_KEY / OPENAI_KEY "
+                "或请求参数 api_key/openai_key 进行配置。"
+            )
+
         model = ModelFactory.create(
             model_platform=ModelPlatformType.SILICONFLOW,
-            model_type=model_type,
+            model_type=effective_model_type,
             model_config_dict=SiliconFlowConfig(
                 temperature=0.2, stream=False
             ).as_dict(),
+            api_key=effective_api_key,
         )
         return CallbackMCPAgent(
             system_message=SYS_MSG,
             model=model,
-            local_config_path=local_config,
+            local_config_path=config_path,
             function_calling_available=False,
-            task_updater=task_updater 
+            task_updater=task_updater,
         )
     except Exception as e:
         raise RuntimeError(f"初始化 MCPAgent 失败: {str(e)}")
@@ -197,16 +261,20 @@ class CVEAgentExecutor(AgentExecutor):
 
             task = new_task(context.message)
             local_task_updater = TaskUpdater(event_queue, task.id, task.context_id)
-            await event_queue.enqueue_event(task)  
+            await event_queue.enqueue_event(task)
 
             action = task_params.get("action")
             agent_message = build_agent_message(action, task_params, config)
             print(f"【任务 {task.id}】Agent Message:{agent_message}")
 
+            # 将当前请求解析出的 llm_provider / api_key 透传给 MCP Agent，
+            # 避免 Camel 内部仍然强依赖 SILICONFLOW_API_KEY 环境变量导致初始化失败。
             local_agent = await create_mcp_agent(
                 model_type=os.getenv("DEFAULT_MODEL_TYPE"),
                 local_config=os.getenv("DEFAULT_LOCAL_CONFIG"),
-                task_updater=local_task_updater
+                task_updater=local_task_updater,
+                api_key=config.get("api_key"),
+                llm_provider=config.get("llm_provider"),
             )
 
             async def agent_run():

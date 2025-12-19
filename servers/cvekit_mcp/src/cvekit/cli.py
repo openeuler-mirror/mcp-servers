@@ -82,11 +82,18 @@ def main():
 
     # 补丁回移植参数
     backport_group = parser.add_argument_group('补丁回移植参数')
-    backport_group.add_argument('--openai-key', type=str,
-                               help='OpenAI API密钥 (也可通过OPENAI_KEY环境变量设置)')
-    backport_group.add_argument('--llm-provider', type=str, default='openai',
-                               choices=['openai', 'deepseek','siliconflow'],
-                               help='LLM提供商 (默认: openai)')
+    backport_group.add_argument(
+        '--api-key',
+        type=str,
+        help='LLM API 密钥 (也可通过 API_KEY 或 OPENAI_KEY 环境变量设置)'
+    )
+    backport_group.add_argument(
+        '--llm-provider',
+        type=str,
+        default='openai',
+        choices=['openai', 'deepseek', 'siliconflow', 'local'],
+        help='LLM提供商 (默认: openai；当为 local 时可不提供 --api-key，用于本地免鉴权模型)',
+    )
     backport_group.add_argument('--patch-dataset-dir', type=str,
                                help='补丁数据集目录 (也可通过PATCH_DATASET_DIR环境变量设置)')
     backport_group.add_argument('--error-message', type=str,
@@ -104,10 +111,20 @@ def main():
     args.branches = args.branches or os.environ.get('BRANCHES', "OLK-5.10,OLK-6.6,master")
     args.signer_name = args.signer_name or os.environ.get('SIGNER_NAME')
     args.signer_email = args.signer_email or os.environ.get('SIGNER_EMAIL')
-    args.openai_key = args.openai_key or os.environ.get('OPENAI_KEY', "")
+    # 统一使用 api_key 命名，同时兼容历史的 OPENAI_KEY 环境变量
+    args.api_key = args.api_key or os.environ.get('API_KEY') or os.environ.get('OPENAI_KEY', "")
     args.patch_dataset_dir = args.patch_dataset_dir or os.environ.get('PATCH_DATASET_DIR', os.path.join(os.path.expanduser("~"), "backports/patch_dataset"))
 
-    # 检查必要的gitee-token
+    # 当执行 backport 且使用非 local LLM 时，必须配置 api_key
+    if args.action == 'backport':
+        provider_lower = str(args.llm_provider or 'openai').strip().lower()
+        if not args.api_key and provider_lower != 'local':
+            parser.error(
+                "当 --llm-provider 不为 'local' 时，必须提供 LLM API 密钥 "
+                "(通过 --api-key 参数或 API_KEY/OPENAI_KEY 环境变量)。"
+            )
+
+    # 检查必要的 gitee-token
     if not args.gitee_token and args.action != 'setup-env' and args.action != 'backport':
         parser.error("必须提供Gitee访问令牌(通过--gitee-token参数或GITEE_TOKEN环境变量)")
 
@@ -255,7 +272,8 @@ def handle_backport(cve_id, args):
         "target_path": os.path.join(args.clone_dir, "kernel"),
         "new_patch": fixed_commit,
         "target_release": target_branch,
-        "openai_key": args.openai_key,
+        # 内部配置字段仍使用 openai_key 以兼容 backporting 逻辑，这里用统一的 api_key 映射过去
+        "openai_key": args.api_key,
         "llm_provider": args.llm_provider,
         "tag": cve_id,
         "patch_dataset_dir": os.path.join(args.patch_dataset_dir, cve_id) if args.patch_dataset_dir else os.path.join(os.path.expanduser("~"), "backports/patch_dataset", cve_id),

@@ -72,6 +72,17 @@ export GITEE_TOKEN=${GITEE_TOKEN}
 export SIGNER_NAME=${SIGNER_NAME}
 # 配置用户邮箱
 export SIGNER_EMALI=${SIGNER_EMAIL}
+
+# （可选）配置大模型提供商及密钥
+# 使用云端模型示例（需提供 API_KEY）：
+# export LLM_PROVIDER=openai
+# export API_KEY=<your_llm_api_key>
+#
+# 使用本地免鉴权模型示例（仅当本地服务提供 OpenAI 兼容的 /v1/chat/completions 接口）：
+# export LLM_PROVIDER=local
+# export MODEL_NAME=codellama-32b-instruct   # 或你的本地模型名称
+# # 本地模型如不需要鉴权，可不设置 API_KEY；如需鉴权则正常配置 API_KEY
+# export API_KEY=<optional_local_llm_token>
 ```
 
 2. 解析issue
@@ -107,5 +118,5 @@ cvekit --action create-pr --cve-id ${CVE_ID} --branch ${BRANCH_NAME}
 
 8. 修复补丁冲突
 ```bash
-cvekit --action backport --cve-id ${CVE_ID} --branch ${BRANCH_NAME} --openai-key ${OPENAI_KEY} --llm-provider ${LLVM_PROVIDER}
+cvekit --action backport --cve-id ${CVE_ID} --branch ${BRANCH_NAME} --api-key ${API_KEY} --llm-provider ${LLM_PROVIDER}
 ```

@@ -6,7 +6,7 @@
 - 输入：一个配置字典或命令行参数，核心字段：
     - test_suite_dir: 测试套目录，例如 /home/xxx/mugen/testcases/feature-test/epol/tig
     - software_name : 业务软件名称，例如 tig / hbase / mpv 等
-    - openai_key    : LLM API 密钥
+    - api_key       : LLM API 密钥
     - llm_provider  : LLM 提供商，支持 openai / deepseek（与 invoke_llm.py 一致）
     - server_root   : 生成的 MCP server 所在 servers 根目录（默认推断当前仓库根下的 servers/）
 
@@ -459,7 +459,7 @@ def run_generate_mcp_from_config(config: Dict[str, object], debug_mode: bool = F
     配置字段：
         - test_suite_dir (str): 必选，测试套目录。
         - software_name  (str): 必选，业务软件名，用于命名 server。
-        - openai_key     (str): 必选，LLM API key。
+        - api_key        (str): 必选，LLM API key。
         - llm_provider   (str): 可选，默认 "openai"，支持 "openai" / "deepseek"。
         - server_root    (str): 可选，MCP server 生成到的 servers 根目录，
                                 默认推断为当前文件所在仓库根目录下的 "servers"。
@@ -478,7 +478,13 @@ def run_generate_mcp_from_config(config: Dict[str, object], debug_mode: bool = F
 
     test_suite_dir = str(config.get("test_suite_dir", "")).strip()
     software_name = str(config.get("software_name", "")).strip()
-    openai_key = str(config.get("openai_key", "")).strip() or os.environ.get("OPENAI_KEY", "")
+    # 统一使用 api_key 命名，同时兼容历史 openai_key 字段和 OPENAI_KEY 环境变量
+    api_key = (
+        str(config.get("api_key", "")).strip()
+        or str(config.get("openai_key", "")).strip()
+        or os.environ.get("API_KEY", "")
+        or os.environ.get("OPENAI_KEY", "")
+    )
     llm_provider = str(config.get("llm_provider", "")).strip() or "openai"
 
     if not test_suite_dir or not os.path.isdir(test_suite_dir):
@@ -491,8 +497,8 @@ def run_generate_mcp_from_config(config: Dict[str, object], debug_mode: bool = F
         logger.error(msg)
         return {"status": "failed", "message": msg}
 
-    if not openai_key:
-        msg = "openai_key 未提供（既没有在配置中也没有在环境变量 OPENAI_KEY 中找到）"
+    if not api_key:
+        msg = "api_key 未提供（既没有在配置中也没有在环境变量 API_KEY/OPENAI_KEY 中找到）"
         logger.error(msg)
         return {"status": "failed", "message": msg}
 
@@ -523,7 +529,7 @@ def run_generate_mcp_from_config(config: Dict[str, object], debug_mode: bool = F
         llm = ChatOpenAI(
             temperature=0.4,
             model=model_name,
-            api_key=openai_key,
+            api_key=api_key,
             openai_api_base=base_url,
             verbose=debug_mode,
         )
@@ -631,7 +637,7 @@ def main() -> None:
         python -m cvekit.utils.testsuite_mcp_generator \\
             --test-suite-dir /home/xxx/mugen/testcases/feature-test/epol/tig \\
             --software-name tig \\
-            --openai-key xxxxx \\
+            --api-key xxxxx \\
             --llm-provider openai
     """
     parser = argparse.ArgumentParser(
@@ -648,9 +654,9 @@ def main() -> None:
         help="业务软件名称，例如 tig / hbase / mpv 等",
     )
     parser.add_argument(
-        "--openai-key",
+        "--api-key",
         required=False,
-        help="LLM API key，可选；如果不传则从环境变量 OPENAI_KEY 读取",
+        help="LLM API key，可选；如果不传则从环境变量 API_KEY 或 OPENAI_KEY 读取",
     )
     parser.add_argument(
         "--llm-provider",
@@ -681,7 +687,7 @@ def main() -> None:
     config = {
         "test_suite_dir": args.test_suite_dir,
         "software_name": args.software_name,
-        "openai_key": args.openai_key,
+        "api_key": args.api_key,
         "llm_provider": args.llm_provider,
         "server_root": args.server_root,
     }
