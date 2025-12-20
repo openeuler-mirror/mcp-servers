@@ -428,16 +428,16 @@ def analyze_branches(
                     cached_result = get_cached_data(BRANCHES_ANALYSIS_CACHE, cache_key)
                     if cached_result:  
                         for cache_item in cached_result:
-                            if cache_item.get("目标分支") == target_branch:
+                            if cache_item.get(i18n("目标分支")) == target_branch:
                                 if backported_patch_path:
-                                    cache_item["冲突点"] = backported_patch_path
-                                    cache_item["适配状态"] = i18n('成功')
-                                    cache_item["建议调整文件"] = 'N/A'
+                                    cache_item[i18n("冲突点")] = backported_patch_path
+                                    cache_item[i18n("适配状态")] = i18n('成功')
+                                    cache_item[i18n("建议调整文件")] = 'N/A'
                                 
-                                cache_item["差异文件"] = diff_path if diff_path else 'N/A'
+                                cache_item[i18n("差异文件")] = diff_path if diff_path else 'N/A'
                                 break 
                         save_cache(BRANCHES_ANALYSIS_CACHE, cache_key, cached_result)
-                        logging.info(f"缓存已更新: {cache_key} 中分支 {target_branch} 的字段已同步")
+                        logging.info(i18n("缓存已更新: 分支 %s 的字段已同步")% target_branch)
                 else:
                     delete_cache_key(BRANCHES_ANALYSIS_CACHE, cache_key)
                     error_msg = backport_result.get('error', '未知错误')
