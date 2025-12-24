@@ -1,4 +1,3 @@
-# 通知: 本项目已经正式迁移至 [AtomGit](https://atomgit.com/openeuler/mcp-servers) 平台
 # openEuler MCP Servers仓库，欢迎大家贡献
 
 <div align="center">
