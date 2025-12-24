@@ -101,11 +101,14 @@ def create_pr(
             "error": i18n("推送分支时发生未知错误：%s") % str(e)
         }
     # =====================================================================================
-
+    if fork_repo_url.startswith('https://gitee.com'):
+        api_type = 'gitee'
+    else:
+        api_type = 'gitcode'
 
     try:
         subprocess.run(
-            ['oegitext', 'config', '-token', gitee_token],
+            ['oegitext', 'config', '-token', gitee_token, '-api-type', api_type],
             check=True,
             cwd=clone_dir,
             capture_output=True,
