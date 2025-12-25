@@ -164,7 +164,8 @@ def get_conflict_file_message(cve_id, repo, clone_dir):
                 conflict_message = f"{conflict_message}\n    {res.group(1)}"
             else:
                 conflict_message = f"\nConflicts:\n     {res.group(1)}"
-    conflict_message = f"{conflict_message}\n[ Context conflict ]"
+    if conflict_message:
+        conflict_message = f"{conflict_message}\n[ Context conflict ]"
     return conflict_message
 
 
