@@ -142,8 +142,11 @@ def create_pr(
             "error": i18n("提交pr失败: %s, stderr: %s") % (str(e), str(e.stderr))
         }
     result = json.loads(result.stdout)
+    html_url = result.get('html_url', '')
+    if not html_url:
+        html_url = result.get('web_url', '')
 
     return {
         "status": "success",
-        "pr_html_url": result['html_url'],
+        "pr_html_url": html_url,
     }

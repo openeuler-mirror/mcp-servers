@@ -199,7 +199,7 @@ def handle_action(args):
             'repo_path': repo_path
         }
     if args.cve_id and not args.issue_url:
-        args.issue_url = get_issue_url_from_cve_id(args.cve_id)
+        args.issue_url = get_issue_url_from_cve_id(args.cve_id, args.gitee_token)
 
     cve_id = args.cve_id if args.cve_id else fetch_cve_id(args.issue_url, args.gitee_token, not args.no_cache)
 

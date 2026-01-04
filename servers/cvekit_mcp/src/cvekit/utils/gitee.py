@@ -41,6 +41,12 @@ def parse_gitee_issue_url(
         pattern = r"https://gitee.com/([^/]+)/([^/]+)/issues/([^/]+)"
         match = re.match(pattern, issue_url)
         if not match:
+            pattern = r"https://atomgit.com/([^/]+)/([^/]+)/issues/([^/]+)"
+            match = re.match(pattern, issue_url)
+        if not match:
+            pattern = r"https://gitcode.com/([^/]+)/([^/]+)/issues/([^/]+)"
+            match = re.match(pattern, issue_url)
+        if not match:
             raise ValueError(i18n("无效的gitee issue URL格式"))
         org = match.group(1)
         repo = match.group(2)
@@ -51,8 +57,16 @@ def parse_gitee_issue_url(
     
     # 从Gitee API获取issue描述
     try:
+        if issue_url.startswith("https://gitee.com"):
+            api_url = issue_url.replace("gitee.com", "gitee.com/api/v5/repos")
+        elif issue_url.startswith("https://gitcode.com"):
+            api_url = issue_url.replace("gitcode.com", "api.gitcode.com/api/v5/repos")
+        elif issue_url.startswith("https://atomgit.com"):
+            api_url = issue_url.replace("atomgit.com", "api.gitcode.com/api/v5/repos")
+        else:
+            raise RuntimeError(f"issue url not recognized: {issue_url}")
         issue_api_url = (
-            issue_url.replace("gitee.com", "gitee.com/api/v5/repos")
+            api_url
             + "?access_token="
             + gitee_token
         )
@@ -84,6 +98,7 @@ def _clone_repository(
         org_name: str,
         repo_name: str,
         clone_dir: str,
+        fork_repo_url,
         gitee_token: str = None
 ) -> str:
     """克隆Gitee仓库到本地（使用浅克隆）"""
@@ -112,12 +127,17 @@ def _clone_repository(
                 shutil.rmtree(local_path)
         
         logger.info(f"使用浅克隆方式克隆仓库到 {local_path}")
-        
-        if gitee_token:
-            clone_url = f"https://oauth2:{gitee_token}@gitee.com/{org_name}/{repo_name}.git"
+        if fork_repo_url.startswith("https://gitee.om"):
+            if gitee_token:
+                clone_url = f"https://oauth2:{gitee_token}@gitee.com/{org_name}/{repo_name}.git"
+            else:
+                clone_url = f"https://gitee.com/{org_name}/{repo_name}.git"
         else:
-            clone_url = f"https://gitee.com/{org_name}/{repo_name}.git"
-        
+            if gitee_token:
+                clone_url = f"https://oauth2:{gitee_token}@gitcode.com/{org_name}/{repo_name}.git"
+            else:
+                clone_url = f"https://gitcode.com/{org_name}/{repo_name}.git"
+
         result = subprocess.run(
             ["git", "clone", clone_url, local_path],
             check=True,
@@ -182,6 +202,7 @@ def setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name=None, fo
             org_name=official_org,
             repo_name="kernel",
             clone_dir=clone_dir,
+            fork_repo_url=fork_repo_url,
             gitee_token=gitee_token
         )
     
@@ -191,7 +212,10 @@ def setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name=None, fo
     fork_remote_name = f"fork-{fork_org}"
     if fork_remote_name not in [remote.name for remote in repo.remotes]:
         logger.debug(f"添加远程仓库: {fork_remote_name}")
-        auth_url = f"https://oauth2:{gitee_token}@gitee.com/{fork_org}/{repo_name}.git"
+        if fork_repo_url.startswith("https://gitee.com"):
+            auth_url = f"https://oauth2:{gitee_token}@gitee.com/{fork_org}/{repo_name}.git"
+        else:
+            auth_url = f"https://oauth2:{gitee_token}@gitcode.com/{fork_org}/{repo_name}.git"
         repo.create_remote(fork_remote_name, auth_url)
         repo.git.fetch('origin')
         repo.remote(fork_remote_name).fetch()
@@ -227,26 +251,39 @@ def setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name=None, fo
     return repo, repo_path
 
 
-@cached(
-    ISSUE_CACHE,
-    key_builder=lambda cve_id, use_cache=True: _get_cache_key(
-        f"search_{cve_id}"
-    ),
-    use_cache_kw="use_cache",
-)
-def get_issue_url_from_cve_id(cve_id: str, use_cache: bool = True) -> str:
-    request_url = f"https://gitee.com/api/v5/search/issues?q={cve_id}&page=1&per_page=20&repo=src-openeuler%2Fkernel&order=desc"
-    
+def get_issue_url_by_search(search_url, cve_id):
+    html_url = ''
     try:
-        response = get_with_retry(request_url)
+        response = get_with_retry(search_url)
         response.raise_for_status()
         issue_data = response.json()
     except Exception as e:
         logger.error(f"搜索issues失败: {str(e)}")
-        raise ValueError(i18n("搜索issues失败: %s") % (str(e)))
+        return html_url
     if not issue_data:
-        raise ValueError(i18n("无法搜索到issue， cve id: %s") % cve_id)
-    html_url = issue_data[0].get('html_url')
-    if not html_url:
-        raise ValueError(i18n("获取html_url失败， cve id: %s") % cve_id)
+        return html_url
+    for data in issue_data:
+        title = data.get('title', '').strip()
+        if cve_id == title:
+            html_url = data.get('html_url')
+            break
     return html_url
+
+
+@cached(
+    ISSUE_CACHE,
+    key_builder=lambda cve_id, get_issue_url_from_cve_id=None, use_cache=True: _get_cache_key(
+        f"search_{cve_id}"
+    ),
+    use_cache_kw="use_cache",
+)
+def get_issue_url_from_cve_id(cve_id: str, gitee_token: str = None, use_cache: bool = True) -> str:
+    if gitee_token:
+        request_url = f"https://api.gitcode.com/api/v5/search/issues?access_token={gitee_token}&q={cve_id}&repo=src-openeuler%2Fkernel"
+        issue_url = get_issue_url_by_search(request_url, cve_id)
+    if not issue_url:
+        request_url = f"https://gitee.com/api/v5/search/issues?q={cve_id}&page=1&per_page=20&repo=src-openeuler%2Fkernel&order=desc"
+        issue_url = get_issue_url_by_search(request_url, cve_id)
+    if not issue_url:
+        raise RuntimeError(i18n("获取html_url失败， cve id: %s") % cve_id)
+    return issue_url
