@@ -8,18 +8,54 @@ import os
 from .patch import getUrlText
 from .commits import get_vulnerability_commits
 from .locales import i18n
+from .apply_patch import get_patch
 
 logger = logging.getLogger(__name__)
 
 
-def generate_pr_body(cve_id, issue_url):
-    """读取标题和内容"""
-    introduced_commit, fixed_commit = get_vulnerability_commits(cve_id)
+def generate_pr_body(cve_id, issue_url, clone_dir: str):
+    """读取 PR 标题和内容。
 
+    优先从 kernel.org 提交页面解析 commit-subject；
+    若网络不可用或页面结构变化，则回退到本地 patch 文件中解析 Subject 行，
+    避免出现 NoneType.group 这类错误。
+    """
+    introduced_commit, fixed_commit = get_vulnerability_commits(
+        cve_id,
+        clone_dir=clone_dir,
+    )
+
+    subject = None
+
+    # 1. 优先从 kernel.org 网页获取 subject
     commit_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id={fixed_commit}"
-    commit_text = getUrlText(commit_url)
-    pattern = re.compile(r"<div class='commit-subject'>(.+?)</div>", re.S)
-    subject = re.search(pattern, commit_text).group(1)
+    try:
+        commit_text = getUrlText(commit_url)
+        # 兼容单引号 / 双引号
+        subject_pattern = re.compile(r"<div class=['\"]commit-subject['\"]>(.+?)</div>", re.S)
+        subject_match = re.search(subject_pattern, commit_text)
+        if not subject_match:
+            raise RuntimeError("网页中未找到 commit-subject")
+        subject = subject_match.group(1).strip()
+    except Exception as e:
+        logger.warning("从网页获取 PR 标题失败(%s)，尝试从本地 patch 解析", e)
+        # 2. 当网页不可用或解析失败时，回退到本地 patch
+        try:
+            patch_path = get_patch(fixed_commit, clone_dir)
+            with open(patch_path, "r", encoding="utf-8", errors="ignore") as f:
+                patch_content = f.read()
+
+            # 解析 Subject: 行
+            subject_match = re.search(r"^Subject:\s*(.+)$", patch_content, re.MULTILINE)
+            if subject_match:
+                subject = subject_match.group(1).strip()
+        except Exception as e2:
+            logger.error("从本地 patch 解析 PR 标题失败: %s", e2)
+
+    # 3. 兜底：确保 subject 至少是一个合理的默认值
+    if not subject:
+        subject = f"Fix {cve_id}"
+
     result = f"""{subject}
 
 {issue_url}
@@ -57,7 +93,7 @@ def create_pr(
     base_org_name = parts[-2]
     base_repo_name = parts[-1].replace('.git', '')
     title = f"Fix {cve_id}"
-    body = generate_pr_body(cve_id, issue_url)
+    body = generate_pr_body(cve_id, issue_url, clone_dir)
     issue_num = os.path.basename(issue_url)
     fix_branch = f"fix-{branch}-{issue_num}"
 

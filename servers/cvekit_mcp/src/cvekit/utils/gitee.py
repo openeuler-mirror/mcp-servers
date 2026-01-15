@@ -279,9 +279,10 @@ def get_issue_url_by_search(search_url, cve_id):
 )
 def get_issue_url_from_cve_id(cve_id: str, gitee_token: str = None, use_cache: bool = True) -> str:
     if gitee_token:
-        request_url = f"https://api.gitcode.com/api/v5/search/issues?access_token={gitee_token}&q={cve_id}&repo=src-openeuler%2Fkernel"
+        request_url = f"https://api.atomgit.com/api/v5/repos/src-openeuler/kernel/issues?access_token={gitee_token}&search={cve_id}"
         issue_url = get_issue_url_by_search(request_url, cve_id)
     if not issue_url:
+        logger.info(f"get_issue_url_from_cve_id: gitee_token not found, use gitee.com")
         request_url = f"https://gitee.com/api/v5/search/issues?q={cve_id}&page=1&per_page=20&repo=src-openeuler%2Fkernel&order=desc"
         issue_url = get_issue_url_by_search(request_url, cve_id)
     if not issue_url:

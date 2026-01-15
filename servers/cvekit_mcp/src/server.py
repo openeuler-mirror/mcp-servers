@@ -88,6 +88,8 @@ def run_cvekit(action: str, params: dict) -> dict:
                 cmd.append(f'--patch-path={params["patch_path"]}')
             if 'fork_repo_url' in params:
                 cmd.append(f'--fork-repo-url={params["fork_repo_url"]}')
+            if 'clone_dir' in params:
+                cmd.append(f'--clone-dir={params["clone_dir"]}')
             if 'branch' in params:
                 cmd.append(f'--branch={params["branch"]}')
             if 'signer_name' in params:
@@ -95,6 +97,10 @@ def run_cvekit(action: str, params: dict) -> dict:
             if 'signer_email' in params:
                 cmd.append(f'--signer-email={params["signer_email"]}')
 
+        elif action == 'get-commits':
+            if 'clone_dir' in params:
+                cmd.append(f'--clone-dir={params["clone_dir"]}')
+                
         elif action == 'create-pr':
             if 'branch' in params:
                 cmd.append(f'--branch={params["branch"]}')
@@ -102,6 +108,8 @@ def run_cvekit(action: str, params: dict) -> dict:
                 cmd.append(f'--fork-repo-url={params["fork_repo_url"]}')
             if 'repo_url' in params:
                 cmd.append(f'--repo-url={params["repo_url"]}')
+            if 'clone_dir' in params:
+                cmd.append(f'--clone-dir={params["clone_dir"]}')
 
         result = subprocess.run(
             cmd,
@@ -269,11 +277,13 @@ def setup_env(
     """))
 def get_commits(
     cve_id: str = Field(..., description="cve id"),
-    gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
+    gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)")),
+    clone_dir: Optional[str] = Field(None, description=i18n("克隆目录(可选)"))
 ) -> str:
     result = run_cvekit('get-commits', {
         'cve_id': cve_id,
-        'gitee_token': gitee_token
+        'gitee_token': gitee_token,
+        'clone_dir': clone_dir
     })
     
     # Check for errors first
@@ -525,6 +535,7 @@ def analyze_branches(
         2. 参数说明：
            - branch: 用户在第四步中选择的分支名（必须从第四步的选择结果中获取）
            - patch_path: 第四步分析结果中该分支对应的冲突点或补丁路径
+           - clone_dir: 本地克隆目录, 必须与第四步使用的 clone_dir 保持一致
         3. 执行补丁应用操作：
            - 切换到指定分支
            - 应用补丁文件
@@ -545,6 +556,7 @@ def apply_patch(
     branch: Optional[str] = Field(description=i18n("要应用patch的分支名")),
     fork_repo_url: Optional[str] = Field(description=i18n("fork仓库url")),
     patch_path: Optional[str] = Field(description=i18n("patch路径")),
+    clone_dir: Optional[str] = Field(None, description=i18n("克隆目录(可选，与第四步保持一致)")),
     signer_name: Optional[str] = Field(description=i18n("提交者姓名")),
     signer_email: Optional[str] = Field(None, description=i18n("提交者邮箱")),
     gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
@@ -565,6 +577,7 @@ def apply_patch(
         'branch': branch,
         'fork_repo_url': fork_repo_url,
         'patch_path': patch_path,
+        'clone_dir': clone_dir,
         'signer_name': signer_name,
         'signer_email': signer_email,
         'gitee_token': gitee_token
@@ -592,8 +605,9 @@ def apply_patch(
         1. 对于第五步中修复成功的分支，创建并提交Pull Request
         2. 参数说明：
            - branch: 受影响分支名，作为提交PR的目标分支
-           - repo_url: 目标仓库URL（若用户未提供，使用默认值）
+           - repo_url: 目标仓库URL（必须由用户显式提供）
            - fork_repo_url: fork仓库URL
+           - clone_dir: 本地克隆目录，必须与第四步/第五步使用的 clone_dir 保持一致
         3. 执行PR创建操作：
            - 创建PR标题（包含CVE ID和分支信息）
            - 创建PR描述（包含修复详情）
@@ -609,7 +623,8 @@ def create_pr(
     cve_id: str = Field(..., description="cve id"),
     branch: Optional[str] = Field(None, description=i18n("受影响分支名，目标分支")),
     fork_repo_url: Optional[str] = Field(None, description=i18n("fork仓库url")),
-    repo_url: Optional[str] = Field('https://gitee.com/openeuler/kernel', description=i18n("目标仓库url")),
+    repo_url: str = Field(..., description=i18n("目标仓库url")),
+    clone_dir: Optional[str] = Field(None, description=i18n("克隆目录(可选，与第四/第五步保持一致)")),
     gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
 ) -> str:
     result = run_cvekit('create-pr', {
@@ -617,6 +632,7 @@ def create_pr(
         'branch': branch,
         'fork_repo_url': fork_repo_url,
         'repo_url': repo_url,
+        'clone_dir': clone_dir,
         'gitee_token': gitee_token
     })
     if 'error' in result or 'error' in result.get('status'):

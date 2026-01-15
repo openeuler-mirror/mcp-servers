@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 
 from .gitee import setup_repository
-from .patch import get_cve_patch, getUrlText
+from .patch import get_cve_patch, getUrlText, ensure_patch_file
 from .commits import get_vulnerability_commits
 from .locales import i18n
 from .cache import BRANCHES_ANALYSIS_CACHE, _get_cache_key, cached
@@ -13,27 +13,44 @@ from .tools.project import safe_git_reset_hard
 logger = logging.getLogger(__name__)
 
 def get_commit_date(repo, commit_hash, linux_repo=None):
-    """获取commit的提交时间（Unix时间戳）
+    """获取 commit 的提交日期字符串（YYYY-MM-DD），用于 git log --since
+    
+    注意：
+        - 直接使用 git 命令（--date=short --format=%cd）来获取日期，
+          避免 Python 本地时区与 git 行为不一致的问题。
     
     Args:
-        repo: Git仓库对象（kernel仓库，用于回退）
-        commit_hash: 要查询的commit hash
-        linux_repo: 可选，linux仓库对象，优先从linux仓库查询
+        repo: Git 仓库对象（kernel 仓库，用于回退）
+        commit_hash: 要查询的 commit hash
+        linux_repo: 可选，linux 仓库对象，优先从 linux 仓库查询
     """
-    # 优先从linux仓库查询
+    # 优先从 linux 仓库查询
     if linux_repo is not None:
         try:
-            commit = linux_repo.commit(commit_hash)
-            return commit.committed_date
+            # 使用 git log -1 --date=short --format=%cd 输出类似 2019-02-27 的日期
+            date_str = linux_repo.git.log(
+                "-1",
+                "--date=short",
+                "--format=%cd",
+                commit_hash,
+            ).strip()
+            return date_str
         except Exception as e:
-            logger.debug(f"无法从linux仓库获取commit {commit_hash} 的提交时间: {str(e)}，尝试从kernel仓库查询")
+            logger.debug(
+                f"无法从 linux 仓库获取 commit {commit_hash} 的提交日期: {str(e)}，尝试从 kernel 仓库查询"
+            )
     
-    # 如果linux仓库查询失败，从kernel仓库查询
+    # 如果 linux 仓库查询失败，从 kernel 仓库查询
     try:
-        commit = repo.commit(commit_hash)
-        return commit.committed_date
+        date_str = repo.git.log(
+            "-1",
+            "--date=short",
+            "--format=%cd",
+            commit_hash,
+        ).strip()
+        return date_str
     except Exception as e:
-        logger.warning(f"无法获取commit {commit_hash} 的提交时间: {str(e)}")
+        logger.warning(f"无法获取 commit {commit_hash} 的提交日期: {str(e)}")
         return None
 
 def get_commit_message(repo, commit_hash, linux_repo=None, max_length=200):
@@ -85,8 +102,8 @@ def get_branches_containing_commit(repo, commit_hash, target_branches, linux_rep
     
     result = []
     
-    # 获取commit的提交时间（优先从linux仓库查询）
-    commit_date = get_commit_date(repo, commit_hash, linux_repo=linux_repo)
+    # 获取 commit 的提交日期字符串（优先从 linux 仓库查询）
+    date_str = get_commit_date(repo, commit_hash, linux_repo=linux_repo)
     
     # 为每个分支找到正确的分支引用
     unique_branches = []
@@ -110,6 +127,7 @@ def get_branches_containing_commit(repo, commit_hash, target_branches, linux_rep
         for branch_ref in branch_refs:
             try:
                 # 尝试检查分支是否存在（通过尝试获取分支的HEAD）
+                logger.info(f"执行 git rev-parse {branch_ref}")
                 repo.git.rev_parse(branch_ref)
                 unique_branches.append((branch_name, branch_ref))
                 found = True
@@ -123,19 +141,19 @@ def get_branches_containing_commit(repo, commit_hash, target_branches, linux_rep
     if not unique_branches:
         return []
     
-    # 如果无法获取commit时间，回退到原始方法
-    if commit_date is None:
-        logger.debug(f"无法获取commit时间，使用原始方法查询: {commit_hash}")
+    # 如果无法获取 commit 日期，回退到原始方法
+    if not date_str:
+        logger.debug(f"无法获取 commit 日期，使用原始方法查询: {commit_hash}")
         for branch_name, branch_ref in unique_branches:
             try:
-                if repo.git.branch("--contains", commit_hash, branch_ref):
+                # 使用 -a 确保同时检查本地和远程分支，否则只有远程跟踪分支时会查不到
+                logger.info(f"执行 git branch -a --contains {commit_hash} {branch_ref}")
+                if repo.git.branch("-a", "--contains", commit_hash, branch_ref):
                     result.append(branch_name)
             except Exception:
                 continue
         return result
     
-    # 将Unix时间戳转换为日期格式（YYYY-MM-DD）
-    date_str = datetime.fromtimestamp(commit_date).strftime('%Y-%m-%d')
     logger.debug(f"使用时间范围优化查询: commit={commit_hash}, date={date_str}")
     
     # 对每个分支，使用时间范围查询
@@ -145,6 +163,10 @@ def get_branches_containing_commit(repo, commit_hash, target_branches, linux_rep
             # 方法1: 直接检查commit是否在分支历史中
             # 使用 --since 参数限制查询范围，只查询该commit提交时间之后的commit
             # 直接查询该时间之后的commit hash列表，然后检查目标commit是否在其中
+            logger.info(
+                f"执行 git log --since {date_str} --format=%H {branch_ref} "
+                f"用于检查 commit 是否在分支历史中: {commit_hash}"
+            )
             log_output = repo.git.log(
                 "--since", date_str,
                 "--format=%H",
@@ -162,6 +184,10 @@ def get_branches_containing_commit(repo, commit_hash, target_branches, linux_rep
         # 这适用于通过PR合入的情况，commit message中可能会提到上游commit hash
         if not found:
             try:
+                logger.info(
+                    f"执行 git log --since {date_str} --grep {commit_hash} {branch_ref} "
+                    "用于在 commit message 中搜索上游 commit hash"
+                )
                 grep_output = repo.git.log(
                     "--since", date_str,
                     "--grep", commit_hash,
@@ -177,7 +203,9 @@ def get_branches_containing_commit(repo, commit_hash, target_branches, linux_rep
         # 如果两种方法都没找到，尝试使用原始方法（不使用时间范围）
         if not found:
             try:
-                if repo.git.branch("--contains", commit_hash, branch_ref):
+                # 同样使用 -a，避免只存在远程分支时查不到
+                logger.info(f"执行 git branch -a --contains {commit_hash} {branch_ref}（回退查询）")
+                if repo.git.branch("-a", "--contains", commit_hash, branch_ref):
                     found = True
             except Exception:
                 pass
@@ -205,6 +233,7 @@ def git_apply_check_patch(
         try:
             current_branch = repo.active_branch.name if not repo.head.is_detached else None
             if current_branch != branch_name:
+                logger.info(f"执行 git checkout {branch_name}（当前分支: {current_branch}）")
                 logger.debug(f"切换到分支: {branch_name}")
                 repo.git.checkout(branch_name)
         except Exception as e:
@@ -214,6 +243,7 @@ def git_apply_check_patch(
     
     # 检查补丁是否可应用
     try:
+        logger.info(f"执行 git apply --check {patch_path}（repo: {repo_path}）")
         repo.git.apply("--check", patch_path)
         return {
             "status": "success",
@@ -228,6 +258,8 @@ def git_apply_check_patch(
             "patch_path": patch_path,
             "error": str(e)
         }
+
+
 
 def check_cve_patch_apply_status(
         fork_repo_url: str,
@@ -244,29 +276,16 @@ def check_cve_patch_apply_status(
 
         if fixed_commit:
             commit_hash = fixed_commit
-            
             patch_filename = f"commit_patch_{commit_hash}.patch"
             patch_path = os.path.abspath(os.path.join(image_dir, patch_filename))
-            repo_linux = git.Repo(os.path.join(clone_dir, "linux"))
-            patch_file = repo_linux.git.format_patch(
-                "-1",               
-                commit_hash,           
-                o= image_dir,
-                quiet=True
+            # 固定 commit 的场景：优先从本地 linux 仓库生成 patch，如果失败再从 kernel.org 获取并校验
+            patch_path = ensure_patch_file(
+                commit_hash=commit_hash,
+                patch_path=patch_path,
+                clone_dir=clone_dir,
             )
-        
-            if patch_file:
-                default_patch_name = patch_file.split("\n")[0].strip()
-                default_patch_path = os.path.abspath(os.path.join(image_dir, default_patch_name))
-                if os.path.exists(patch_path):
-                    os.remove(patch_path) 
-                os.rename(default_patch_path, patch_path)
-
-            else:
-                patch_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/patch/?id={commit_hash}"
-                with open(patch_path, "w") as f:
-                    f.write(getUrlText(patch_url))
         else:
+            logger.info(f"从 CVE 管理平台获取补丁信息: {patch_api_url}")
             patch_info = get_cve_patch(patch_api_url)
             if not patch_info:
                 logger.error("无法获取补丁信息")
@@ -275,8 +294,13 @@ def check_cve_patch_apply_status(
             patch_filename = f"commit_patch_{commit_hash}.patch"
             patch_path = os.path.abspath(os.path.join(image_dir, patch_filename))
             patch_url = patch_info["patch_url"]
-            with open(patch_path, "w") as f:
-                f.write(getUrlText(patch_url))
+            # CVE 场景：优先从本地 linux 仓库生成 patch，如果失败再根据 CVE 提供的 URL 从网络获取并校验
+            patch_path = ensure_patch_file(
+                commit_hash=commit_hash,
+                patch_path=patch_path,
+                clone_dir=clone_dir,
+                patch_url=patch_url,
+            )
             logger.info(f"检查补丁能否应用: {commit_hash}")
         
         # 处理单个补丁，传递 repo 参数避免重复调用 setup_repository
@@ -349,22 +373,29 @@ def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, br
                            if branch in branchList and branch not in fixed_branches]
     logger.info(f"需要补丁的分支: {needs_patch_branches}")
     
+    logger.info(f"执行 git fetch --all（repo: {repo.working_dir}）")
     repo.git.fetch('--all')
     
     for branch in needs_patch_branches:
         remote_branch = f"origin/{branch}"
         try:
             # 重置工作区，清理未提交的改动（使用安全函数处理锁文件问题）
+            logger.info(
+                f"准备重置工作区（safe_git_reset_hard），当前分支: "
+                f"{repo.active_branch.name if not repo.head.is_detached else 'DETACHED'}"
+            )
             safe_git_reset_hard(repo)
         except Exception as e:
             logger.warning(f"重置工作区失败: {str(e)}")
         
         try:
             # 尝试切换到本地分支（如果存在）
+            logger.info(f"执行 git checkout {branch}")
             repo.git.checkout(branch)
         except Exception:
             try:
                 # 如果本地分支不存在，创建并切换到跟踪分支
+                logger.info(f"执行 git checkout -b {branch} --track {remote_branch}")
                 repo.git.checkout('-b', branch, '--track', remote_branch)
             except Exception as e:
                 logger.error(f"创建并切换分支 {branch} 失败: {str(e)}")
