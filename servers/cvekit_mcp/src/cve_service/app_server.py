@@ -87,10 +87,32 @@ def build_config_from_request(data: Dict) -> Dict:
             "当 LLM_PROVIDER 不为 'local' 时，必须提供大模型 API_KEY（可通过环境变量 API_KEY/OPENAI_KEY 或请求参数 api_key/openai_key 配置）。"
         )
 
+    # 统一 clone_dir 命名，兼容历史参数/环境变量：
+    # - 优先使用请求中的 clone_dir；
+    # - 兼容旧参数名 clone_path；
+    # - 再回退到环境变量 DEFAULT_CLONE_DIR / DEFAULT_CLONE_PATH。
+    clone_dir = (
+        data.get("clone_dir")
+        or data.get("clone_path")
+        or os.getenv("DEFAULT_CLONE_DIR")
+        or os.getenv("DEFAULT_CLONE_PATH")
+    )
+
+    # 统一 repo_url 命名，兼容历史参数/环境变量：
+    # - 优先使用请求中的 repo_url；
+    # - 兼容旧参数名 target_repo；
+    # - 再回退到环境变量 DEFAULT_REPO_URL / DEFAULT_TARGET_REPO。
+    repo_url = (
+        data.get("repo_url")
+        or data.get("target_repo")
+        or os.getenv("DEFAULT_REPO_URL")
+        or os.getenv("DEFAULT_TARGET_REPO")
+    )
+
     return {
         "fork_repo_url": data.get("fork_repo", os.getenv("DEFAULT_FORK_REPO")),
-        "target_repo_url": data.get("target_repo", os.getenv("DEFAULT_TARGET_REPO")),
-        "clone_path": data.get("clone_path", os.getenv("DEFAULT_CLONE_PATH")),
+        "repo_url": repo_url,
+        "clone_dir": clone_dir,
         "gitee_token": gitee_token,
         "signer_name": data.get("signer_name"),
         "signer_email": data.get("signer_email"),
@@ -104,8 +126,8 @@ def build_agent_message(action: str, data: Dict, config: Dict) -> str:
     # 关键配置信息（JSON格式化，便于解析）
     base_config = json.dumps({
         "fork_repo_url": config["fork_repo_url"],
-        "target_repo_url": config["target_repo_url"],
-        "clone_path": config["clone_path"],
+        "repo_url": config["repo_url"],
+        "clone_dir": config["clone_dir"],
         "gitee_token": config["gitee_token"],
         "llm_provider": config["llm_provider"],
         "api_key": config["api_key"],

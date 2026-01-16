@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 
 @cached(
     COMMITS_CACHE,
-    key_builder=lambda cve_id, use_cache=True: _get_cache_key(cve_id),
+    # clone_dir 仅用于本地 fallback，不影响缓存 key，这里忽略即可
+    key_builder=lambda cve_id, use_cache=True, clone_dir=None: _get_cache_key(cve_id),
     use_cache_kw="use_cache",
     # 兼容旧版本缓存结构：{"introduced": "...", "fixed": "..."}
     load_transform=lambda v: (
@@ -22,19 +23,25 @@ logger = logging.getLogger(__name__)
         else v
     ),
 )
-def get_vulnerability_commits(cve_id: str, use_cache: bool = True) -> tuple[str, str]:
+def get_vulnerability_commits(
+    cve_id: str,
+    use_cache: bool = True,
+    clone_dir: str | None = None,
+) -> tuple[str, str]:
     """
     获取漏洞相关的真实上游提交信息
     
     Args:
         cve_id: CVE ID
         use_cache: 是否使用缓存
+        clone_dir: 可选，本地 clone 目录（用于在网络受限时，从 clone_dir/linux 本地仓库中确认 upstream commit）
     
     Returns:
         (introduced_commit, fixed_commit): 真实的上游引入提交和修复提交
     """
     logger.info(f"==========解析linux-cve-announce页面的两组commit id============")
-    cve_announce_base_url = "https://lore.kernel.org/linux-cve-announce/"
+    # 网络环境稳定情况下可使用 cve_announce_base_url = "https://lore.kernel.org/linux-cve-announce/"
+    cve_announce_base_url = "http://localhost:8080/linux-cve-announce/"
     try:
         search_results_html = getUrlText(f"{cve_announce_base_url}?q={cve_id}")
     except Exception as e:
@@ -49,6 +56,30 @@ def get_vulnerability_commits(cve_id: str, use_cache: bool = True) -> tuple[str,
     
     introduced_commit = None
     fixed_commit = None
+
+    # 如果提供了 clone_dir，则尝试构造本地 linux 仓库路径，并提前加载仓库对象，
+    # 这样可以在解析出 commit_hash 后先在本地仓库中确认是否存在该提交，避免不必要的网络请求。
+    linux_repo_path = None
+    linux_repo = None
+    if clone_dir:
+        from os import path
+
+        linux_repo_path = path.join(clone_dir, "linux")
+        if path.exists(linux_repo_path):
+            try:
+                import git  # 局部导入，避免循环依赖
+
+                linux_repo = git.Repo(linux_repo_path)
+                logger.debug(
+                    "get_vulnerability_commits: 使用本地 linux 仓库做 upstream 解析: %s",
+                    linux_repo_path,
+                )
+            except Exception as e:
+                logger.warning(
+                    "get_vulnerability_commits: 打开本地 linux 仓库失败，将跳过本地 upstream 解析: %s",
+                    e,
+                )
+                linux_repo = None
     
     if cve_detail_link_match:
         detail_url = cve_detail_link_match.group("href")
@@ -73,21 +104,72 @@ def get_vulnerability_commits(cve_id: str, use_cache: bool = True) -> tuple[str,
                     hash_match = commit_hash_pattern.search(line, pos=intro_pos)
                     if hash_match:
                         commit_hash = hash_match.group(1)
-                        commit_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id={commit_hash}" 
-                        introduced_commit = get_upstream_commit_from_url(commit_url)
+                        # 1) 先尝试在本地 linux 仓库中直接确认该 commit 是否存在，
+                        #    若存在，则视为真实的 upstream commit，避免走网络请求。
+                        if linux_repo is not None:
+                            try:
+                                linux_repo.commit(commit_hash)
+                                introduced_commit = commit_hash
+                                logger.debug(
+                                    "get_vulnerability_commits: introduced commit 在本地 linux 仓库中存在，"
+                                    "直接作为 upstream 使用: %s",
+                                    commit_hash,
+                                )
+                            except Exception:
+                                # 本地不存在该 commit，稍后再通过网络尝试解析 upstream
+                                pass
+
+                        # 2) 如果本地找不到，再通过 URL + get_upstream_commit_from_url 解析 upstream
+                        if not introduced_commit:
+                            commit_url = (
+                                "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/"
+                                f"?id={commit_hash}"
+                            )
+                            introduced_commit = get_upstream_commit_from_url(
+                                commit_url,
+                                linux_repo_path=linux_repo_path,
+                            )
             
                 if 'fixed' in line and not fixed_commit:
                     fixed_pos = line.find('fixed')
                     hash_match = commit_hash_pattern.search(line, pos=fixed_pos)
                     if hash_match:
                         commit_hash = hash_match.group(1)
-                        commit_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id={commit_hash}"
-                        upstream_commit = get_upstream_commit_from_url(commit_url)
-                        # 如果找不到upstream commit，使用原始commit作为备选
+                        # 1) 先尝试在本地 linux 仓库中直接确认该 commit 是否存在，
+                        #    若存在，则视为真实的 upstream commit，避免走网络请求。
+                        upstream_commit = None
+                        if linux_repo is not None:
+                            try:
+                                linux_repo.commit(commit_hash)
+                                upstream_commit = commit_hash
+                                logger.debug(
+                                    "get_vulnerability_commits: fixed commit 在本地 linux 仓库中存在，"
+                                    "直接作为 upstream 使用: %s",
+                                    commit_hash,
+                                )
+                            except Exception:
+                                # 本地不存在该 commit，稍后再通过网络尝试解析 upstream
+                                pass
+
+                        # 2) 如果本地找不到，再通过 URL + get_upstream_commit_from_url 解析 upstream
+                        if not upstream_commit:
+                            commit_url = (
+                                "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/"
+                                f"?id={commit_hash}"
+                            )
+                            upstream_commit = get_upstream_commit_from_url(
+                                commit_url,
+                                linux_repo_path=linux_repo_path,
+                            )
+
+                        # 如果最终找不到 upstream commit，使用原始 commit 作为备选
                         if upstream_commit:
                             fixed_commit = upstream_commit
                         else:
-                            logger.error(f"无法获取fixed commit的upstream版本，使用原始commit: {commit_hash}")
+                            logger.error(
+                                "无法获取fixed commit的upstream版本，使用原始commit: %s",
+                                commit_hash,
+                            )
     
     logger.info(f"introduced_commit: {introduced_commit}, fixed_commit: {fixed_commit}")
     

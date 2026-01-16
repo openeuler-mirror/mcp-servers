@@ -105,9 +105,9 @@ def main():
 
     # 从环境变量获取参数默认值
     args.fork_repo_url = args.fork_repo_url or os.environ.get('FORK_REPO_URL')
-    args.repo_url = args.repo_url or os.environ.get('REPO_URL', "https://gitee.com/openeuler/kernel")
+    args.repo_url = args.repo_url or os.environ.get('REPO_URL')
     args.gitee_token = args.gitee_token or os.environ.get('GITEE_TOKEN')
-    args.clone_dir = args.clone_dir or os.environ.get('CLONE_DIR', os.path.join(os.path.expanduser("~"), "Image"))
+    args.clone_dir = args.clone_dir or os.environ.get('CLONE_DIR')
     args.branches = args.branches or os.environ.get('BRANCHES', "OLK-5.10,OLK-6.6,master")
     args.signer_name = args.signer_name or os.environ.get('SIGNER_NAME')
     args.signer_email = args.signer_email or os.environ.get('SIGNER_EMAIL')
@@ -204,9 +204,10 @@ def handle_action(args):
     cve_id = args.cve_id if args.cve_id else fetch_cve_id(args.issue_url, args.gitee_token, not args.no_cache)
 
     if args.action == 'parse-issue':
+        logger.info(f"handle_action: parse_issue, issue_url={args.issue_url}")
         return handle_parse_issue(args)
     elif args.action == 'get-commits':
-        return handle_get_commits(cve_id, not args.no_cache)
+        return handle_get_commits(cve_id, not args.no_cache, args.clone_dir)
     elif args.action == 'analyze-branches':
         return handle_analyze_branches(args)
     elif args.action == 'apply-patch':
@@ -249,7 +250,11 @@ def handle_create_pr(cve_id, args):
 def handle_backport(cve_id, args):
     """处理补丁回移植逻辑"""
     # 获取提交信息
-    commits = get_vulnerability_commits(cve_id, not args.no_cache)
+    commits = get_vulnerability_commits(
+        cve_id,
+        not args.no_cache,
+        clone_dir=args.clone_dir,
+    )
     if not commits or len(commits) != 2:
         raise ValueError(f"无法获取提交信息: {commits}")
     
@@ -329,9 +334,13 @@ def handle_parse_issue(args):
         "data": issue_data
     }
 
-def handle_get_commits(cve_id, use_cache):
+def handle_get_commits(cve_id, use_cache, clone_dir):
     """处理提交获取逻辑"""
-    introduced, fixed = get_vulnerability_commits(cve_id, use_cache)
+    introduced, fixed = get_vulnerability_commits(
+        cve_id,
+        use_cache,
+        clone_dir=clone_dir,
+    )
     if not introduced:
         return {
             "action": "get-commits",
@@ -375,7 +384,11 @@ def handle_analyze_branches(args):
     )
 
     # 获取提交信息（自动使用缓存）
-    commits = get_vulnerability_commits(issue_data.get('cve_id'), not args.no_cache)
+    commits = get_vulnerability_commits(
+        issue_data.get('cve_id'),
+        not args.no_cache,
+        clone_dir=args.clone_dir,
+    )
     if commits and len(commits) == 2:
         issue_info.introduced_commit, issue_info.fixed_commit = commits
     else:
