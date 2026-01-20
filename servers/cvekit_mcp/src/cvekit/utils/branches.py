@@ -359,6 +359,64 @@ def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, br
         fixed_commit_message = get_commit_message(repo, issue_info.fixed_commit, linux_repo=linux_repo)
         if fixed_commit_message:
             logger.debug(f"修复commit的提交信息: {fixed_commit_message}")
+
+    # 缺少 fixed_commit 时，直接报错退出
+    if not issue_info.fixed_commit:
+        logger.error("缺少修复commit，无法继续分支分析流程")
+        raise RuntimeError(i18n("未能获取修复提交(fixed)，无法继续流程"))
+
+    if not issue_info.introduced_commit:
+        logger.warning("缺少引入commit，仅基于修复commit判断分支状态")
+        fixed_branches = get_branches_containing_commit(
+            repo,
+            issue_info.fixed_commit,
+            target_branches=branchList,
+            linux_repo=linux_repo,
+        )
+        logger.info(f"包含修复commit的分支: {fixed_branches}")
+        for branch in branchList:
+            if branch in fixed_branches:
+                item = {
+                    i18n("补丁ID"): issue_info.cve_id,
+                    i18n("目标分支"): branch,
+                    i18n("是否受影响"): i18n("已修复"),
+                    i18n("适配状态"): "",
+                    i18n("冲突点"): i18n("已修复"),
+                    i18n("建议调整文件"): "N/A",
+                    i18n("是否存在冲突"): i18n("否"),
+                }
+            else:
+                # 无法判断是否受影响时，仍进行补丁应用检查以给出适配状态
+                patchs = check_cve_patch_apply_status(
+                    fork_repo_url,
+                    issue_info.cve_id,
+                    gitee_token,
+                    branch,
+                    issue_info.fixed_commit,
+                    clone_dir,
+                    repo=repo,
+                )
+                logger.info(f"分支 {branch} 的补丁信息(无法判断是否受影响): {patchs}")
+                # 仅取第一条结果作为状态依据
+                patch = patchs[0] if patchs else {"status": "error", "patch_path": i18n("无法判断")}
+                item = {
+                    i18n("补丁ID"): issue_info.cve_id,
+                    i18n("目标分支"): branch,
+                    i18n("是否受影响"): i18n("无法判断"),
+                    i18n("冲突点"): patch.get("patch_path", i18n("无法判断")),
+                }
+                if patch.get("status") == "success":
+                    item[i18n("适配状态")] = i18n("成功")
+                    item[i18n("建议调整文件")] = "N/A"
+                    item[i18n("是否存在冲突")] = i18n("否")
+                else:
+                    item[i18n("适配状态")] = i18n("需要调整")
+                    item[i18n("建议调整文件")] = ""
+                    item[i18n("是否存在冲突")] = i18n("是")
+            if fixed_commit_message:
+                item[i18n("提交信息")] = fixed_commit_message
+            items.append(item)
+        return items
     
     # 只查询指定的分支，而不是所有分支
     vulnerable_branches = get_branches_containing_commit(repo, issue_info.introduced_commit, target_branches=branchList, linux_repo=linux_repo)
@@ -416,9 +474,11 @@ def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, br
             if patch['status'] == 'success':
                 item[i18n("适配状态")] = i18n("成功")
                 item[i18n("建议调整文件")] = "N/A"
+                item[i18n("是否存在冲突")] = i18n("否")
             else:
                 item[i18n("适配状态")] = i18n("需要调整")
                 item[i18n("建议调整文件")] = ""
+                item[i18n("是否存在冲突")] = i18n("是")
             
             # 添加commit message
             if fixed_commit_message:
@@ -435,6 +495,7 @@ def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, br
             i18n("适配状态"): "",
             i18n("冲突点"): i18n("已修复"),
             i18n("建议调整文件"): "N/A",
+            i18n("是否存在冲突"): i18n("否"),
         }
         # 添加commit message
         if fixed_commit_message:
@@ -451,6 +512,7 @@ def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, br
             i18n("适配状态"): "",
             i18n("冲突点"): i18n("无"),
             i18n("建议调整文件"): "N/A",
+            i18n("是否存在冲突"): i18n("否"),
         }
         # 添加commit message
         if fixed_commit_message:
