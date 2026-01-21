@@ -149,7 +149,13 @@ def generate_patch_header(commit_id, cve_id, bugzilla_url, repo_path):
         subject_match = re.search(r"^Subject:\s*(.+)$", patch_content, re.MULTILINE)
         if subject_match:
             subject = subject_match.group(1).strip()
-
+            # 去除 [PATCH]、[PATCH v2]、[PATCH 1/3] 等
+            subject = re.sub(
+                r"\s*\[(?=[^\]]*PATCH)[^\]]*\]\s*",
+                " ",
+                subject,
+                flags=re.IGNORECASE,
+                ).strip()
         logger.info(
             "generate_patch_header: from_patch subject_found=%s, subject=%r",
             bool(subject_match),
@@ -221,6 +227,8 @@ def generate_commit_message(cve_id, issue_url, repo_path, clone_dir: str | None 
     logger.info(
         f"generate_commit_message: introduced_commit={introduced_commit}, fixed_commit={fixed_commit}"
     )
+    if not fixed_commit:
+        raise RuntimeError(i18n("未能获取修复提交(fixed)，无法继续流程"))
     message = generate_patch_header(
         fixed_commit, cve_id, issue_url, repo_path=repo_path
     )
@@ -256,6 +264,8 @@ def get_conflict_file_message(cve_id, repo, clone_dir):
         cve_id,
         clone_dir=clone_dir,
     )
+    if not fixed_commit:
+        raise RuntimeError(i18n("未能获取修复提交(fixed)，无法继续流程"))
     patch_path = get_patch(fixed_commit, clone_dir)
     logger.info(
         "get_conflict_file_message: start, cve_id=%s, introduced_commit=%s, "

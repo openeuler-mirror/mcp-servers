@@ -24,6 +24,8 @@ def generate_pr_body(cve_id, issue_url, clone_dir: str):
         cve_id,
         clone_dir=clone_dir,
     )
+    if not fixed_commit:
+        raise RuntimeError(i18n("未能获取修复提交(fixed)，无法继续流程"))
 
     subject = None
 
@@ -49,6 +51,13 @@ def generate_pr_body(cve_id, issue_url, clone_dir: str):
             subject_match = re.search(r"^Subject:\s*(.+)$", patch_content, re.MULTILINE)
             if subject_match:
                 subject = subject_match.group(1).strip()
+                # 去除 [PATCH]、[PATCH v2]、[PATCH 1/3] 等
+                subject = re.sub(
+                    r"\s*\[(?=[^\]]*PATCH)[^\]]*\]\s*",
+                    " ",
+                    subject,
+                    flags=re.IGNORECASE,
+                    ).strip()
         except Exception as e2:
             logger.error("从本地 patch 解析 PR 标题失败: %s", e2)
 

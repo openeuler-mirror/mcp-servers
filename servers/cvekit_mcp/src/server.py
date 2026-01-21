@@ -310,14 +310,15 @@ def get_commits(
              * 适配状态
              * 冲突点（补丁路径）
              * 建议调整文件
+             * 是否存在冲突
              * 提交信息
              * 差异文件路径
            - 每个分支的详细信息（受影响状态、适配状态、补丁路径、差异文件等）
         6. **必须完整展示多选题格式**，清晰展示所有需要应用补丁的分支，格式如下：
            "请选择要在哪些分支应用补丁（可多选，输入分支名，用逗号分隔）：
-           [A] 分支名1 - 适配状态: xxx, 补丁路径: xxx, 差异文件: xxx
-           [B] 分支名2 - 适配状态: xxx, 补丁路径: xxx, 差异文件: xxx
-           [C] 分支名3 - 适配状态: xxx, 补丁路径: xxx, 差异文件: xxx
+           [A] 分支名1 - 适配状态: xxx, 补丁路径: xxx, 差异文件: xxx, 是否存在冲突: xxx
+           [B] 分支名2 - 适配状态: xxx, 补丁路径: xxx, 差异文件: xxx, 是否存在冲突: xxx
+           [C] 分支名3 - 适配状态: xxx, 补丁路径: xxx, 差异文件: xxx, 是否存在冲突: xxx
            ..."
         7. **重要**：必须将函数返回的完整结果（包括表格和多选题）完整展示给用户，不能简化或省略任何信息
         8. 等待用户明确选择要应用补丁的分支，只有用户选择后才可进入第五步
@@ -418,13 +419,14 @@ def analyze_branches(
                     if backported_patch_path:
                         item[i18n('冲突点')] = backported_patch_path
                         item[i18n('适配状态')] = i18n('成功')
-                        item[i18n('建议调整文件')] = 'N/A'
-                        logging.info(i18n("backport成功: 更新冲突点为 %s") % backported_patch_path)
+                        item[i18n('建议调整文件')] = backported_patch_path
+                        item[i18n('是否存在冲突')] = i18n('是')
+                        logging.info(i18n("backport成功: 更新冲突点/建议调整文件为 %s") % backported_patch_path)
                     
-                        logging.info(f"缓存已更新: {cache_key} 中的冲突点为 {backported_patch_path}")
+                        logging.info(f"缓存已更新: {cache_key} 中的冲突点/建议调整文件为 {backported_patch_path}")
                     else:
                         logging.warning(i18n("backport成功但未找到backported_patch_path"))
-                    
+
                     # 添加差异文件路径
                     diff_path = details.get('diff_path') or backport_result.get('diff_path')
                     if diff_path:
@@ -433,7 +435,7 @@ def analyze_branches(
                     else:
                         item[i18n('差异文件')] = 'N/A'
                         logging.warning(i18n("backport成功但未找到diff_path"))
-
+                    
                     # 更新缓存
                     cached_result = get_cached_data(BRANCHES_ANALYSIS_CACHE, cache_key)
                     if cached_result:  
@@ -442,7 +444,8 @@ def analyze_branches(
                                 if backported_patch_path:
                                     cache_item[i18n("冲突点")] = backported_patch_path
                                     cache_item[i18n("适配状态")] = i18n('成功')
-                                    cache_item[i18n("建议调整文件")] = 'N/A'
+                                    cache_item[i18n("建议调整文件")] = backported_patch_path
+                                    cache_item[i18n("是否存在冲突")] = i18n('是')
                                 
                                 cache_item[i18n("差异文件")] = diff_path if diff_path else 'N/A'
                                 break 
@@ -451,15 +454,18 @@ def analyze_branches(
                 else:
                     delete_cache_key(BRANCHES_ANALYSIS_CACHE, cache_key)
                     error_msg = backport_result.get('error', '未知错误')
+                    item[i18n('建议调整文件')] = i18n("backport失败: %s") % error_msg
                     item[i18n('差异文件')] = i18n("backport失败: %s") % error_msg
                     logging.error(i18n("backport失败: %s") % error_msg)
         else:
-            # 对于不需要调整的分支，差异文件为N/A
+            # 对于不需要调整的分支，建议调整文件为N/A
+            item[i18n('建议调整文件')] = 'N/A'
+            item[i18n('是否存在冲突')] = i18n('否')
             item[i18n('差异文件')] = 'N/A'
     
-    # 构建表格，添加"提交信息"和"差异文件"列
-    table = i18n("| 补丁ID | 目标分支 | 是否受影响 | 适配状态 | 补丁路径 | 建议调整文件 | 提交信息 | 差异文件 |\n")
-    table += "|--------|----------|------------|----------|--------|--------------|----------|----------|\n"
+    # 构建表格，添加"提交信息"、"差异文件"和"是否存在冲突"列
+    table = i18n("| 补丁ID | 目标分支 | 是否受影响 | 适配状态 | 补丁路径 | 建议调整文件 | 差异文件 | 是否存在冲突 | 提交信息 |\n")
+    table += "|--------|----------|------------|----------|--------|--------------|----------|--------------|----------|\n"
     
     for item in result:
         cve_id_val = item.get(i18n('补丁ID'), '')
@@ -469,6 +475,7 @@ def analyze_branches(
         conflict_point = item.get(i18n('冲突点'), '')
         suggess_file = item.get(i18n('建议调整文件'), '')
         commit_message = item.get(i18n('提交信息'), 'N/A')
+        has_conflict = item.get(i18n('是否存在冲突'), 'N/A')
         diff_file = item.get(i18n('差异文件'), 'N/A')
         
         # 截断过长的路径
@@ -476,8 +483,7 @@ def analyze_branches(
             conflict_point = conflict_point[:47] + '...'
         if len(diff_file) > 50:
             diff_file = diff_file[:47] + '...'
-        
-        table += f"| {cve_id_val} | {target_branch} | {is_affected} | {adapt_status} | {conflict_point} | {suggess_file} | {commit_message} | {diff_file} |\n"
+        table += f"| {cve_id_val} | {target_branch} | {is_affected} | {adapt_status} | {conflict_point} | {suggess_file} | {diff_file} | {has_conflict} | {commit_message} |\n"
 
     res = i18n("【重要】分支分析结果 - 请完整展示以下所有信息给用户：\n")
     res += "=" * 60 + "\n"
@@ -494,17 +500,20 @@ def analyze_branches(
         is_affected = item.get(i18n('是否受影响'), '')
         adapt_status = item.get(i18n('适配状态'), '')
         conflict_point = item.get(i18n('冲突点'), '')
+        has_conflict = item.get(i18n('是否存在冲突'), 'N/A')
         diff_file = item.get(i18n('差异文件'), 'N/A')
         
-        # 只显示受影响且需要应用补丁的分支
-        # 判断是否为受影响分支：值可能是"受影响"、"是"或其他表示受影响的文本
+        # 只显示受影响或无法判断的分支，确保可继续往下走
+        # 判断是否为受影响/无法判断分支：值可能是"受影响"、"是"、"无法判断"或其他表示受影响的文本
         is_affected_str = str(is_affected)
         is_affected_lower = is_affected_str.lower()
-        # 检查是否为受影响分支（支持多种格式：受影响、是、affected等）
+        # 检查是否为受影响或无法判断分支（支持多种格式：受影响、是、affected、无法判断等）
         is_branch_affected = (
             is_affected_str in [i18n('受影响'), '受影响', i18n('是'), '是'] or
-            '受影响' in is_affected_str or 
-            'affected' in is_affected_lower
+            '受影响' in is_affected_str or
+            'affected' in is_affected_lower or
+            is_affected_str in [i18n('无法判断'), '无法判断'] or
+            '无法判断' in is_affected_str
         )
         if is_branch_affected:
             status_desc = i18n("适配状态: %s") % adapt_status
@@ -512,6 +521,8 @@ def analyze_branches(
                 status_desc += i18n(", 补丁路径: %s") % conflict_point
             if diff_file != 'N/A':
                 status_desc += i18n(", 差异文件: %s") % diff_file
+            if has_conflict != 'N/A':
+                status_desc += i18n(", 是否存在冲突: %s") % has_conflict
             
             option = f"[{chr(option_letter)}] {target_branch} - {status_desc}"
             branch_options.append((chr(option_letter), target_branch, option))

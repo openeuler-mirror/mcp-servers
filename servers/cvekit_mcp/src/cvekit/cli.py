@@ -341,24 +341,21 @@ def handle_get_commits(cve_id, use_cache, clone_dir):
         use_cache,
         clone_dir=clone_dir,
     )
-    if not introduced:
-        return {
-            "action": "get-commits",
-            "cve_id": cve_id,
-            "error": "未能获取完整的引入提交(introduced)，无法继续流程"
-        }
     if not fixed:
         return {
             "action": "get-commits",
             "cve_id": cve_id,
             "error": "未能获取完整的修复提交(fixed)，无法继续流程"
         }
-    return {
+    result = {
         "action": "get-commits",
         "cve_id": cve_id,
         "introduced": introduced,
         "fixed": fixed
     }
+    if not introduced:
+        result["warning"] = "仅获取到修复提交(fixed)，未找到引入提交(introduced)"
+    return result
 
 def fetch_cve_id(issue_url, gitee_token, use_cache):
     """从issue URL自动获取CVE ID"""
