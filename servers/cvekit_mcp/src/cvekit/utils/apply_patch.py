@@ -145,42 +145,40 @@ def generate_patch_header(commit_id, cve_id, bugzilla_url, repo_path):
         with open(patch_path, "r", encoding="utf-8", errors="ignore") as f:
             patch_content = f.read()
 
-        # 解析 Subject: 行
-        subject_match = re.search(r"^Subject:\s*(.+)$", patch_content, re.MULTILINE)
-        if subject_match:
-            subject = subject_match.group(1).strip()
+        headers, body = _parse_patch_headers_and_body(patch_content)
+
+        # 1) Subject（已 unfold）
+        subject = headers.get("Subject", "")
+        if subject:
             # 去除 [PATCH]、[PATCH v2]、[PATCH 1/3] 等
             subject = re.sub(
                 r"\s*\[(?=[^\]]*PATCH)[^\]]*\]\s*",
                 " ",
                 subject,
                 flags=re.IGNORECASE,
-                ).strip()
+            ).strip()
+
         logger.info(
             "generate_patch_header: from_patch subject_found=%s, subject=%r",
-            bool(subject_match),
+            bool(subject),
             subject,
         )
 
-        # 解析正文：从 Subject 后第一个非空行开始，到 '---' 或 'diff --git' 之前
-        lines = patch_content.splitlines()
-        msg_lines = []
-        if subject_match:
-            # 计算 Subject 行的行号
-            subject_line_index = patch_content[: subject_match.start()].count("\n")
-            i = subject_line_index + 1
-            # 跳过连续空行
-            while i < len(lines) and not lines[i].strip():
-                i += 1
-            for j in range(i, len(lines)):
-                line = lines[j]
-                if line.startswith("---") or line.startswith("diff --git"):
-                    break
-                msg_lines.append(line)
-        msg = "\n".join(msg_lines).strip()
-        logger.debug(
-            "generate_patch_header: from_patch msg_preview=%r", msg[:200]
-        )
+        # 2) commit message：从正文开头到 '---' 或 'diff --git' 之前
+        # 注意：format-patch 的正文开头就是提交说明（可能含 Signed-off-by 等）
+        msg_part = body
+        # 截到分隔符之前
+        cut = None
+        m1 = re.search(r"(?m)^---\s*$", msg_part)
+        m2 = re.search(r"(?m)^diff --git ", msg_part)
+        candidates = [m.start() for m in (m1, m2) if m]
+        if candidates:
+            cut = min(candidates)
+            msg_part = msg_part[:cut]
+
+        msg = msg_part.strip()
+
+        logger.debug("generate_patch_header: from_patch msg_preview=%r", msg[:200])
     except Exception as e2:
         logger.error(
             "generate_patch_header: 从 patch 解析 commit 信息失败: %s", e2
@@ -238,6 +236,58 @@ def generate_commit_message(cve_id, issue_url, repo_path, clone_dir: str | None 
     )
     return message
 
+def _parse_patch_headers_and_body(patch_content: str):
+    """
+    解析 patch 的 header 和 body
+    """
+    # 处理 format-patch 的 mbox "From <sha> ..." 首行（不是 RFC822 header）
+    lines = patch_content.splitlines()
+    idx = 0
+    if lines and lines[0].startswith("From ") and " Mon Sep " in lines[0]:
+        idx = 1
+
+    # 解析 header：直到遇到第一个空行
+    headers = {}
+    cur_key = None
+    cur_val_parts = []
+
+    def flush():
+        nonlocal cur_key, cur_val_parts
+        if cur_key is not None:
+            # unfold：把 CRLF + WSP 替换成一个空格
+            val = "\n".join(cur_val_parts)
+            val = re.sub(r"\r?\n[ \t]+", " ", val).strip()
+            headers[cur_key] = val
+        cur_key = None
+        cur_val_parts = []
+
+    # 逐行读 header
+    while idx < len(lines):
+        line = lines[idx]
+        idx += 1
+
+        if not line.strip():  # 空行，header 结束
+            flush()
+            break
+
+        if line[0] in (" ", "\t"):  # 续行
+            if cur_key is not None:
+                cur_val_parts.append(line)
+            continue
+
+        # 新 header
+        flush()
+        m = re.match(r"^([!-9;-~]+):\s*(.*)$", line)  # 粗略匹配 "Key: Value"
+        if m:
+            cur_key = m.group(1)
+            cur_val_parts = [m.group(2)]
+        else:
+            # 不符合 header 形态，保守起见：当作 header 结束，退回到正文
+            idx -= 1
+            break
+
+    body = "\n".join(lines[idx:]) if idx < len(lines) else ""
+    return headers, body
 
 def get_patch(fixed_commit, clone_dir):
     """
