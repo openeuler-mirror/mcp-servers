@@ -46,6 +46,11 @@ def parse_args():
         type=str,
         help="签名人邮箱"
     )
+    parser.add_argument(
+        "--clone-dir",
+        type=str,
+        default=""
+    )
     return parser.parse_args()
 
 async def main() -> None:
@@ -152,6 +157,8 @@ async def main() -> None:
             message_text_dict["branches"] = args.branches
             message_text_dict["signer_name"] = args.signer_name
             message_text_dict["signer_email"] = args.signer_email
+            if args.clone_dir:
+                message_text_dict["clone_dir"] = args.clone_dir
 
 
         send_message_payload: dict[str, Any] = {

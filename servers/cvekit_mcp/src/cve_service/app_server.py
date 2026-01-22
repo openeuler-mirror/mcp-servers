@@ -12,7 +12,7 @@ from camel.configs import SiliconFlowConfig
 from camel.agents import CallbackMCPAgent
 
 from a2a.types import (
-    AgentSkill, AgentCard, AgentCapabilities, TextPart
+    AgentSkill, AgentCard, AgentCapabilities, TextPart, TaskState
 )
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
@@ -246,44 +246,44 @@ class CVEAgentExecutor(AgentExecutor):
     ) -> None:
         """执行 CVE 任务"""
         local_agent: Optional[CallbackMCPAgent] = None
-        local_task_updater: Optional[TaskUpdater] = None
+        task = new_task(context.message)
+        updater = TaskUpdater(event_queue, task.id, task.context_id)
+        await event_queue.enqueue_event(task)
 
         try:
             try:
                 message_content = context.get_user_input()
                 task_params = json.loads(message_content) if message_content else {}
-                print(task_params)
             except json.JSONDecodeError as e:
-                task = new_task(context.message)
-                local_task_updater = TaskUpdater(event_queue, task.id, task.context_id)
                 error_msg = f"请求参数解析失败：{str(e)}（输入内容：{message_content}）"
-                error_message = local_task_updater.new_agent_message(parts=[TextPart(text=error_msg)])
-                await local_task_updater.failed(message=error_message)
-                await event_queue.enqueue_event(task)
+                await updater.update_status(
+                    state=TaskState.failed,
+                    message=updater.new_agent_message(
+                        parts=[TextPart(
+                            text=error_msg,
+                            metadata={"phase":"failed"})]))
                 return
-
+            print(task_params)
+            
             validate_msg = validate_request(task_params)
             if validate_msg:
-                task = new_task(context.message)
-                local_task_updater = TaskUpdater(event_queue, task.id, task.context_id)
-                error_message = local_task_updater.new_agent_message(parts=[TextPart(text=validate_msg)])
-                await local_task_updater.failed(message=error_message)
-                await event_queue.enqueue_event(task)
+                await updater.update_status(
+                    state=TaskState.failed,
+                    message=updater.new_agent_message(
+                        parts=[TextPart(
+                            text=validate_msg,
+                            metadata={"phase":"failed"})]))
                 return
 
             try:
                 config = build_config_from_request(task_params)
             except ValueError as e:
-                task = new_task(context.message)
-                local_task_updater = TaskUpdater(event_queue, task.id, task.context_id)
-                error_message = local_task_updater.new_agent_message(parts=[TextPart(text=str(e))])
-                await local_task_updater.failed(message=error_message)
-                await event_queue.enqueue_event(task)
+                await updater.update_status(
+                    state=TaskState.failed,
+                    message=updater.new_agent_message(
+                        parts=[TextPart(text=str(e),
+                                        metadata={"phase":"failed"})]))
                 return
-
-            task = new_task(context.message)
-            local_task_updater = TaskUpdater(event_queue, task.id, task.context_id)
-            await event_queue.enqueue_event(task)
 
             action = task_params.get("action")
             agent_message = build_agent_message(action, task_params, config)
@@ -294,7 +294,7 @@ class CVEAgentExecutor(AgentExecutor):
             local_agent = await create_mcp_agent(
                 model_type=os.getenv("DEFAULT_MODEL_TYPE"),
                 local_config=os.getenv("DEFAULT_LOCAL_CONFIG"),
-                task_updater=local_task_updater,
+                task_updater=updater,
                 api_key=config.get("api_key"),
                 llm_provider=config.get("llm_provider"),
             )
@@ -307,19 +307,22 @@ class CVEAgentExecutor(AgentExecutor):
             except asyncio.TimeoutError:
                 error_msg = f"Task {task.id} execution timeout (exceeded {timeout/60} minutes)"
                 logging.error(error_msg)
-                error_message = local_task_updater.new_agent_message(parts=[TextPart(text=error_msg)])
-                await local_task_updater.failed(message=error_message)
+                await updater.update_status(
+                    state=TaskState.failed,
+                    message=updater.new_agent_message(
+                        parts=[TextPart(text=error_msg,
+                                        metadata={"phase":"failed"})]))
                 return
 
             result = str(response) if response else "无返回结果"
             print(f"【任务 {task.id}】执行结果:{result}")
 
-            await local_task_updater.add_artifact(
+            await updater.add_artifact(
                 parts=[TextPart(text=result)],
                 name="final_result",
                 last_chunk=True,
             )
-            await local_task_updater.complete()
+            await updater.complete()
 
         except Exception as e:
             error_msg = f"【任务 {task.id if 'task' in locals() else '未知'}】处理请求时出错: {str(e)}"
@@ -327,9 +330,11 @@ class CVEAgentExecutor(AgentExecutor):
             import traceback
             traceback.print_exc()
             
-            if local_task_updater:
-                error_message = local_task_updater.new_agent_message(parts=[TextPart(text=error_msg)])
-                await local_task_updater.failed(message=error_message)
+            await updater.update_status(
+                state=TaskState.failed,
+                message=updater.new_agent_message(
+                    parts=[TextPart(text=error_msg,
+                                    metadata={"phase":"failed"})]))
         finally:
             if local_agent:
                 try:
@@ -355,10 +360,11 @@ class CVEAgentExecutor(AgentExecutor):
             await task_updater.cancel()
             logging.info(f"任务 {context.task_id} 已取消")
         except Exception as e:
-            message = task_updater.new_agent_message(
-                parts=[TextPart(text=f"取消任务 {context.task_id} 失败: {str(e)}")]
-            )
-            await task_updater.failed(message=message)
+            await task_updater.update_status(
+                state=TaskState.failed,
+                message=task_updater.new_agent_message(
+                    parts=[TextPart(text=f"取消任务 {context.task_id} 失败: {str(e)}")],
+                    metadata={"phase":"failed"}))
 
 class ConcurrentSafeInMemoryTaskStore(InMemoryTaskStore):
     """并发安全的内存任务存储（添加锁保护）"""

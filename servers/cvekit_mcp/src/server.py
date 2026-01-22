@@ -223,7 +223,7 @@ def parse_issue(
     })
     
     if 'error' in result:
-        return i18n("解析Issue失败: %s") % (result['error'])
+        return "[ERROR]"+i18n("解析Issue失败: %s") % (result['error'])
     
     data = result.get('data', {})
     res = i18n("已解析Issue: %s\n") % (data.get('issue_id', ''))
@@ -258,7 +258,7 @@ def setup_env(
     })
     
     if 'error' in result:
-        return i18n("环境设置失败: %s") % (result['error'])
+        return "[ERROR]"+i18n("环境设置失败: %s") % (result['error'])
     
     res = i18n("环境设置成功！\n")
     res += i18n("- 仓库已克隆到: %s\n") % (clone_dir)
@@ -288,7 +288,7 @@ def get_commits(
     
     # Check for errors first
     if 'error' in result:
-        return i18n("获取提交信息失败: %s") % (result['error'])
+        return "[ERROR]"+i18n("获取提交信息失败: %s") % (result['error'])
     
     res = i18n("已获取CVE %s的提交信息:\n") % (result.get('cve_id', ''))
     res += i18n("- 引入漏洞的提交: %s\n") % (result.get('introduced', ''))
@@ -361,7 +361,7 @@ def analyze_branches(
     })
     
     if 'error' in result:
-        return i18n("分支分析失败: %s") % result['error']
+        return "[ERROR]"+i18n("分支分析失败: %s") % result['error']
     
     if isinstance(result, dict):
         result = [result]
@@ -454,8 +454,9 @@ def analyze_branches(
                 else:
                     delete_cache_key(BRANCHES_ANALYSIS_CACHE, cache_key)
                     error_msg = backport_result.get('error', '未知错误')
-                    item[i18n('建议调整文件')] = i18n("backport失败: %s") % error_msg
-                    item[i18n('差异文件')] = i18n("backport失败: %s") % error_msg
+                    item[i18n('建议调整文件')] = "[ERROR]"+i18n("backport失败: %s") % error_msg
+                    item[i18n('差异文件')] = "[ERROR]"+i18n("backport失败: %s") % error_msg
+                    item[i18n("是否存在冲突")] = i18n('是')
                     logging.error(i18n("backport失败: %s") % error_msg)
         else:
             # 对于不需要调整的分支，建议调整文件为N/A
@@ -596,7 +597,7 @@ def apply_patch(
 
     if 'error' in result or 'error' in result.get('status'):
         error_msg = result.get('error', '未知错误')
-        res = i18n("应用patch失败！\n")
+        res = "[ERROR]"+i18n("应用patch失败！\n")
         res += i18n("- 目标分支: %s\n") % (branch)
         res += i18n("- 补丁路径: %s\n") % (patch_path)
         res += i18n("- 失败原因: %s\n") % (error_msg)
@@ -648,7 +649,7 @@ def create_pr(
     })
     if 'error' in result or 'error' in result.get('status'):
         error_msg = result.get('error', '未知错误')
-        res = i18n("PR提交失败！\n")
+        res = "[ERROR]"+i18n("PR提交失败！\n")
         res += i18n("- 目标分支: %s\n") % (branch)
         res += i18n("- 目标仓库: %s\n") % (repo_url)
         res += i18n("- 失败原因: %s\n") % (error_msg)
@@ -734,6 +735,8 @@ def _run_test_apply_patch(config_path: str) -> int:
         result = apply_patch(
             cve_id=test_data.get("cve_id", ""),
             branch=test_data.get("branch", "OLK-6.6"),
+            patch_path=test_data.get("patch_path"),
+            clone_dir=test_data.get("clone_dir"),
             gitee_token=test_data.get("gitee_token") or default_gitee_token,
             fork_repo_url=test_data.get("fork_repo_url"),
             signer_name=test_data.get("signer_name"),

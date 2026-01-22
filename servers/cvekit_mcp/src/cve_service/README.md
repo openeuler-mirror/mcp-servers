@@ -108,8 +108,8 @@ DEFAULT_LOCAL_CONFIG="mcp_settings.json"
 DEFAULT_CLONE_PATH="~/Image"
 
 # 默认目标仓库与 Fork 仓库
-DEFAULT_TARGET_REPO="https://gitee.com/openeuler/kernel"
-DEFAULT_FORK_REPO="https://gitee.com/devstation_robot/kernel"
+DEFAULT_TARGET_REPO="https://gitcode.com/openeuler/kernel"
+DEFAULT_FORK_REPO="https://gitcode.com/devstation-robot/kernel"
 
 # 默认需要关注的分支列表
 DEFAULT_BRANCHES="OLK-6.6, OLK-5.10, openEuler-1.0-LTS"

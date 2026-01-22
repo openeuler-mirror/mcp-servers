@@ -22,3 +22,4 @@ servers/cvekit_mcp/src/build
 servers/cvekit_mcp/src/cvekit/locales/**/messages.mo
 servers/cvekit_mcp/src/messages.pot
 servers/cvekit_mcp/src/cve_service/camel
+servers/cvekit_mcp/src/cve_service/mcp_settings.json
