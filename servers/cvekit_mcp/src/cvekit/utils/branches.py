@@ -272,12 +272,11 @@ def check_cve_patch_apply_status(
 ):
     try:
         patch_api_url = 'https://api.openeuler.org/cve-manager/v1/cve/detail/patch?cve_num=' + cve_id
-        image_dir = os.path.join(os.path.expanduser("~"), "Image")
 
         if fixed_commit:
             commit_hash = fixed_commit
             patch_filename = f"commit_patch_{commit_hash}.patch"
-            patch_path = os.path.abspath(os.path.join(image_dir, patch_filename))
+            patch_path = os.path.abspath(os.path.join(clone_dir, patch_filename))
             # 固定 commit 的场景：优先从本地 linux 仓库生成 patch，如果失败再从 kernel.org 获取并校验
             patch_path = ensure_patch_file(
                 commit_hash=commit_hash,
@@ -292,7 +291,7 @@ def check_cve_patch_apply_status(
                 return []
             commit_hash = patch_info["hash"]
             patch_filename = f"commit_patch_{commit_hash}.patch"
-            patch_path = os.path.abspath(os.path.join(image_dir, patch_filename))
+            patch_path = os.path.abspath(os.path.join(clone_dir, patch_filename))
             patch_url = patch_info["patch_url"]
             # CVE 场景：优先从本地 linux 仓库生成 patch，如果失败再根据 CVE 提供的 URL 从网络获取并校验
             patch_path = ensure_patch_file(

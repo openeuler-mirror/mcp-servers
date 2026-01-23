@@ -9,6 +9,7 @@ from .patch import getUrlText
 from .commits import get_vulnerability_commits
 from .locales import i18n
 from .apply_patch import get_patch
+from .apply_patch import _parse_patch_headers_and_body
 
 logger = logging.getLogger(__name__)
 
@@ -47,17 +48,24 @@ def generate_pr_body(cve_id, issue_url, clone_dir: str):
             with open(patch_path, "r", encoding="utf-8", errors="ignore") as f:
                 patch_content = f.read()
 
-            # 解析 Subject: 行
-            subject_match = re.search(r"^Subject:\s*(.+)$", patch_content, re.MULTILINE)
-            if subject_match:
-                subject = subject_match.group(1).strip()
+            headers, _ = _parse_patch_headers_and_body(patch_content)
+
+            # 1) Subject（已 unfold）
+            subject = headers.get("Subject", "")
+            if subject:
                 # 去除 [PATCH]、[PATCH v2]、[PATCH 1/3] 等
                 subject = re.sub(
                     r"\s*\[(?=[^\]]*PATCH)[^\]]*\]\s*",
                     " ",
                     subject,
                     flags=re.IGNORECASE,
-                    ).strip()
+                ).strip()
+
+            logger.info(
+                "generate_patch_header: from_patch subject_found=%s, subject=%r",
+                bool(subject),
+                subject,
+            )
         except Exception as e2:
             logger.error("从本地 patch 解析 PR 标题失败: %s", e2)
 

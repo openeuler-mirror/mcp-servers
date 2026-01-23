@@ -105,12 +105,10 @@ def _clone_repository(
     logger.info(f"克隆仓库: org={org_name}, repo={repo_name}, dir={clone_dir}")
     
     # 使用用户主目录下的Image目录
-    home_dir = os.path.expanduser("~")
-    safe_clone_dir = os.path.join(home_dir, "Image")
-    local_path = os.path.join(safe_clone_dir, repo_name)
+    local_path = os.path.join(clone_dir, repo_name)
     
     try:
-        os.makedirs(safe_clone_dir, exist_ok=True)
+        os.makedirs(clone_dir, exist_ok=True)
         
         # 检查目录是否已存在且是有效的git仓库
         if os.path.exists(local_path):
@@ -141,7 +139,7 @@ def _clone_repository(
         result = subprocess.run(
             ["git", "clone", clone_url, local_path],
             check=True,
-            cwd=safe_clone_dir,
+            cwd=clone_dir,
             capture_output=True,
             text=True
         )
