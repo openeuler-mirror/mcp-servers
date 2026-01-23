@@ -6,7 +6,7 @@ import subprocess
 
 from .gitee import setup_repository
 from .patch import getUrlText, ensure_patch_file
-from .commits import get_vulnerability_commits
+from .commits import get_vulnerability_commits, branch_commit_from_upstream
 from .locales import i18n
 from .tools.project import safe_git_reset_hard
 
@@ -44,6 +44,11 @@ def get_commit_reference(commit_id, repo_path):
         for url in [
             "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git",
             "https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux.git",
+            "https://mirrors.cernet.edu.cn/linux-stable.git",
+            "https://mirrors.tuna.tsinghua.edu.cn/git/linux-stable.git",
+            "https://mirrors.bfsu.edu.cn/git/linux-stable.git",
+            "https://mirrors.cqu.edu.cn/git/linux-stable.git",
+            "https://mirror.nju.edu.cn/git/linux-stable.git",
             "https://gitee.com/mirrors/linux_old1.git",
         ]:
             try:
@@ -213,22 +218,13 @@ Reference: {patch_url}
     return header
 
 
-def generate_commit_message(cve_id, issue_url, repo_path, clone_dir: str | None = None):
+def generate_commit_message(cve_id, issue_url, repo_path, branch_commit):
     """生成commit信息"""
     logger.info(
         f"generate_commit_message: cve_id={cve_id}, issue_url={issue_url}, repo_path={repo_path}"
     )
-    introduced_commit, fixed_commit = get_vulnerability_commits(
-        cve_id,
-        clone_dir=clone_dir,
-    )
-    logger.info(
-        f"generate_commit_message: introduced_commit={introduced_commit}, fixed_commit={fixed_commit}"
-    )
-    if not fixed_commit:
-        raise RuntimeError(i18n("未能获取修复提交(fixed)，无法继续流程"))
     message = generate_patch_header(
-        fixed_commit, cve_id, issue_url, repo_path=repo_path
+        branch_commit, cve_id, issue_url, repo_path=repo_path
     )
     logger.debug(
         "generate_commit_message: message_preview=%r",
@@ -289,7 +285,7 @@ def _parse_patch_headers_and_body(patch_content: str):
     body = "\n".join(lines[idx:]) if idx < len(lines) else ""
     return headers, body
 
-def get_patch(fixed_commit, clone_dir):
+def get_patch(branch_commit, clone_dir):
     """
     获取指定 commit 的 patch 文件路径。
     
@@ -299,24 +295,18 @@ def get_patch(fixed_commit, clone_dir):
     3. 对从网络获取的内容做简单校验，避免将 HTML 重定向页面当成 patch 使用。
     """
     patch_path = os.path.abspath(
-        os.path.join(clone_dir, f"commit_patch_{fixed_commit}.patch")
+        os.path.join(clone_dir, f"commit_patch_{branch_commit}.patch")
     )
     # 统一复用 patch.ensure_patch_file 逻辑
     return ensure_patch_file(
-        commit_hash=fixed_commit,
+        commit_hash=branch_commit,
         patch_path=patch_path,
         clone_dir=clone_dir,
     )
 
 
-def get_conflict_file_message(cve_id, repo, clone_dir):
-    introduced_commit, fixed_commit = get_vulnerability_commits(
-        cve_id,
-        clone_dir=clone_dir,
-    )
-    if not fixed_commit:
-        raise RuntimeError(i18n("未能获取修复提交(fixed)，无法继续流程"))
-    patch_path = get_patch(fixed_commit, clone_dir)
+def get_conflict_file_message(cve_id, repo, clone_dir, branch_commit):
+    patch_path = get_patch(branch_commit, clone_dir)
     logger.info(
         "get_conflict_file_message: start, cve_id=%s, introduced_commit=%s, "
         "fixed_commit=%s, patch_path=%s",
@@ -407,13 +397,33 @@ def apply_patch(
         patch应用信息字典
     """
     linux_repo_path = os.path.join(clone_dir, 'linux')
+    introduced_commit, fixed_commit = get_vulnerability_commits(
+        cve_id,
+        clone_dir=clone_dir,
+    )
+    logger.info(
+        f"apply_patch: introduced_commit={introduced_commit}, fixed_commit={fixed_commit}"
+    )
+    if not fixed_commit:
+        raise RuntimeError(i18n("未能获取修复提交(fixed)，无法继续流程"))
+    branch_commit = branch_commit_from_upstream(fixed_commit, branch, clone_dir)
+    if branch_commit:
+        logger.info(
+            "apply_patch: fixed_commit: %s, branch: %s, branch_commit: %s",
+            fixed_commit,
+            branch,
+            branch_commit
+            )
+    else:
+        branch_commit = fixed_commit
+
     logger.info(f"apply_patch: 生成 commit message，repo_path={linux_repo_path}")
     try:
         commit_msg = generate_commit_message(
             cve_id,
             issue_url,
             repo_path=linux_repo_path,
-            clone_dir=clone_dir,
+            branch_commit=branch_commit,
         )
     except Exception as e:
         logger.error(f"生成commit信息失败: {str(e)}")
@@ -477,7 +487,7 @@ def apply_patch(
             }
     logger.info("apply_patch: 预检查补丁冲突文件（git apply --check）...")
     try:
-        conflict_message = get_conflict_file_message(cve_id, repo, clone_dir)
+        conflict_message = get_conflict_file_message(cve_id, repo, clone_dir, branch_commit)
     except Exception as e:
         logger.warning(f"get conflict file message failed: {str(e)}")
         conflict_message = ""
