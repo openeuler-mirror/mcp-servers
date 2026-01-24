@@ -37,10 +37,11 @@ def _get_llm_config(provider: str = "openai"):
     获取不同 LLM 提供商的配置信息
     
     Args:
-        provider: 模型提供商，可选值: "openai", "deepseek", "siliconflow", "local"
+        provider: 模型提供商，可选值: "openai", "deepseek", "siliconflow", "minimax", "local"
                   - openai      : 使用 OpenAI 官方接口，或兼容 OpenAI 的云服务
                   - deepseek    : 使用 DeepSeek 官方接口
                   - siliconflow : 使用 SiliconFlow 托管的 DeepSeek 模型
+                  - minimax     : 使用 MiniMax OpenAI 兼容接口
                   - local       : 使用本地 / 自建的 OpenAI 兼容模型服务
     
     Returns:
@@ -71,9 +72,18 @@ def _get_llm_config(provider: str = "openai"):
             "base_url": "https://api.deepseek.com/v1",
             "model": "deepseek-chat"
         },
-        "siliconflow":{
+        "siliconflow": {
             "base_url": "https://api.siliconflow.cn/v1/",
             "model":"deepseek-ai/DeepSeek-V3"
+        },
+        "minimax": {
+            "base_url": "https://api.minimaxi.com/v1",
+            "model": "MiniMax-M2.1",
+        },
+        # 兼容别名：minimaxi -> minimax
+        "minimaxi": {
+            "base_url": "https://api.minimaxi.com/v1",
+            "model": "MiniMax-M2.1",
         },
         # 本地 / 自建 OpenAI 兼容模型服务：
         # - 默认假设为 OpenAI 兼容接口（/v1/completions 或 /v1/chat/completions）

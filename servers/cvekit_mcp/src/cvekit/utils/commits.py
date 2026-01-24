@@ -179,7 +179,7 @@ def get_vulnerability_commits(
     return introduced_commit, fixed_commit
 
 
-def fetch_and_update_repo(repo: git.Repo, branch_name: str):
+def fetch_and_update_repo(repo: git.Repo, branch_name: str) -> bool:
     """
     切换分支并更新
 
@@ -187,11 +187,75 @@ def fetch_and_update_repo(repo: git.Repo, branch_name: str):
         repo: git repo
         branch_name: 切换分支名
     """
-    repo.git.fetch('origin')
-    repo.remote('origin').fetch()
-    current_branches = repo.git.branch().split()
-    repo.git.checkout(branch_name)
-    repo.git.pull('origin', branch_name, "--rebase")
+    try:
+        remote = repo.remote("origin")
+    except Exception as e:
+        logger.warning("fetch_and_update_repo: 无法获取远程 origin: %s", str(e))
+        return False
+
+    try:
+        remote.fetch()
+    except Exception as e:
+        logger.warning("fetch_and_update_repo: fetch origin 失败: %s", str(e))
+        return False
+
+    remote_branch = f"origin/{branch_name}"
+    remote_refs = {ref.name for ref in remote.refs}
+    if remote_branch not in remote_refs:
+        logger.warning(
+            "fetch_and_update_repo: 远程分支不存在: %s (origin refs: %s)",
+            remote_branch,
+            ", ".join(sorted(remote_refs)) if remote_refs else "EMPTY",
+        )
+        return False
+
+    local_branches = {head.name for head in repo.heads}
+    try:
+        if branch_name in local_branches:
+            repo.git.checkout(branch_name)
+        else:
+            repo.git.checkout("-b", branch_name, "--track", remote_branch)
+    except Exception as e:
+        logger.warning(
+            "fetch_and_update_repo: 切换/创建分支失败: %s, error: %s",
+            branch_name,
+            str(e),
+        )
+        return False
+
+    # 使用 --ff-only 避免 rebase 冲突导致流程中断
+    try:
+        repo.git.pull("origin", branch_name, "--ff-only")
+    except Exception as e:
+        logger.warning(
+            "fetch_and_update_repo: pull --ff-only 失败，将继续使用本地分支状态: %s",
+            str(e),
+        )
+    return True
+
+
+def _checkout_local_branch(repo: git.Repo, branch_name: str) -> bool:
+    """
+    仅切换到本地已有分支（不触发 fetch/pull）
+    """
+    local_branches = {head.name for head in repo.heads}
+    if branch_name not in local_branches:
+        logger.warning(
+            "_checkout_local_branch: 本地不存在分支 %s，可用分支: %s",
+            branch_name,
+            ", ".join(sorted(local_branches)) if local_branches else "EMPTY",
+        )
+        return False
+    try:
+        repo.git.checkout(branch_name)
+    except Exception as e:
+        logger.warning(
+            "_checkout_local_branch: 切换分支失败: %s, error: %s",
+            branch_name,
+            str(e),
+        )
+        return False
+    return True
 
 
 def branch_commit_from_upstream(fixed_commit: str, branch_name: str, clone_dir: str):
@@ -209,11 +273,25 @@ def branch_commit_from_upstream(fixed_commit: str, branch_name: str, clone_dir: 
     linux_repo_path = os.path.join(clone_dir, "linux")
     repo_linux = git.Repo(linux_repo_path)
     linux_branch = f"{branch_name.replace('OLK', 'linux')}.y"
-    try:
-        fetch_and_update_repo(repo_linux, linux_branch)
-    except Exception as e:
-        logger.warning(f'branch_commit_from_upstream: {str(e)}')
-        return '' 
+    use_cache_only = os.getenv("LINUX_REPO_USE_CACHE_ONLY", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    ok = False
+    if use_cache_only:
+        ok = _checkout_local_branch(repo_linux, linux_branch)
+    else:
+        try:
+            ok = fetch_and_update_repo(repo_linux, linux_branch)
+        except Exception as e:
+            logger.warning(f'branch_commit_from_upstream: {str(e)}')
+            return ''
+        if not ok:
+            # fetch/pull 失败时，尝试使用本地缓存继续
+            ok = _checkout_local_branch(repo_linux, linux_branch)
+    if not ok:
+        return ''
     since_tag = branch_name.replace('OLK-', 'v')
     try:
         grep_output = repo_linux.git.log(
