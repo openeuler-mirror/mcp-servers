@@ -5,7 +5,7 @@ from datetime import datetime
 
 from .gitee import setup_repository
 from .patch import get_cve_patch, getUrlText, ensure_patch_file
-from .commits import get_vulnerability_commits
+from .commits import get_vulnerability_commits, branch_commit_from_upstream
 from .locales import i18n
 from .cache import BRANCHES_ANALYSIS_CACHE, _get_cache_key, cached
 from .tools.project import safe_git_reset_hard
@@ -260,7 +260,6 @@ def git_apply_check_patch(
         }
 
 
-
 def check_cve_patch_apply_status(
         fork_repo_url: str,
         cve_id: str,
@@ -275,6 +274,15 @@ def check_cve_patch_apply_status(
 
         if fixed_commit:
             commit_hash = fixed_commit
+            commit_id = branch_commit_from_upstream(fixed_commit, branch_name, clone_dir)
+            if commit_id:
+                logger.info(
+                    "check_cve_patch_apply_status: fixed_commit: %s, branch_name: %s, commit_id: %s",
+                    fixed_commit,
+                    branch_name,
+                    commit_id
+                    )
+                commit_hash = commit_id
             patch_filename = f"commit_patch_{commit_hash}.patch"
             patch_path = os.path.abspath(os.path.join(clone_dir, patch_filename))
             # 固定 commit 的场景：优先从本地 linux 仓库生成 patch，如果失败再从 kernel.org 获取并校验

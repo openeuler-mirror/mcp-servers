@@ -1,6 +1,9 @@
 import re
+import os
 import logging
 import time
+import git
+
 from .cache import (
     cached,
     _get_cache_key,
@@ -174,3 +177,73 @@ def get_vulnerability_commits(
     logger.info(f"introduced_commit: {introduced_commit}, fixed_commit: {fixed_commit}")
     
     return introduced_commit, fixed_commit
+
+
+def fetch_and_update_repo(repo: git.Repo, branch_name: str):
+    """
+    切换分支并更新
+
+    Args:
+        repo: git repo
+        branch_name: 切换分支名
+    """
+    repo.git.fetch('origin')
+    repo.remote('origin').fetch()
+    current_branches = repo.git.branch().split()
+    repo.git.checkout(branch_name)
+    repo.git.pull('origin', branch_name, "--rebase")
+
+
+def branch_commit_from_upstream(fixed_commit: str, branch_name: str, clone_dir: str):
+    """
+    使用upstream版本的commit id找上游对应分支上的commit id
+
+    Args:
+        fixed_commit: git repo
+        branch_name: branch name
+        clone_dir: linux代码克隆目录
+
+    Returns:
+        commit_id: 分支适配commit id
+    """
+    linux_repo_path = os.path.join(clone_dir, "linux")
+    repo_linux = git.Repo(linux_repo_path)
+    linux_branch = f"{branch_name.replace('OLK', 'linux')}.y"
+    try:
+        fetch_and_update_repo(repo_linux, linux_branch)
+    except Exception as e:
+        logger.warning(f'branch_commit_from_upstream: {str(e)}')
+        return '' 
+    since_tag = branch_name.replace('OLK-', 'v')
+    try:
+        grep_output = repo_linux.git.log(
+                        "--since", since_tag,
+                        "--grep", fixed_commit,
+                        linux_branch
+                    )
+    except Exception as e:
+        logger.warning(f'branch_commit_from_upstream: {str(e)}')
+        return '' 
+    commit_id = ''
+    upstream_commit = ''
+    for line in grep_output.split('\n'):
+        line = line.strip().lower()
+        if not line:
+            continue
+        if not commit_id:
+            if re.match('commit [a-f0-9]{40}', line):
+                commit_id = line.split()[-1]
+        if not upstream_commit:
+            if re.match('\[ upstream commit [a-f0-9]{40} \]', line):
+                upstream_commit = line.split()[-2]
+            if re.match('commit [a-f0-9]{40} upstream.', line):
+                upstream_commit = line.spilt()[-2]
+    logger.info(
+        "branch_commit_from_upstream: upstream commit: %s, branch commit: %s, branch name: %s",
+        upstream_commit,
+        commit_id,
+        branch_name
+        )
+    if upstream_commit == fixed_commit:
+        return commit_id
+    return ''
