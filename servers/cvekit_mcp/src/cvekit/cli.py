@@ -91,7 +91,7 @@ def main():
         '--llm-provider',
         type=str,
         default='openai',
-        choices=['openai', 'deepseek', 'siliconflow', 'local'],
+        choices=['openai', 'deepseek', 'siliconflow', 'minimax', 'minimaxi', 'local'],
         help='LLM提供商 (默认: openai；当为 local 时可不提供 --api-key，用于本地免鉴权模型)',
     )
     backport_group.add_argument('--patch-dataset-dir', type=str,

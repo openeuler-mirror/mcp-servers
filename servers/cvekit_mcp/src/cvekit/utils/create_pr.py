@@ -117,13 +117,13 @@ def create_pr(
 
     repo_path = os.path.join(clone_dir, "kernel")
     repo = git.Repo(repo_path)
+    temp_remote_name = fix_branch
     try:
         fork_repo_with_token = fork_repo_url.replace(
             "https://", 
             f"https://oauth2:{gitee_token}@"
         )
 
-        temp_remote_name = fix_branch
         if temp_remote_name in repo.remotes:
             repo.delete_remote(temp_remote_name)
         temp_remote = repo.create_remote(temp_remote_name, url=fork_repo_with_token)
@@ -198,6 +198,14 @@ def create_pr(
     html_url = result.get('html_url', '')
     if not html_url:
         html_url = result.get('web_url', '')
+
+    # PR 创建成功后，清理临时 remote，避免远程过多、泄露 token
+    try:
+        if temp_remote_name in repo.remotes:
+            repo.delete_remote(temp_remote_name)
+            logger.info(f"已删除临时 remote: {temp_remote_name}")
+    except Exception as e:
+        logger.warning(f"删除临时 remote 失败: {str(e)}")
 
     return {
         "status": "success",

@@ -8,7 +8,7 @@ from threading import Lock
 
 from camel.models import ModelFactory
 from camel.types import ModelPlatformType
-from camel.configs import SiliconFlowConfig
+from camel.configs import SiliconFlowConfig, ChatGPTConfig
 from camel.agents import CallbackMCPAgent
 
 from a2a.types import (
@@ -196,11 +196,15 @@ async def create_mcp_agent(
         # 统一模型名称：
         # - 优先使用调用方显式传入的 model_type；
         # - 其次使用环境变量 DEFAULT_MODEL_TYPE；
-        # - 最后在 siliconflow 场景下回退到合理默认值 deepseek-ai/DeepSeek-V3。
+        # - 最后根据 provider 回退到合理默认值。
         effective_model_type = (
             model_type
             or os.getenv("DEFAULT_MODEL_TYPE")
-            or ("deepseek-ai/DeepSeek-V3" if provider_lower == "siliconflow" else "gpt-4o-mini")
+            or (
+                "deepseek-ai/DeepSeek-V3"
+                if provider_lower == "siliconflow"
+                else ("MiniMax-M2.1" if provider_lower in ("minimax", "minimaxi") else "gpt-4o-mini")
+            )
         )
 
         effective_api_key = (
@@ -210,20 +214,44 @@ async def create_mcp_agent(
             or os.getenv("OPENAI_KEY")
         )
 
-        # 对于远程模型（当前 MCPAgent 只封装 SiliconFlow 远程模型），必须提供 API Key
+        # 对于远程模型必须提供 API Key（local 可不提供）
         if provider_lower != "local" and not effective_api_key:
             raise RuntimeError(
                 "未配置大模型 API Key。请通过环境变量 SILICONFLOW_API_KEY / API_KEY / OPENAI_KEY "
                 "或请求参数 api_key/openai_key 进行配置。"
             )
 
-        model = ModelFactory.create(
-            model_platform=ModelPlatformType.SILICONFLOW,
-            model_type=effective_model_type,
-            model_config_dict=SiliconFlowConfig(
+        # 根据 LLM_PROVIDER 选择模型平台与配置
+        model_url = None
+        if provider_lower == "siliconflow":
+            model_platform = ModelPlatformType.SILICONFLOW
+            model_config_dict = SiliconFlowConfig(
                 temperature=0.2, stream=False
-            ).as_dict(),
+            ).as_dict()
+        elif provider_lower in ("minimax", "minimaxi", "openai", "local"):
+            if not hasattr(ModelPlatformType, "OPENAI"):
+                raise RuntimeError("当前 Camel 版本不支持 OpenAI 平台，请升级 Camel 或调整配置。")
+            model_platform = ModelPlatformType.OPENAI
+            base_url = (
+                os.getenv("BASE_URL")
+                or os.getenv("OPENAI_API_BASE_URL")
+                or os.getenv("OPENAI_BASE_URL")
+            )
+            if provider_lower in ("minimax", "minimaxi") and not base_url:
+                base_url = "https://api.minimaxi.com/v1"
+            model_config_dict = ChatGPTConfig(
+                temperature=0.2, stream=False
+            ).as_dict()
+            model_url = base_url
+        else:
+            raise RuntimeError(f"不支持的 LLM_PROVIDER: {provider_lower}")
+
+        model = ModelFactory.create(
+            model_platform=model_platform,
+            model_type=effective_model_type,
+            model_config_dict=model_config_dict,
             api_key=effective_api_key,
+            url=model_url,
         )
         return CallbackMCPAgent(
             system_message=SYS_MSG,
