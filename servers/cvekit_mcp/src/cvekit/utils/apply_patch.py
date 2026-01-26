@@ -215,7 +215,7 @@ Reference: {patch_url}
 
 {msg}
 """
-    return header
+    return header, headers 
 
 
 def generate_commit_message(cve_id, issue_url, repo_path, branch_commit):
@@ -223,14 +223,14 @@ def generate_commit_message(cve_id, issue_url, repo_path, branch_commit):
     logger.info(
         f"generate_commit_message: cve_id={cve_id}, issue_url={issue_url}, repo_path={repo_path}"
     )
-    message = generate_patch_header(
+    message, headers = generate_patch_header(
         branch_commit, cve_id, issue_url, repo_path=repo_path
     )
     logger.debug(
         "generate_commit_message: message_preview=%r",
         message[:200] if isinstance(message, str) else message,
     )
-    return message
+    return message, headers
 
 def _parse_patch_headers_and_body(patch_content: str):
     """
@@ -308,11 +308,9 @@ def get_patch(branch_commit, clone_dir):
 def get_conflict_file_message(cve_id, repo, clone_dir, branch_commit):
     patch_path = get_patch(branch_commit, clone_dir)
     logger.info(
-        "get_conflict_file_message: start, cve_id=%s, introduced_commit=%s, "
-        "fixed_commit=%s, patch_path=%s",
+        "get_conflict_file_message: start, cve_id=%s, branch_commit=%s, patch_path=%s",
         cve_id,
-        introduced_commit,
-        fixed_commit,
+        branch_commit,
         patch_path,
     )
     conflict_message = ""
@@ -419,7 +417,7 @@ def apply_patch(
 
     logger.info(f"apply_patch: 生成 commit message，repo_path={linux_repo_path}")
     try:
-        commit_msg = generate_commit_message(
+        commit_msg, headers = generate_commit_message(
             cve_id,
             issue_url,
             repo_path=linux_repo_path,
@@ -495,9 +493,21 @@ def apply_patch(
     logger.info(f"apply_patch: 应用补丁文件，patch_path={patch_path}")
     try:
         # 执行 git apply patch_path
-        repo.git.am(patch_path)
-        repo.git.add("-u")
-        repo.git.commit("--amend", "-m", f"{commit_msg}{conflict_message}")
+        if conflict_message:
+            repo.git.apply(patch_path)
+            repo.git.add("--all")
+            author = headers.get("From", f"{signer_name} <{signer_email}>")
+            date = headers.get("Date")
+            if date:
+                repo.git.commit("-m", f"{commit_msg}{conflict_message}",
+                f"--author={author}", f"--date={date}", "-s")
+            else:
+                repo.git.commit("-m", f"{commit_msg}{conflict_message}",
+                f"--author={author}", "-s")
+        else:
+            repo.git.am(patch_path)
+            repo.git.add("-u")
+            repo.git.commit("--amend", "-m", commit_msg, "-s")
         logger.info("补丁成功应用")
     except git.exc.GitCommandError as e:
         logger.error(f"应用补丁失败: {str(e)}")

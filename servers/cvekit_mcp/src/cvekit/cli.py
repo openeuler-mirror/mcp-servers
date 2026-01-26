@@ -3,6 +3,7 @@ import sys
 import logging
 import os
 import json
+import multiprocessing
 
 from tabulate import tabulate
 from .utils.gitee import parse_gitee_issue_url, setup_repository, get_issue_url_from_cve_id
@@ -14,6 +15,8 @@ from .utils.locales import i18n
 from .utils.backporting import run_backport_from_config
 
 logger = logging.getLogger(__name__)
+apply_patch_lock = multiprocessing.Lock()
+create_pr_lock = multiprocessing.Lock()
 
 class IssueInfo:
     def __init__(self, issue_id, cve_id, org_name, repo_name, affected_versions, issue_url):
@@ -221,30 +224,38 @@ def handle_action(args):
 
 def handle_apply_patch(cve_id, args):
     """应用patch并把branch提交到fork分支"""
-    result = apply_patch(
-        fork_repo_url=args.fork_repo_url,
-        gitee_token=args.gitee_token,
-        branch=args.branch,
-        clone_dir=args.clone_dir,
-        patch_path=args.patch_path,
-        signer_name=args.signer_name,
-        signer_email=args.signer_email,
-        cve_id=cve_id,
-        issue_url=args.issue_url
-        )
+    apply_patch_lock.acquire()
+    try:
+        result = apply_patch(
+            fork_repo_url=args.fork_repo_url,
+            gitee_token=args.gitee_token,
+            branch=args.branch,
+            clone_dir=args.clone_dir,
+            patch_path=args.patch_path,
+            signer_name=args.signer_name,
+            signer_email=args.signer_email,
+            cve_id=cve_id,
+            issue_url=args.issue_url
+            )
+    finally:
+        apply_patch_lock.release()
     return result
 
 def handle_create_pr(cve_id, args):
     """创建pr"""
-    result = create_pr(
-        cve_id=cve_id,
-        issue_url=args.issue_url,
-        fork_repo_url=args.fork_repo_url,
-        repo_url=args.repo_url,
-        branch=args.branch,
-        clone_dir=args.clone_dir,
-        gitee_token=args.gitee_token
-    )
+    create_pr_lock.lock()
+    try:
+        result = create_pr(
+            cve_id=cve_id,
+            issue_url=args.issue_url,
+            fork_repo_url=args.fork_repo_url,
+            repo_url=args.repo_url,
+            branch=args.branch,
+            clone_dir=args.clone_dir,
+            gitee_token=args.gitee_token
+        )
+    finally:
+        create_pr_lock.release()
     return result
 
 def handle_backport(cve_id, args):
