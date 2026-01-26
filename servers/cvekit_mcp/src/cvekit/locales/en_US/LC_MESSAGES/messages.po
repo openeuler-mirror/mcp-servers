@@ -814,12 +814,12 @@ msgstr "Failed to config user information: %s"
 msgid "切换分支失败: %s"
 msgstr "Failed to switch branches: %s"
 
-#: cvekit/utils/apply_patch.py:508
+#: cvekit/utils/apply_patch.py:510
 #, python-format
 msgid "无法完成补丁应用，请检查冲突并重试: %s"
 msgstr "Can not apply patch, please check for conflicts and try again: %s"
 
-#: cvekit/utils/apply_patch.py:514
+#: cvekit/utils/apply_patch.py:516
 #, python-format
 msgid "无法应用补丁: %s"
 msgstr "Can not apply patch: %s"

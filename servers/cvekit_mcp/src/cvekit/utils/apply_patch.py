@@ -495,7 +495,9 @@ def apply_patch(
     logger.info(f"apply_patch: 应用补丁文件，patch_path={patch_path}")
     try:
         # 执行 git apply patch_path
-        repo.git.apply(patch_path)
+        repo.git.am(patch_path)
+        repo.git.add("-u")
+        repo.git.commit("--amend", "-m", f"{commit_msg}{conflict_message}")
         logger.info("补丁成功应用")
     except git.exc.GitCommandError as e:
         logger.error(f"应用补丁失败: {str(e)}")
@@ -516,8 +518,6 @@ def apply_patch(
 
     logger.info("apply_patch: 提交变更到本地仓库...")
     # 添加所有变更并提交
-    repo.git.add("--all")
-    repo.git.commit("-m", f"{commit_msg}{conflict_message}", "-s", f"--author={signer_name} <{signer_email}>")
 
     remote = f"fork-{org_name}"
     # 推送变更到远程仓库
