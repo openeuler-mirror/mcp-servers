@@ -635,12 +635,12 @@ msgstr ""
 msgid "切换分支失败: %s"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:508
+#: cvekit/utils/apply_patch.py:510
 #, python-format
 msgid "无法完成补丁应用，请检查冲突并重试: %s"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:514
+#: cvekit/utils/apply_patch.py:516
 #, python-format
 msgid "无法应用补丁: %s"
 msgstr ""
