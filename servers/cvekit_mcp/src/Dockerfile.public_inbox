@@ -1,0 +1,41 @@
+FROM localhost/fedora:41
+
+# 先切换到阿里云 Fedora 源，并关闭 updates-testing / openh264，加快下载速度
+RUN set -eux; \
+    cd /etc/yum.repos.d; \
+    mv fedora.repo fedora.repo.backup || true; \
+    mv fedora-updates.repo fedora-updates.repo.backup || true; \
+    curl -o /etc/yum.repos.d/fedora.repo http://mirrors.aliyun.com/repo/fedora.repo; \
+    curl -o /etc/yum.repos.d/fedora-updates.repo http://mirrors.aliyun.com/repo/fedora-updates.repo; \
+    mv fedora-updates-testing.repo fedora-updates-testing.repo.backup || true; \
+    mv fedora-cisco-openh264.repo fedora-cisco-openh264.repo.backup || true; \
+    dnf -y makecache && \
+    dnf -y update && \
+    dnf -y install public-inbox-server git && \
+    dnf clean all
+
+# 工作目录放在 /srv/public-inbox
+WORKDIR /srv/public-inbox
+
+# 把你宿主机上的 bare 仓库打进镜像
+# 构建上下文需要包含 linux-cve-announce/git/0.git 这个目录
+COPY public-inbox/linux-cve-announce/git/0.git /srv/public-inbox/linux-cve-announce/git/0.git
+
+# 初始化 inbox 配置并建立索引（V2）
+RUN public-inbox-init -V2 \
+      --ng org.kernel.vger.linux-cve-announce \
+      linux-cve-announce \
+      /srv/public-inbox/linux-cve-announce \
+      https://lore.kernel.org/linux-cve-announce \
+      linux-cve-announce@vger.kernel.org && \
+    public-inbox-index /srv/public-inbox/linux-cve-announce
+
+# public-inbox-httpd 默认监听 0.0.0.0:8080
+EXPOSE 8080
+
+# 指定配置文件位置（public-inbox-init 会默认写到这个路径）
+ENV PI_CONFIG=/root/.public-inbox/config
+
+# 以前你本机上是直接跑 `public-inbox-httpd`
+# 当前 Fedora 里的 public-inbox-httpd 不支持 --foreground 参数，直接以前台方式运行即可
+CMD ["public-inbox-httpd", "-l", "http://0.0.0.0:8080"]
