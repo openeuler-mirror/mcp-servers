@@ -165,7 +165,10 @@ def main():
         # 非调试模式：添加文件处理器
         log_dir = os.path.expanduser('~/.cvekit')
         os.makedirs(log_dir, exist_ok=True)  # 确保目录存在
-        log_file = os.path.join(log_dir, 'cvekit.log')
+        if args.cve_id:
+            log_file = os.path.join(log_dir, f'cvekit-{args.cve_id}.log')
+        else:
+            log_file = os.path.join(log_dir, 'cvekit.log')
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(logging.INFO)
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -243,7 +246,7 @@ def handle_apply_patch(cve_id, args):
 
 def handle_create_pr(cve_id, args):
     """创建pr"""
-    create_pr_lock.lock()
+    create_pr_lock.acquire()
     try:
         result = create_pr(
             cve_id=cve_id,

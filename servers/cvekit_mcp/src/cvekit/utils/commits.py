@@ -14,6 +14,22 @@ from .patch import getUrlText, get_upstream_commit_from_url
 logger = logging.getLogger(__name__)
 
 
+def get_upstream_commit_from_message(message):
+    upstream_commit = ''
+    if not message:
+        return upstream_commit
+    for line in message.split('\n'):
+        line = line.strip().lower()
+        if not line:
+            continue
+        if not upstream_commit:
+            if re.match('\[ upstream commit [a-f0-9]{40} \]', line):
+                upstream_commit = line.split()[-2]
+            if re.match('commit [a-f0-9]{40} upstream.', line):
+                upstream_commit = line.split()[-2]
+    return upstream_commit
+
+
 @cached(
     COMMITS_CACHE,
     # clone_dir 仅用于本地 fallback，不影响缓存 key，这里忽略即可
@@ -111,12 +127,17 @@ def get_vulnerability_commits(
                         #    若存在，则视为真实的 upstream commit，避免走网络请求。
                         if linux_repo is not None:
                             try:
-                                linux_repo.commit(commit_hash)
+                                commit = linux_repo.commit(commit_hash)
                                 introduced_commit = commit_hash
+                                temp_commit_id = get_upstream_commit_from_message(commit.message)
+                                if temp_commit_id:
+                                    introduced_commit = temp_commit_id
                                 logger.debug(
                                     "get_vulnerability_commits: introduced commit 在本地 linux 仓库中存在，"
-                                    "直接作为 upstream 使用: %s",
+                                    "commit_hash: %s, temp_commit_id: %s, introduced_commit: %s",
                                     commit_hash,
+                                    temp_commit_id,
+                                    introduced_commit
                                 )
                             except Exception:
                                 # 本地不存在该 commit，稍后再通过网络尝试解析 upstream
@@ -143,12 +164,17 @@ def get_vulnerability_commits(
                         upstream_commit = None
                         if linux_repo is not None:
                             try:
-                                linux_repo.commit(commit_hash)
+                                commit = linux_repo.commit(commit_hash)
                                 upstream_commit = commit_hash
+                                temp_commit_id = get_upstream_commit_from_message(commit.message)
+                                if temp_commit_id:
+                                    upstream_commit = temp_commit_id
                                 logger.debug(
                                     "get_vulnerability_commits: fixed commit 在本地 linux 仓库中存在，"
-                                    "直接作为 upstream 使用: %s",
+                                    "commit_hash: %s, temp_commit_id: %s, upstream_commit: %s",
                                     commit_hash,
+                                    temp_commit_id,
+                                    upstream_commit
                                 )
                             except Exception:
                                 # 本地不存在该 commit，稍后再通过网络尝试解析 upstream
@@ -315,7 +341,7 @@ def branch_commit_from_upstream(fixed_commit: str, branch_name: str, clone_dir: 
             if re.match('\[ upstream commit [a-f0-9]{40} \]', line):
                 upstream_commit = line.split()[-2]
             if re.match('commit [a-f0-9]{40} upstream.', line):
-                upstream_commit = line.spilt()[-2]
+                upstream_commit = line.split()[-2]
     logger.info(
         "branch_commit_from_upstream: upstream commit: %s, branch commit: %s, branch name: %s",
         upstream_commit,
