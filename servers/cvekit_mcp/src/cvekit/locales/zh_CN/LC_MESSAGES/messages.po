@@ -256,7 +256,7 @@ msgstr ""
 msgid "未找到受影响的分支"
 msgstr ""
 
-#: cvekit/cli.py:315 cvekit/cli.py:441 cvekit/utils/branches.py:390
+#: cvekit/cli.py:318 cvekit/cli.py:444 cvekit/utils/branches.py:390
 #: cvekit/utils/branches.py:416 cvekit/utils/branches.py:420
 #: cvekit/utils/branches.py:482 cvekit/utils/branches.py:486
 #: cvekit/utils/branches.py:502 cvekit/utils/branches.py:519 server.py:374
@@ -264,15 +264,16 @@ msgstr ""
 msgid "适配状态"
 msgstr ""
 
-#: cvekit/cli.py:315 cvekit/utils/branches.py:420 cvekit/utils/branches.py:486
+#: cvekit/cli.py:318 cvekit/utils/branches.py:420 cvekit/utils/branches.py:486
 #: server.py:375
 msgid "需要调整"
 msgstr ""
 
-#: cvekit/cli.py:313 cvekit/cli.py:439 cvekit/utils/branches.py:388
+#: cvekit/cli.py:316 cvekit/cli.py:442 cvekit/utils/branches.py:388
 #: cvekit/utils/branches.py:411 cvekit/utils/branches.py:476
-#: cvekit/utils/branches.py:500 cvekit/utils/branches.py:517 server.py:376
-#: server.py:443 server.py:473 server.py:500 server.py:583
+#: cvekit/utils/branches.py:500 cvekit/utils/branches.py:517
+#: cvekit/utils/branches.py:543 server.py:376 server.py:443 server.py:473
+#: server.py:500 server.py:583
 msgid "目标分支"
 msgstr ""
 
@@ -293,19 +294,19 @@ msgstr ""
 msgid "backport_result结构: %s"
 msgstr ""
 
-#: cvekit/cli.py:316 cvekit/cli.py:442 cvekit/utils/branches.py:391
+#: cvekit/cli.py:319 cvekit/cli.py:445 cvekit/utils/branches.py:391
 #: cvekit/utils/branches.py:413 cvekit/utils/branches.py:478
 #: cvekit/utils/branches.py:503 cvekit/utils/branches.py:520 server.py:420
 #: server.py:445 server.py:476 server.py:503 server.py:584
 msgid "冲突点"
 msgstr ""
 
-#: cvekit/cli.py:315 cvekit/utils/branches.py:416 cvekit/utils/branches.py:482
+#: cvekit/cli.py:318 cvekit/utils/branches.py:416 cvekit/utils/branches.py:482
 #: server.py:421 server.py:446
 msgid "成功"
 msgstr ""
 
-#: cvekit/cli.py:317 cvekit/utils/branches.py:392 cvekit/utils/branches.py:417
+#: cvekit/cli.py:320 cvekit/utils/branches.py:392 cvekit/utils/branches.py:417
 #: cvekit/utils/branches.py:421 cvekit/utils/branches.py:483
 #: cvekit/utils/branches.py:487 cvekit/utils/branches.py:504
 #: cvekit/utils/branches.py:521 server.py:422 server.py:447 server.py:457
@@ -364,20 +365,20 @@ msgstr ""
 msgid "| 补丁ID | 目标分支 | 是否受影响 | 适配状态 | 补丁路径 | 建议调整文件 | 差异文件 | 是否存在冲突 | 提交信息 |\n"
 msgstr ""
 
-#: cvekit/cli.py:312 cvekit/utils/branches.py:387 cvekit/utils/branches.py:410
+#: cvekit/cli.py:315 cvekit/utils/branches.py:387 cvekit/utils/branches.py:410
 #: cvekit/utils/branches.py:475 cvekit/utils/branches.py:499
-#: cvekit/utils/branches.py:516 server.py:472
+#: cvekit/utils/branches.py:516 cvekit/utils/branches.py:542 server.py:472
 msgid "补丁ID"
 msgstr ""
 
-#: cvekit/cli.py:314 cvekit/cli.py:440 cvekit/utils/branches.py:389
+#: cvekit/cli.py:317 cvekit/cli.py:443 cvekit/utils/branches.py:389
 #: cvekit/utils/branches.py:412 cvekit/utils/branches.py:477
-#: cvekit/utils/branches.py:501 cvekit/utils/branches.py:518 server.py:474
-#: server.py:501
+#: cvekit/utils/branches.py:501 cvekit/utils/branches.py:518
+#: cvekit/utils/branches.py:545 server.py:474 server.py:501
 msgid "是否受影响"
 msgstr ""
 
-#: cvekit/cli.py:445 cvekit/cli.py:446 cvekit/cli.py:452
+#: cvekit/cli.py:448 cvekit/cli.py:449 cvekit/cli.py:455
 #: cvekit/utils/branches.py:424 cvekit/utils/branches.py:492
 #: cvekit/utils/branches.py:509 cvekit/utils/branches.py:526 server.py:478
 msgid "提交信息"
@@ -398,7 +399,7 @@ msgstr ""
 msgid "请选择要在哪些分支应用补丁（可多选，输入分支名，用逗号分隔）：\n"
 msgstr ""
 
-#: cvekit/cli.py:314 cvekit/cli.py:452 cvekit/utils/branches.py:477
+#: cvekit/cli.py:317 cvekit/cli.py:455 cvekit/utils/branches.py:477
 #: server.py:513
 msgid "受影响"
 msgstr ""
@@ -589,73 +590,79 @@ msgstr ""
 msgid "请确认PR是否创建成功"
 msgstr ""
 
-#: cvekit/cli.py:378
+#: cvekit/cli.py:381
 msgid "提供的issue中未找到CVE ID"
 msgstr ""
 
-#: cvekit/cli.py:431
+#: cvekit/cli.py:434
 msgid ""
 "\n"
 "分析结果:"
 msgstr ""
 
-#: cvekit/cli.py:432
+#: cvekit/cli.py:435
 msgid "无结果输出"
 msgstr ""
 
-#: cvekit/cli.py:452
+#: cvekit/cli.py:455
 msgid "分支"
 msgstr ""
 
-#: cvekit/cli.py:452
+#: cvekit/cli.py:455
 msgid "状态"
 msgstr ""
 
-#: cvekit/cli.py:452
+#: cvekit/cli.py:455
 msgid "补丁路径"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:406 cvekit/utils/branches.py:373
-#: cvekit/utils/create_pr.py:29
+#: cvekit/utils/apply_patch.py:402
+#, python-format
+msgid "分支: %s, CVE: %s 已修复或不受影响, 补丁应用失败"
+msgstr ""
+
+#: cvekit/utils/apply_patch.py:413 cvekit/utils/branches.py:373
+#: cvekit/utils/create_pr.py:30
 msgid "未能获取修复提交(fixed)，无法继续流程"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:430
+#: cvekit/utils/apply_patch.py:437
 #, python-format
 msgid "生成commit信息失败: %s"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:447
+#: cvekit/utils/apply_patch.py:454
 #, python-format
 msgid "配置用户信息失败: %s"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:484
+#: cvekit/utils/apply_patch.py:491
 #, python-format
 msgid "切换分支失败: %s"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:520
+#: cvekit/utils/apply_patch.py:527
 #, python-format
 msgid "无法完成补丁应用，请检查冲突并重试: %s"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:526
+#: cvekit/utils/apply_patch.py:533
 #, python-format
 msgid "无法应用补丁: %s"
 msgstr ""
 
-#: cvekit/utils/apply_patch.py:555
+#: cvekit/utils/apply_patch.py:562
 #, python-format
 msgid "无法推送变更: %s"
 msgstr ""
 
 #: cvekit/utils/branches.py:389 cvekit/utils/branches.py:391
 #: cvekit/utils/branches.py:501 cvekit/utils/branches.py:503
+#: cvekit/utils/branches.py:547
 msgid "已修复"
 msgstr ""
 
-#: cvekit/utils/branches.py:518
+#: cvekit/utils/branches.py:518 cvekit/utils/branches.py:546
 msgid "不受影响"
 msgstr ""
 
@@ -663,22 +670,27 @@ msgstr ""
 msgid "无"
 msgstr ""
 
-#: cvekit/utils/create_pr.py:148
+#: cvekit/utils/create_pr.py:110
+#, python-format
+msgid "分支: %s, CVE: %s 已修复或不受影响, 创建PR失败"
+msgstr ""
+
+#: cvekit/utils/create_pr.py:155
 #, python-format
 msgid "推送分支到远程 fork 仓库失败：%s，stderr：%s"
 msgstr ""
 
-#: cvekit/utils/create_pr.py:154
+#: cvekit/utils/create_pr.py:161
 #, python-format
 msgid "推送分支时发生未知错误：%s"
 msgstr ""
 
-#: cvekit/utils/create_pr.py:174
+#: cvekit/utils/create_pr.py:181
 #, python-format
 msgid "oegitext配置token失败: %s, stderr: %s"
 msgstr ""
 
-#: cvekit/utils/create_pr.py:195
+#: cvekit/utils/create_pr.py:202
 #, python-format
 msgid "提交pr失败: %s, stderr: %s"
 msgstr ""

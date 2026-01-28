@@ -10,6 +10,7 @@ from .commits import get_vulnerability_commits
 from .locales import i18n
 from .apply_patch import get_patch
 from .apply_patch import _parse_patch_headers_and_body
+from .branches import check_analyse_cache_result
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,12 @@ def create_pr(
     Returns:
         PR创建结果字典
     """
+    if check_analyse_cache_result(cve_id, branch):
+        return {
+            "action": "create_pr",
+            "cve_id": cve_id,
+            "error": i18n("分支: %s, CVE: %s 已修复或不受影响, 创建PR失败") % (branch, cve_id)
+        }
     # 解析repo URL获取组织名和仓库名
     parts = fork_repo_url.strip().rstrip('/').split('/')
     head_org_name = parts[-2]

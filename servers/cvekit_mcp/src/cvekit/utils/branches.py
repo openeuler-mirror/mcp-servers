@@ -7,7 +7,7 @@ from .gitee import setup_repository
 from .patch import get_cve_patch, getUrlText, ensure_patch_file
 from .commits import get_vulnerability_commits, branch_commit_from_upstream
 from .locales import i18n
-from .cache import BRANCHES_ANALYSIS_CACHE, _get_cache_key, cached
+from .cache import BRANCHES_ANALYSIS_CACHE, _get_cache_key, cached, load_cache
 from .tools.project import safe_git_reset_hard
 
 logger = logging.getLogger(__name__)
@@ -527,3 +527,23 @@ def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, br
         items.append(item)
     
     return items
+
+
+def check_analyse_cache_result(cve_id: str, branch: str)-> bool:
+    """检查分支上的CVE是否已修复
+
+    Args:
+        cve_id: CVE id
+        branch: 分支名
+    """
+    cache = load_cache(BRANCHES_ANALYSIS_CACHE)
+    for key, value in cache.items():
+        for item in value.get("data", []):
+            cache_cve = item.get(i18n("补丁ID"))
+            cache_branch = item.get(i18n("目标分支"))
+            if cve_id == cache_cve and cache_branch == branch:
+                cache_affected = item.get(i18n("是否受影响"))
+                if cache_affected == i18n("不受影响") or \
+                    cache_affected == i18n("已修复"):
+                    return True
+    return False
