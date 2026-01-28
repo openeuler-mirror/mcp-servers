@@ -9,6 +9,7 @@ from .patch import getUrlText, ensure_patch_file
 from .commits import get_vulnerability_commits, branch_commit_from_upstream
 from .locales import i18n
 from .tools.project import safe_git_reset_hard
+from .branches import check_analyse_cache_result
 
 logger = logging.getLogger(__name__)
 
@@ -394,6 +395,12 @@ def apply_patch(
     Returns:
         patch应用信息字典
     """
+    if check_analyse_cache_result(cve_id, branch):
+        return {
+            "action": "apply_patch",
+            "cve_id": cve_id,
+            "error": i18n("分支: %s, CVE: %s 已修复或不受影响, 补丁应用失败") % (branch, cve_id)
+        }
     linux_repo_path = os.path.join(clone_dir, 'linux')
     introduced_commit, fixed_commit = get_vulnerability_commits(
         cve_id,

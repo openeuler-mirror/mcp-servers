@@ -7,7 +7,7 @@ import multiprocessing
 
 from tabulate import tabulate
 from .utils.gitee import parse_gitee_issue_url, setup_repository, get_issue_url_from_cve_id
-from .utils.commits import get_vulnerability_commits
+from .utils.commits import get_vulnerability_commits, branch_commit_from_upstream
 from .utils.branches import process_branches
 from .utils.apply_patch import apply_patch
 from .utils.create_pr import create_pr
@@ -282,7 +282,10 @@ def handle_backport(cve_id, args):
             target_branch = args.branches.split(',')[0].strip()
         else:
             raise ValueError("backport模式需要指定目标分支，请使用--branch参数")
-    
+    temp_upstream_commit = branch_commit_from_upstream(fixed_commit, target_branch, args.clone_dir)
+    if temp_upstream_commit:
+        fixed_commit = temp_upstream_commit
+
     # 构建配置字典
     config_dict = {
         "project": "linux",

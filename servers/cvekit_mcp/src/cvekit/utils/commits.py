@@ -297,6 +297,9 @@ def branch_commit_from_upstream(fixed_commit: str, branch_name: str, clone_dir: 
         commit_id: 分支适配commit id
     """
     linux_repo_path = os.path.join(clone_dir, "linux")
+    if not os.path.exists(linux_repo_path):
+        logger.warning('branch_commit_from_upstream: path %s not exists', linux_repo_path)
+        return ''
     repo_linux = git.Repo(linux_repo_path)
     linux_branch = f"{branch_name.replace('OLK', 'linux')}.y"
     use_cache_only = os.getenv("LINUX_REPO_USE_CACHE_ONLY", "").lower() in (
