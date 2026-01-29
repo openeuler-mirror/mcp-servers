@@ -328,6 +328,11 @@ def branch_commit_from_upstream(fixed_commit: str, branch_name: str, clone_dir: 
                         "--grep", fixed_commit,
                         linux_branch
                     )
+        if not grep_output:
+            grep_output = repo_linux.git.log(
+                            "--grep", fixed_commit,
+                            linux_branch
+                        )
     except Exception as e:
         logger.warning(f'branch_commit_from_upstream: {str(e)}')
         return '' 
