@@ -795,42 +795,42 @@ msgstr "Status"
 msgid "补丁路径"
 msgstr "Patch path"
 
-#: cvekit/utils/apply_patch.py:402
+#: cvekit/utils/apply_patch.py:395
 #, python-format
 msgid "分支: %s, CVE: %s 已修复或不受影响, 补丁应用失败"
 msgstr "branch: %s, CVE: %s has fixed or not affected, apply patch failed"
 
-#: cvekit/utils/apply_patch.py:413 cvekit/utils/branches.py:373
+#: cvekit/utils/apply_patch.py:406 cvekit/utils/branches.py:373
 #: cvekit/utils/create_pr.py:30
 msgid "未能获取修复提交(fixed)，无法继续流程"
 msgstr "Failed to obtain fixed commit; cannot continue the process"
 
-#: cvekit/utils/apply_patch.py:437
+#: cvekit/utils/apply_patch.py:430
 #, python-format
 msgid "生成commit信息失败: %s"
 msgstr "Failed to generate commit information: %s"
 
-#: cvekit/utils/apply_patch.py:454
+#: cvekit/utils/apply_patch.py:447
 #, python-format
 msgid "配置用户信息失败: %s"
 msgstr "Failed to config user information: %s"
 
-#: cvekit/utils/apply_patch.py:491
+#: cvekit/utils/apply_patch.py:484
 #, python-format
 msgid "切换分支失败: %s"
 msgstr "Failed to switch branches: %s"
 
-#: cvekit/utils/apply_patch.py:527
+#: cvekit/utils/apply_patch.py:520
 #, python-format
 msgid "无法完成补丁应用，请检查冲突并重试: %s"
 msgstr "Can not apply patch, please check for conflicts and try again: %s"
 
-#: cvekit/utils/apply_patch.py:533
+#: cvekit/utils/apply_patch.py:526
 #, python-format
 msgid "无法应用补丁: %s"
 msgstr "Can not apply patch: %s"
 
-#: cvekit/utils/apply_patch.py:562
+#: cvekit/utils/apply_patch.py:555
 #, python-format
 msgid "无法推送变更: %s"
 msgstr "Unable to push changes: %s"

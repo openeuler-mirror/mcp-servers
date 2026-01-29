@@ -69,12 +69,6 @@ def get_commit_reference(commit_id, repo_path):
             raise RuntimeError("linux仓库克隆失败: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git")
 
     repo = git.Repo(repo_path)
-    try:
-        repo.git.checkout("master")
-        repo.git.pull("origin", "master", "--rebase")
-    except Exception as e:
-        # 更新失败不影响后续 name-rev，只记录日志
-        logger.error(f"更新仓库失败: {e}")
 
     # 获取提交引用信息
     is_stable = True
@@ -214,8 +208,7 @@ Reference: {patch_url}
 
 --------------------------------
 
-{msg}
-"""
+{msg}"""
     return header, headers 
 
 
