@@ -395,13 +395,13 @@ prepare_fedora_base_image() {
 }
 
 # ===== 3) 依赖准备 =====
-warn_if_placeholder "GITEE_TOKEN" "${GITEE_TOKEN}" "GITEE_TOKEN"
-warn_if_placeholder "GITEE_ACCESS_TOKEN" "${GITEE_ACCESS_TOKEN}" "GITEE_ACCESS_TOKEN"
-warn_if_placeholder "GITCODE_ACCESS_TOKEN" "${GITCODE_ACCESS_TOKEN}" "GITCODE_ACCESS_TOKEN"
-warn_if_placeholder "GITCODE_WEBHOOK_TOKEN" "${GITCODE_WEBHOOK_TOKEN}" "GITCODE_WEBHOOK_TOKEN"
-warn_if_placeholder "TARGET_REPO_URL" "${TARGET_REPO_URL}" "TARGET_REPO_URL"
-warn_if_placeholder "FORK_REPO_URL" "${FORK_REPO_URL}" "FORK_REPO_URL"
-warn_if_placeholder "DEFAULT_CLONE_PATH" "${DEFAULT_CLONE_PATH}" "DEFAULT_CLONE_PATH"
+warn_if_placeholder "GITEE_TOKEN" "${GITEE_TOKEN}" "YOUR_GITEE_TOKEN"	 
+warn_if_placeholder "GITEE_ACCESS_TOKEN" "${GITEE_ACCESS_TOKEN}" "YOUR_GITEE_ACCESS_TOKEN"	 
+warn_if_placeholder "GITCODE_ACCESS_TOKEN" "${GITCODE_ACCESS_TOKEN}" "YOUR_GITCODE_ACCESS_TOKEN"
+warn_if_placeholder "GITCODE_WEBHOOK_TOKEN" "${GITCODE_WEBHOOK_TOKEN}" "YOUR_GITCODE_WEBHOOK_TOKEN"	 
+warn_if_placeholder "TARGET_REPO_URL" "${TARGET_REPO_URL}" "https://atomgit.com/openeuler/kernel"	 
+warn_if_placeholder "FORK_REPO_URL" "${FORK_REPO_URL}" "https://atomgit.com/devstation-robot/kernel"	 
+warn_if_placeholder "DEFAULT_CLONE_PATH" "${DEFAULT_CLONE_PATH}" "/path/to/Image"
 print_service_overview
 
 log "准备 Linux/kernel 仓库..."
