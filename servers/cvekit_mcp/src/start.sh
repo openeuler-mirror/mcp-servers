@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 获取系统架构（动态选择镜像版本）
+ARCH="$(uname -m)"
+if [ "${ARCH}" == "x86_64" ]; then
+    ARCH="x86_64"
+elif [ "${ARCH}" == "aarch64" ] || [ "${ARCH}" == "arm64" ]; then
+    ARCH="aarch64"
+else
+    die "不支持的架构: ${ARCH}"
+fi
+
 # =============================================================================
 # 该脚本会启动 3 个容器服务：
 # 1) linux-cve-announce-mirror：public-inbox 镜像，提供 CVE 公告镜像服务（8080）
@@ -11,7 +21,7 @@ set -euo pipefail
 # ===== 1) 可按需修改的配置（集中在此处，去除运行时参数）=====
 # 必填项（请替换为真实值）：
 # - API_KEY / LLM_PROVIDER / MODEL_NAME / BASE_URL
-# - GITEE_TOKEN / GITEE_ACCESS_TOKEN / GITCODE_WEBHOOK_TOKEN
+# - GITEE_TOKEN / GITEE_ACCESS_TOKEN / GITCODE_ACCESS_TOKEN / GITCODE_WEBHOOK_TOKEN
 # - TARGET_REPO_URL / FORK_REPO_URL / DEFAULT_CLONE_PATH
 # Gitee WebHook 密钥（示例：YOUR_GITEE_WEBHOOK_TOKEN_123）
 GITEE_WEBHOOK_TOKEN="YOUR_GITEE_WEBHOOK_TOKEN"
@@ -19,6 +29,7 @@ GITEE_WEBHOOK_TOKEN="YOUR_GITEE_WEBHOOK_TOKEN"
 GITCODE_WEBHOOK_TOKEN="YOUR_GITCODE_WEBHOOK_TOKEN"
 # Gitee Access Token（示例：gitee_pat_xxxxxxxxxxxxx）
 GITEE_ACCESS_TOKEN="YOUR_GITEE_ACCESS_TOKEN"
+GITCODE_ACCESS_TOKEN="YOUR_GITCODE_ACCESS_TOKEN"
 # Gitee Token（示例：gitee_token_xxxxxxxxxxxxx）
 GITEE_TOKEN="YOUR_GITEE_TOKEN"
 # 目标仓库地址（示例：https://atomgit.com/openeuler/kernel）
@@ -76,6 +87,9 @@ ROOT_DIR="${SCRIPT_DIR}"
 MCP_SETTINGS_JSON="${ROOT_DIR}/cve_service/mcp_settings.json"
 # cve_service 环境变量文件输出路径（脚本会覆盖写入）
 CVE_SERVICE_ENV="${ROOT_DIR}/cve_service/.env"
+# 日志输出路径
+APP_WORK_DIR="${ROOT_DIR}/cve_service"
+APP_CLIENT_LOG="${ROOT_DIR}/cve_service/app_client.log"
 # public-inbox 仓库本地路径（用于同步与打包进镜像）
 PUBLIC_INBOX_REPO="${ROOT_DIR}/public-inbox/linux-cve-announce/git/0.git"
 # public-inbox 压缩包本地路径（如存在则解压）
@@ -90,20 +104,18 @@ OPENEULER_REPO_FILE="${ROOT_DIR}/openEuler.repo"
 RPMBUILD_DIR="${ROOT_DIR}/rpmbuild"
 # RPM 构建输出目录（Dockerfile 会 COPY 该目录）
 RPMBUILD_RPMS_DIR="${RPMBUILD_DIR}/RPMS"
-# 是否自动准备 RPM 包（示例：1 开启，0 关闭）
-AUTO_PREPARE_RPMS="1"
 # ctags SRPM 下载地址（示例：Fedora SRPM 链接）
 CTAGS_SRPM_URL="https://dl.fedoraproject.org/pub/fedora/linux/releases/42/Everything/source/tree/Packages/c/ctags-6.1.0-2.fc42.src.rpm"
 # ctags SRPM 本地保存路径
 CTAGS_SRPM_FILE="${ROOT_DIR}/_downloads/ctags.src.rpm"
-# openEuler 基础镜像 tar 包下载地址（示例：aarch64 版本）
-OPENEULER_BASE_TAR_URL="https://mirrors.aliyun.com/openeuler/openEuler-24.03-LTS-SP1/docker_img/aarch64/openEuler-docker.aarch64.tar.xz"
+# openEuler 基础镜像 tar 包下载地址（根据架构动态选择）
+OPENEULER_BASE_TAR_URL="https://mirrors.aliyun.com/openeuler/openEuler-24.03-LTS-SP1/docker_img/${ARCH}/openEuler-docker.${ARCH}.tar.xz"
 # openEuler 基础镜像 tar 包本地保存路径
-OPENEULER_BASE_TAR_FILE="${ROOT_DIR}/_downloads/openEuler-docker.aarch64.tar.xz"
-# Fedora 基础镜像 tar 包下载地址（aarch64 版本）
-FEDORA_BASE_TAR_URL="http://mirror.etf.bg.ac.rs/fedora/releases/41/Container/aarch64/images/Fedora-Container-Base-Generic-41-1.4.aarch64.oci.tar.xz"
+OPENEULER_BASE_TAR_FILE="${ROOT_DIR}/_downloads/openEuler-docker.${ARCH}.tar.xz"
+# Fedora 基础镜像 tar 包下载地址（根据架构动态选择）
+FEDORA_BASE_TAR_URL="http://mirror.etf.bg.ac.rs/fedora/releases/41/Container/${ARCH}/images/Fedora-Container-Base-Generic-41-1.4.${ARCH}.oci.tar.xz"
 # Fedora 基础镜像 tar 包本地保存路径
-FEDORA_BASE_TAR_FILE="${ROOT_DIR}/_downloads/Fedora-Container-Base-Generic-41-1.4.aarch64.oci.tar.xz"
+FEDORA_BASE_TAR_FILE="${ROOT_DIR}/_downloads/Fedora-Container-Base-Generic-41-1.4.${ARCH}.oci.tar.xz"
 # 是否自动导入基础镜像（示例：1 开启，0 关闭）
 AUTO_LOAD_BASE_IMAGE="1"
 
@@ -136,7 +148,7 @@ print_service_overview() {
   echo
   echo "==> 需要你补充的关键配置（脚本顶部）："
   echo "  - LLM：API_KEY / LLM_PROVIDER / MODEL_NAME / BASE_URL"
-  echo "  - Gitee：GITEE_TOKEN / GITEE_ACCESS_TOKEN / GITCODE_WEBHOOK_TOKEN"
+  echo "  - Gitee：GITEE_TOKEN / GITEE_ACCESS_TOKEN / GITCODE_ACCESS_TOKEN / GITCODE_WEBHOOK_TOKEN"
   echo "  - 仓库与路径：TARGET_REPO_URL / FORK_REPO_URL / DEFAULT_CLONE_PATH"
   echo
 }
@@ -383,11 +395,12 @@ prepare_fedora_base_image() {
 }
 
 # ===== 3) 依赖准备 =====
-warn_if_placeholder "GITEE_TOKEN" "${GITEE_TOKEN}" "YOUR_GITEE_TOKEN"
-warn_if_placeholder "GITEE_ACCESS_TOKEN" "${GITEE_ACCESS_TOKEN}" "YOUR_GITEE_ACCESS_TOKEN"
-warn_if_placeholder "GITCODE_WEBHOOK_TOKEN" "${GITCODE_WEBHOOK_TOKEN}" "YOUR_GITCODE_WEBHOOK_TOKEN"
-warn_if_placeholder "TARGET_REPO_URL" "${TARGET_REPO_URL}" "https://atomgit.com/openeuler/kernel"
-warn_if_placeholder "FORK_REPO_URL" "${FORK_REPO_URL}" "https://atomgit.com/devstation-robot/kernel"
+warn_if_placeholder "GITEE_TOKEN" "${GITEE_TOKEN}" "YOUR_GITEE_TOKEN"	 
+warn_if_placeholder "GITEE_ACCESS_TOKEN" "${GITEE_ACCESS_TOKEN}" "YOUR_GITEE_ACCESS_TOKEN"	 
+warn_if_placeholder "GITCODE_ACCESS_TOKEN" "${GITCODE_ACCESS_TOKEN}" "YOUR_GITCODE_ACCESS_TOKEN"
+warn_if_placeholder "GITCODE_WEBHOOK_TOKEN" "${GITCODE_WEBHOOK_TOKEN}" "YOUR_GITCODE_WEBHOOK_TOKEN"	 
+warn_if_placeholder "TARGET_REPO_URL" "${TARGET_REPO_URL}" "https://atomgit.com/openeuler/kernel"	 
+warn_if_placeholder "FORK_REPO_URL" "${FORK_REPO_URL}" "https://atomgit.com/devstation-robot/kernel"	 
 warn_if_placeholder "DEFAULT_CLONE_PATH" "${DEFAULT_CLONE_PATH}" "/path/to/Image"
 print_service_overview
 
@@ -410,17 +423,17 @@ cat > "${MCP_SETTINGS_JSON}" <<EOF
 {
   "mcpServers": {
     "cvekit_mcp": {
-      "command": ".venv/bin/python",
+      "command": "python3",
       "env": {
         "LANG": "en_CN.UTF-8",
-        "PYTHONPATH": "../cvekit_mcp/src",
+        "PYTHONPATH": "${ROOT_DIR}",
         "MODEL_NAME": "${MODEL_NAME}",
         "API_KEY": "${API_KEY}",
         "LLM_PROVIDER": "${LLM_PROVIDER}",
         "LINUX_REPO_USE_CACHE_ONLY": "${LINUX_REPO_USE_CACHE_ONLY}"
       },
       "args": [
-        "/root/mcp-servers/servers/cvekit_mcp/src/server.py",
+        "${ROOT_DIR}/server.py",
         "--gitee-token",
         "${GITEE_TOKEN}",
         "--llm-provider",
@@ -446,6 +459,7 @@ BASE_URL=${BASE_URL}
 LINUX_REPO_USE_CACHE_ONLY=${LINUX_REPO_USE_CACHE_ONLY}
 GITEE_TOKEN=${GITEE_TOKEN}
 GITEE_ACCESS_TOKEN=${GITEE_ACCESS_TOKEN}
+GITCODE_ACCESS_TOKEN=${GITCODE_ACCESS_TOKEN}
 GITCODE_WEBHOOK_TOKEN=${GITCODE_WEBHOOK_TOKEN}
 DEFAULT_MODEL_TYPE=${DEFAULT_MODEL_TYPE}
 DEFAULT_LOCAL_CONFIG=${DEFAULT_LOCAL_CONFIG}
@@ -465,11 +479,6 @@ if [ -d "${PUBLIC_INBOX_REPO}" ]; then
     "${ROOT_DIR}"
 else
   warn "未找到 public-inbox 仓库，跳过 public-inbox 镜像构建。"
-fi
-
-if ! ls "${RPMBUILD_RPMS_DIR}"/*/*.rpm >/dev/null 2>&1; then
-  echo "ERROR: 未找到 RPM 包，请先准备 ${RPMBUILD_RPMS_DIR} 再构建镜像。"
-  exit 1
 fi
 
 log "构建 cve-app-server 镜像..."
@@ -526,6 +535,9 @@ echo "==> 启动 gitee-webhook 容器（监听宿主机 6001 端口，调用 htt
 podman run -d --name gitee-webhook --network host \
   -e GITCODE_WEBHOOK_TOKEN="${GITCODE_WEBHOOK_TOKEN}" \
   -e GITEE_ACCESS_TOKEN="${GITEE_ACCESS_TOKEN}" \
+  -e GITCODE_ACCESS_TOKEN="${GITCODE_ACCESS_TOKEN}" \
+  -e APP_CLIENT_LOG="${APP_CLIENT_LOG}" \
+  -e APP_WORK_DIR="${APP_WORK_DIR}" \
   "${WEBHOOK_IMAGE}"
 
 echo

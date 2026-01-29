@@ -21,7 +21,7 @@ RUN dnf -y update && \
 COPY . /root/mcp-servers/servers/cvekit_mcp/src
 
 # 安装 Python 依赖、编译语言包并安装 cvekit
-RUN python3 -m pip install setuptools babel requests flask -i https://mirrors.huaweicloud.com/repository/pypi/simple && \
+RUN python3 -m pip install setuptools babel requests flask a2a-sdk httpx -i https://mirrors.huaweicloud.com/repository/pypi/simple && \
     cd /root/mcp-servers/servers/cvekit_mcp/src && \
     pybabel extract -k i18n -o messages.pot . && \
     pybabel update -i messages.pot -d cvekit/locales && \

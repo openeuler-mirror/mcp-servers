@@ -1,5 +1,5 @@
 FROM docker.io/library/openeuler-24.03-lts-sp1:latest
-
+ 	 
 # 本地仓库挂载路径（用于设置 git safe.directory）
 ARG CLONE_PATH=/path/to/Image
 
@@ -14,23 +14,14 @@ WORKDIR /root
 RUN rm -f /etc/yum.repos.d/*.repo
 COPY openEuler.repo /etc/yum.repos.d/openEuler.repo
 
-# 安装 Python3 / pip 等基础环境
+# 安装 Python3 / pip 等基础环境，oegitext==1.0.2, ctags==6.1
 RUN dnf -y update && \
-    dnf -y install python3 python3-pip git ca-certificates uv && \
+    dnf -y install python3 python3-pip git ca-certificates uv oegitext ctags && \
     ln -sf /usr/bin/python3 /usr/bin/python && \
     # 为挂载进来的仓库添加 git safe.directory，避免 "dubious ownership" 报错
     git config --system --add safe.directory "${CLONE_PATH}/kernel" && \
     git config --system --add safe.directory "${CLONE_PATH}/linux" && \
     dnf clean all
-
-# 把宿主机打好的 RPM 拷进镜像（构建上下文是 /root），根据系统架构自动选择子目录
-COPY rpmbuild/RPMS /root/local_rpms
-
-# 在容器里安装这些 RPM 包（含 oegitext、ctags 等）
-# 目录名需与架构一致，例如：x86_64、aarch64 等
-RUN arch="$(uname -m)" && \
-    dnf -y install /root/local_rpms/"${arch}"/*.rpm && \
-    rm -rf /root/local_rpms
 
 # 拷贝代码（构建上下文为本目录）
 COPY . /root/mcp-servers/servers/cvekit_mcp/src
@@ -40,6 +31,8 @@ COPY . /root/mcp-servers/servers/cvekit_mcp/src
 RUN python3 -m pip install setuptools babel -i https://mirrors.huaweicloud.com/repository/pypi/simple && \
     cd /root/mcp-servers/servers/cvekit_mcp/src && \
     python3 -m pip install -r requirements.txt -i https://mirrors.huaweicloud.com/repository/pypi/simple && \
+    # 解压修改版 camel-ai 到 site-packages
+    tar -xzf cve_service/camel.tar.gz -C /usr/local/lib/python3.11/site-packages/ && \
     pybabel extract -k i18n -o messages.pot . && \
     pybabel update -i messages.pot -d cvekit/locales && \
     pybabel compile -d cvekit/locales && \
@@ -47,4 +40,4 @@ RUN python3 -m pip install setuptools babel -i https://mirrors.huaweicloud.com/r
 
 EXPOSE 9991
 WORKDIR /root/mcp-servers/servers/cvekit_mcp/src/cve_service
-CMD [".venv/bin/python", "app_server.py"]
+CMD ["python3", "app_server.py"]

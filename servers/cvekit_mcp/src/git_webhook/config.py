@@ -7,17 +7,15 @@ logger = logging.getLogger("cve_webhook")
 
 
 # 本地脚本路径 & Python 解释器 / 虚拟环境
-APP_WORK_DIR = "/path/to/mcp-servers/servers/cvekit_mcp/src/cve_service"
 APP_CLIENT_FILENAME = "app_client.py"
-VENV_PYTHON = os.environ.get(
-    "VENV_PYTHON",
-    os.path.join(APP_WORK_DIR, ".venv", "bin", "python"),
-)
+APP_WORK_DIR = os.environ.get("APP_WORK_DIR", 
+                              "/path/to/mcp-servers/servers/cvekit_mcp/src/cve_service")
+# if VENV_PYTHON not set, use the default path
+VENV_PYTHON = os.environ.get("VENV_PYTHON", 
+                             "python3")
 # app_client 的日志输出文件，便于排查是否真正执行以及执行过程中的错误
-APP_CLIENT_LOG = os.environ.get(
-    "APP_CLIENT_LOG",
-    os.path.join(APP_WORK_DIR, "app_client.log"),
-)
+APP_CLIENT_LOG = os.environ.get("APP_CLIENT_LOG", 
+                                os.path.join(APP_WORK_DIR, "app_client.log"))
 
 # Gitee WebHook 密码（在 Gitee WebHook “密码”字段配置同样的值）
 GITEE_WEBHOOK_TOKEN = os.environ.get("GITEE_WEBHOOK_TOKEN", "")
