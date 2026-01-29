@@ -14,9 +14,9 @@ WORKDIR /root
 RUN rm -f /etc/yum.repos.d/*.repo
 COPY openEuler.repo /etc/yum.repos.d/openEuler.repo
 
-# 安装 Python3 / pip 等基础环境，以及 ctags、oegitext
+# 安装 Python3 / pip 等基础环境，oegitext==1.0.2, ctags==6.1
 RUN dnf -y update && \
-    dnf -y install python3 python3-pip git ca-certificates uv ctags oegitext && \
+    dnf -y install python3 python3-pip git ca-certificates uv oegitext ctags && \
     ln -sf /usr/bin/python3 /usr/bin/python && \
     # 为挂载进来的仓库添加 git safe.directory，避免 "dubious ownership" 报错
     git config --system --add safe.directory "${CLONE_PATH}/kernel" && \
