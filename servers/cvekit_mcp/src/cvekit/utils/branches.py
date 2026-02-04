@@ -12,6 +12,21 @@ from .tools.project import safe_git_reset_hard
 
 logger = logging.getLogger(__name__)
 
+def _ensure_clean_worktree(repo: git.Repo) -> None:
+    """
+    Ensure the worktree is clean before checkout.
+    Only reset/clean when there are local changes or untracked files.
+    """
+    try:
+        if repo.is_dirty(untracked_files=True):
+            logger.info(
+                "工作区非干净状态，执行 git reset --hard 和 git clean -fdx"
+            )
+            safe_git_reset_hard(repo)
+            repo.git.clean("-fdx")
+    except Exception as e:
+        logger.warning(f"清理工作区失败: {str(e)}")
+
 def get_commit_date(repo, commit_hash, linux_repo=None):
     """获取 commit 的提交日期字符串（YYYY-MM-DD），用于 git log --since
     
@@ -233,6 +248,7 @@ def git_apply_check_patch(
         try:
             current_branch = repo.active_branch.name if not repo.head.is_detached else None
             if current_branch != branch_name:
+                _ensure_clean_worktree(repo)
                 logger.info(f"执行 git checkout {branch_name}（当前分支: {current_branch}）")
                 logger.debug(f"切换到分支: {branch_name}")
                 repo.git.checkout(branch_name)
@@ -444,12 +460,8 @@ def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, br
     for branch in needs_patch_branches:
         remote_branch = f"origin/{branch}"
         try:
-            # 重置工作区，清理未提交的改动（使用安全函数处理锁文件问题）
-            logger.info(
-                f"准备重置工作区（safe_git_reset_hard），当前分支: "
-                f"{repo.active_branch.name if not repo.head.is_detached else 'DETACHED'}"
-            )
-            safe_git_reset_hard(repo)
+            # 清理工作区（仅当有改动时）
+            _ensure_clean_worktree(repo)
         except Exception as e:
             logger.warning(f"重置工作区失败: {str(e)}")
         
