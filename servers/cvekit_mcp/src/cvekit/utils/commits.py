@@ -10,8 +10,24 @@ from .cache import (
     COMMITS_CACHE,
 )
 from .patch import getUrlText, get_upstream_commit_from_url
+from .tools.project import safe_git_reset_hard
 
 logger = logging.getLogger(__name__)
+
+def _ensure_clean_worktree(repo: git.Repo) -> None:
+    """
+    Ensure the worktree is clean before checkout.
+    Only reset/clean when there are local changes or untracked files.
+    """
+    try:
+        if repo.is_dirty(untracked_files=True):
+            logger.info(
+                "工作区非干净状态，执行 git reset --hard 和 git clean -fdx"
+            )
+            safe_git_reset_hard(repo)
+            repo.git.clean("-fdx")
+    except Exception as e:
+        logger.warning(f"清理工作区失败: {str(e)}")
 
 
 def get_upstream_commit_from_message(message):
@@ -238,8 +254,10 @@ def fetch_and_update_repo(repo: git.Repo, branch_name: str) -> bool:
     local_branches = {head.name for head in repo.heads}
     try:
         if branch_name in local_branches:
+            _ensure_clean_worktree(repo)
             repo.git.checkout(branch_name)
         else:
+            _ensure_clean_worktree(repo)
             repo.git.checkout("-b", branch_name, "--track", remote_branch)
     except Exception as e:
         logger.warning(
@@ -273,6 +291,7 @@ def _checkout_local_branch(repo: git.Repo, branch_name: str) -> bool:
         )
         return False
     try:
+        _ensure_clean_worktree(repo)
         repo.git.checkout(branch_name)
     except Exception as e:
         logger.warning(

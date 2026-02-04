@@ -32,6 +32,33 @@ from .logger import logger
 warnings.filterwarnings('ignore', message='.*too many active changes.*', category=UserWarning)
 
 
+def _wait_for_index_lock_release(index_lock, max_wait=30):
+    """
+    等待 index.lock 释放，必要时清理过期锁文件。
+    返回 True 表示锁已释放/不存在，False 表示超时仍存在。
+    """
+    start = time.time()
+    delay = 1
+    while os.path.exists(index_lock):
+        # 检查锁文件是否过期（超过5分钟认为是过期）
+        lock_age = time.time() - os.path.getmtime(index_lock)
+        if lock_age > 300:  # 5分钟
+            logger.warning(f"发现过期的 index.lock 文件（已存在 {lock_age:.0f} 秒），正在删除...")
+            try:
+                os.remove(index_lock)
+                logger.info("已删除过期的 index.lock 文件")
+                return True
+            except OSError as e:
+                logger.warning(f"删除 index.lock 文件失败: {e}")
+        elapsed = time.time() - start
+        if elapsed >= max_wait:
+            return False
+        logger.warning(f"发现 index.lock 文件（存在 {lock_age:.0f} 秒），等待后重试...")
+        time.sleep(delay)
+        delay = min(delay * 2, 5)
+    return True
+
+
 def safe_git_reset_hard(repo, max_retries=3, retry_delay=1):
     """
     安全地执行 git reset --hard，自动处理 index.lock 文件问题
@@ -49,20 +76,14 @@ def safe_git_reset_hard(repo, max_retries=3, retry_delay=1):
             # 在执行 reset 前，检查并清理锁文件
             git_dir = repo.git_dir
             index_lock = os.path.join(git_dir, 'index.lock')
-            
             if os.path.exists(index_lock):
-                # 检查锁文件是否过期（超过5分钟认为是过期）
-                lock_age = time.time() - os.path.getmtime(index_lock)
-                if lock_age > 300:  # 5分钟
-                    logger.warning(f"发现过期的 index.lock 文件（已存在 {lock_age:.0f} 秒），正在删除...")
-                    try:
-                        os.remove(index_lock)
-                        logger.info("已删除过期的 index.lock 文件")
-                    except OSError as e:
-                        logger.warning(f"删除 index.lock 文件失败: {e}")
-                else:
-                    # 锁文件较新，可能是其他进程正在使用
-                    logger.warning(f"发现 index.lock 文件（存在 {lock_age:.0f} 秒），等待后重试...")
+                # 等待锁释放（可通过环境变量调大）
+                max_wait = int(os.getenv("CVEKIT_GIT_LOCK_WAIT", "30"))
+                if not _wait_for_index_lock_release(index_lock, max_wait=max_wait):
+                    logger.error(
+                        f"index.lock 在 {max_wait}s 内未释放，"
+                        "可能仍有 git 进程占用"
+                    )
                     if attempt < max_retries - 1:
                         time.sleep(retry_delay * (attempt + 1))
                         continue
@@ -143,6 +164,40 @@ class Project:
         self.hunk_log_info = {}
         self.add_percent = 0
         self.last_context = []
+        self.validated_patch = None
+
+    def _resolve_target_ref(self, ref: str) -> str:
+        """
+        Resolve a ref to a valid commit in the target repository.
+
+        In cross-repo scenarios, the provided ref may belong to the source repo
+        (e.g., new_patch_parent). If the ref does not exist in target repo,
+        fallback to target_release, then HEAD.
+        """
+        if not ref:
+            return self.target_repo.head.commit.hexsha
+        try:
+            self.target_repo.commit(ref)
+            return ref
+        except Exception:
+            # Fallback to target_release if it exists in target repo
+            if getattr(self, "target_release", None):
+                try:
+                    self.target_repo.commit(self.target_release)
+                    logger.debug(
+                        f"[_resolve_target_ref] ref {ref} not in target repo, "
+                        f"fallback to target_release {self.target_release}"
+                    )
+                    return self.target_release
+                except Exception:
+                    pass
+            # Final fallback to HEAD
+            head_ref = self.target_repo.head.commit.hexsha
+            logger.debug(
+                f"[_resolve_target_ref] ref {ref} not in target repo, "
+                f"fallback to HEAD {head_ref[:8]}"
+            )
+            return head_ref
 
     def _checkout(self, ref: str, use_target_repo: bool = False) -> None:
         """
@@ -222,18 +277,26 @@ class Project:
                  If the file doesn't exist in the commit, a message indicating that is returned.
         """
         try:
+            ref = self._resolve_target_ref(ref)
             # 在目标仓库中查找文件
             file = self.target_repo.tree(ref) / path
+            # 目录或非文件对象直接返回提示
+            if hasattr(file, "type") and file.type != "blob":
+                return "The given path is not a file in this commit."
         except:
             return "This file doesn't exist in this commit."
         content = file.data_stream.read().decode("utf-8", errors="ignore")
         lines = content.split("\n")
+        if not lines:
+            return "This file is empty in this commit."
+        total = len(lines)
+        # 保护性修正行号，避免越界
+        startline = max(1, min(startline, total))
+        endline = max(startline, min(endline, total))
         ret = []
-        if endline > len(lines):
-            startline -= endline - len(lines)
-            endline = len(lines)
+        if endline > total:
             ret.append(
-                f"This file only has {len(lines)} lines. Here are lines {startline} through {endline}.\n"
+                f"This file only has {total} lines. Here are lines {startline} through {endline}.\n"
             )
         else:
             ret.append(f"Here are lines {startline} through {endline}.\n")
@@ -256,6 +319,7 @@ class Project:
             List[Tuple[str, int]] | None: File path and code lines.
         """
         # XXX: Analyzing ctags file everytime locate symbol is time-consuming.
+        ref = self._resolve_target_ref(ref)
         if ref not in self.symbol_map:
             self._checkout(ref, use_target_repo=True)  # 在目标仓库中 checkout
             self._prepare(ref)
@@ -448,6 +512,7 @@ class Project:
         min_distance = float("inf")
 
         try:
+            ref = self._resolve_target_ref(ref)
             # 在目标仓库中查找文件
             file = self.target_repo.tree(ref) / path
             content = file.data_stream.read().decode("utf-8", errors="ignore")
@@ -835,8 +900,10 @@ class Project:
             f.write(complete_patch)
             logger.debug(f"The completed patch file {f.name}")
         pps = utils.split_patch(complete_patch, False)
+        revised_hunks = []
         for idx, pp in enumerate(pps):
             revised_patch, fixed = utils.revise_patch(pp, self.target_dir, revise_context)
+            revised_hunks.append(revised_patch)
             with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
                 f.write(revised_patch)
             try:
@@ -859,6 +926,9 @@ class Project:
                 ret += f"Based on the above feedback, MUST you please modify only hunk {idx} in the patch and leave the other hunks untouched so that the context present in hunk {idx} is exactly the same as the source code to guarantee that git apply can be executed normally.\n"
                 safe_git_reset_hard(self.target_repo)
                 return ret
+
+        # 保存最终用于验证的补丁版本
+        self.validated_patch = "\n".join(revised_hunks)
 
         # compile the patch (在目标仓库中编译)
         logger.debug("Start compile the patched source code")
@@ -1061,7 +1131,8 @@ class Project:
                 and self.testcase_succeeded
                 and not self.poc_succeeded
             ):
-                ret += self._run_poc(patch)
+                patch_to_run = self.validated_patch or patch
+                ret += self._run_poc(patch_to_run)
             return ret
         else:
             if "need not ported" in patch:
@@ -1074,6 +1145,43 @@ class Project:
             if "CONTEXT MISMATCH" in ret:
                 self.context_mismatch_times += 1
             return ret
+
+    def _check_patch(self, patch: str, ref: str | None = None) -> None:
+        """
+        Run `git apply --check` on the target repo for safety.
+        """
+        # Ensure we check against the correct target ref (e.g., target_release)
+        target_ref = ref or getattr(self, "target_release", None)
+        try:
+            repo_path = self.target_repo.working_dir
+        except Exception:
+            repo_path = "unknown"
+        try:
+            head_sha = self.target_repo.head.commit.hexsha
+        except Exception:
+            head_sha = "unknown"
+        logger.debug(f"[_check_patch] target_repo={repo_path}, HEAD={head_sha}")
+        # Ensure a clean worktree before checkout to avoid checkout failures
+        safe_git_reset_hard(self.target_repo)
+        try:
+            self.target_repo.git.clean("-fdx")
+        except Exception as e:
+            logger.warning(f"[_check_patch] git clean -fdx failed: {e}")
+        if target_ref:
+            resolved_ref = self._resolve_target_ref(target_ref)
+            self._checkout(resolved_ref, use_target_repo=True)
+            logger.debug(f"[_check_patch] checkout target ref {resolved_ref}")
+            # Ensure clean state after checkout as well
+            safe_git_reset_hard(self.target_repo)
+            try:
+                self.target_repo.git.clean("-fdx")
+            except Exception as e:
+                logger.warning(f"[_check_patch] git clean -fdx failed: {e}")
+        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
+            f.write(patch)
+            temp_file_path = f.name
+        logger.debug(f"[_check_patch] git apply --check {temp_file_path}")
+        self.target_repo.git.apply([temp_file_path, "--check"])
 
     def get_tools(self):
         return (
@@ -1097,7 +1205,11 @@ def creat_locate_symbol_tool(project: Project):
         else:
             res, most_similar = project._locate_similar_symbol(ref, symbol)
             ret = f"The symbol {symbol} you are looking for does not exist in the current ref.\n"
-            ret += f"But here is a symbol similar to it. It's `{most_similar}`.\n"
+            if most_similar:
+                ret += f"But here is a symbol similar to it. It's `{most_similar}`.\n"
+            if not res:
+                ret += "No similar symbol locations found.\n"
+                return ret
             ret += f"The file where this symbol is located is: \n"
             ret += "\n".join([f"{file}:{line}" for file, line in res])
             ret += f"\nPlease be careful to check that this symbol indicates the same thing as the previous symbol.\n"
@@ -1112,6 +1224,19 @@ def creat_viewcode_tool(project: Project):
         """
         View a file from a specific ref of the target repository. Lines between startline and endline are shown.
         """
+        # Pre-check: if path is a directory in target repo, fail fast with guidance
+        resolved_ref = project._resolve_target_ref(ref)
+        try:
+            entry = project.target_repo.tree(resolved_ref) / path
+            if hasattr(entry, "type") and entry.type != "blob":
+                return (
+                    "The given path is a directory, not a file. "
+                    "Please provide a file path (e.g., .../file.c) "
+                    "instead of a folder path."
+                )
+        except Exception:
+            # Fall through to _viewcode for standard error handling
+            pass
         return project._viewcode(ref, path, startline, endline)
 
     return viewcode
@@ -1148,3 +1273,4 @@ def create_git_show_tool(project: Project):
         return project._git_show()
 
     return git_show
+

@@ -554,16 +554,58 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
         
         if project.succeeded_patches:
             # 保存调整后的补丁文件
-            backported_patch_path = os.path.join(data.patch_dataset_dir, f"backported_{data.tag}_{data.target_release}.patch")
+            backported_patch_path = os.path.join(
+                data.patch_dataset_dir, f"backported_{data.tag}_{data.target_release}.patch"
+            )
+
+            def _normalize_unified_diff(patch_text: str) -> str:
+                """
+                Ensure unified diff lines are properly prefixed.
+
+                Some model-generated patches miss the leading ' ' on context
+                lines (e.g., lines starting with tabs), which makes git apply
+                treat the patch as corrupt. This normalizes those lines.
+                """
+                out_lines = []
+                for line in patch_text.splitlines():
+                    if (
+                        line.startswith("diff --git ")
+                        or line.startswith("index ")
+                        or line.startswith("--- ")
+                        or line.startswith("+++ ")
+                        or line.startswith("@@")
+                        or line.startswith("+")
+                        or line.startswith("-")
+                        or line.startswith(" ")
+                        or line.startswith("\\ No newline at end of file")
+                    ):
+                        out_lines.append(line)
+                    else:
+                        out_lines.append(" " + line)
+                return "\n".join(out_lines)
+
+            normalized_patches = []
+            for patch in project.succeeded_patches:
+                if patch and not patch.endswith("\n"):
+                    patch = patch + "\n"
+                normalized_patches.append(_normalize_unified_diff(patch))
+
+            export_patch = project.validated_patch or "\n".join(normalized_patches)
+            # 防呆：导出前先做 git apply --check
+            try:
+                project._check_patch(export_patch, data.target_release)
+            except Exception as e:
+                logger.error(f"导出补丁前 git apply --check 失败: {e}")
+                raise RuntimeError("backported patch failed git apply --check")
+
             with open(backported_patch_path, 'w', encoding='utf-8') as f:
-                for patch in project.succeeded_patches:
-                    f.write(patch)
+                f.write(export_patch)
             
             # 生成 diff 文件显示差异
             import difflib
             diff_path = os.path.join(data.patch_dataset_dir, f"diff_{data.tag}_{data.target_release}.diff")
             original_lines = original_patch_content.splitlines(keepends=True)
-            backported_lines = '\n'.join(project.succeeded_patches).splitlines(keepends=True)
+            backported_lines = export_patch.splitlines(keepends=True)
             
             diff = difflib.unified_diff(
                 original_lines,
