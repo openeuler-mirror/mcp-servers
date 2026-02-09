@@ -28,7 +28,7 @@ from .prompt import (
     USER_PROMPT_PATCH,
 )
 from ..tools.logger import logger
-from ..tools.project import Project
+from ..tools.project import Project, safe_git_reset_hard
 from ..tools.utils import split_patch
 
 
@@ -281,19 +281,110 @@ def initial_agent(
     return agent_executor, llm
 
 
+def _try_cherry_pick_backport(project: Project, data) -> tuple[bool, Optional[str]]:
+    """
+    在分割补丁、调用 LLM 之前，先尝试用 git cherry-pick 将修复提交应用到 target_release。
+    若 cherry-pick 成功则直接得到回移植结果，无需走分 hunk + LLM 流程。
+
+    若目标仓库与源仓库不同（指定了 target_path），则先把 project_dir 作为 upstream
+    拉取到目标仓库，再在目标仓库执行 cherry-pick。
+
+    Returns:
+        (True, complete_patch) 若 cherry-pick 成功；
+        (False, None) 若冲突或失败，调用方应继续走原有分 hunk + LLM 流程。
+    """
+    try:
+        from git.exc import GitCommandError
+    except ImportError:
+        GitCommandError = Exception  # type: ignore[misc, assignment]
+
+    target_repo = project.target_repo
+    fixed_commit = data.new_patch
+    target_release = data.target_release
+    target_release_name = getattr(data, "target_release_name", None)
+
+    logger.debug("[_try_cherry_pick_backport] 尝试 cherry-pick: fixed_commit=%s, target_release=%s", fixed_commit, target_release)
+
+    # 先确保目标仓库工作区干净，并同步远程分支，避免本地改动污染
+    try:
+        if target_repo.is_dirty(untracked_files=True):
+            safe_git_reset_hard(target_repo)
+            target_repo.git.clean("-fdx")
+    except Exception as e:
+        logger.debug("[_try_cherry_pick_backport] 清理目标仓库失败: %s", e)
+
+    if target_release_name:
+        try:
+            if "origin" in [r.name for r in target_repo.remotes]:
+                origin = target_repo.remotes.origin
+                origin.fetch()
+                origin_ref = f"origin/{target_release_name}"
+                if origin_ref in [r.name for r in origin.refs]:
+                    if target_release_name in [h.name for h in target_repo.heads]:
+                        target_repo.git.checkout(target_release_name)
+                    else:
+                        target_repo.git.checkout("-b", target_release_name, origin_ref)
+                    safe_git_reset_hard(target_repo)
+                    target_repo.git.reset("--hard", origin_ref)
+                    target_repo.git.clean("-fdx")
+        except Exception as e:
+            logger.debug("[_try_cherry_pick_backport] 同步远程分支失败: %s", e)
+
+    # 若目标仓库与源仓库不是同一个，需要先把 project_dir 作为 upstream 拉取，使 fixed_commit 在 target_repo 中可见
+    if target_repo != project.repo:
+        upstream_url = os.path.abspath(project.dir.rstrip("/"))
+        remote_name = "upstream"
+        try:
+            existing = [r.name for r in target_repo.remotes]
+            if remote_name not in existing:
+                target_repo.create_remote(remote_name, upstream_url)
+                logger.debug("[_try_cherry_pick_backport] 已添加 remote %s -> %s", remote_name, upstream_url)
+            target_repo.remotes[remote_name].fetch()
+            logger.debug("[_try_cherry_pick_backport] 已从 upstream fetch")
+        except Exception as e:
+            logger.debug("[_try_cherry_pick_backport] 添加/拉取 upstream 失败: %s，跳过 cherry-pick", e)
+            return False, None
+
+    # 在目标仓库：重置、切到 target_release、再 cherry-pick fixed_commit
+    try:
+        safe_git_reset_hard(target_repo)
+        resolved = project._resolve_target_ref(target_release)
+        project._checkout(resolved, use_target_repo=True)
+        logger.debug("[_try_cherry_pick_backport] 已 checkout %s", resolved)
+        target_repo.git.cherry_pick(fixed_commit)
+        logger.info("[_try_cherry_pick_backport] cherry-pick 成功，无需调用 LLM")
+        patch = target_repo.git.show("HEAD")
+        return True, patch
+    except GitCommandError as e:
+        logger.debug("[_try_cherry_pick_backport] cherry-pick 失败（可能有冲突）: %s", e)
+        try:
+            target_repo.git.cherry_pick("--abort")
+        except Exception:
+            pass
+        return False, None
+    except Exception as e:
+        logger.debug("[_try_cherry_pick_backport] cherry-pick 异常: %s", e)
+        try:
+            target_repo.git.cherry_pick("--abort")
+        except Exception:
+            pass
+        return False, None
+
+
 def do_backport(
     agent_executor: AgentExecutor, project: Project, data, llm: ChatOpenAI, logfile: str
 ):
     """
     执行补丁回移植的主函数
-    
+
     流程包括：
+    0. （可选）先尝试 git cherry-pick 将 fixed_commit 应用到 target_release，成功则直接验证并返回
     1. 获取原始补丁并分割为多个 hunk
     2. 逐个尝试应用每个 hunk
     3. 如果 hunk 无法直接应用，使用 LLM 生成修复
     4. 验证所有 hunk 是否成功应用
     5. 如果有编译错误，使用 LLM 进行最终修复
-    
+
     Args:
         agent_executor: LangChain 代理执行器
         project: 项目对象
@@ -327,104 +418,113 @@ def do_backport(
     logger.debug(f"  - patch 长度: {len(patch)} 字符")
     logger.debug(f"  - patch 内容预览: {patch[:200]}..." if len(patch) > 200 else f"  - patch 内容: {patch}")
 
-    # 分割补丁为多个 hunk
-    logger.debug("[do_backport] 分割补丁为多个 hunk...")
-    pps_generator = split_patch(patch, True)
-    logger.debug(f"[do_backport] split_patch 返回类型: {type(pps_generator)}")
-    # 将生成器转换为列表，以便可以多次迭代和使用 len()
-    pps = list(pps_generator)
-    logger.debug(f"[do_backport] 补丁分割完成:")
-    logger.debug(f"  - hunk 数量: {len(pps)}")
+    # 先尝试用 cherry-pick 直接回移植，成功则跳过分 hunk + LLM
+    cherry_pick_ok, cherry_pick_patch = _try_cherry_pick_backport(project, data)
+    if cherry_pick_ok and cherry_pick_patch:
+        project.all_hunks_applied_succeeded = True
+        project.succeeded_patches = [cherry_pick_patch]
+        project.now_hunk = "completed"
+        complete_patch = cherry_pick_patch
+        logger.debug("[do_backport] cherry-pick 成功，跳过分 hunk + LLM 流程")
+    else:
+        # 分割补丁为多个 hunk
+        logger.debug("[do_backport] 分割补丁为多个 hunk...")
+        pps_generator = split_patch(patch, True)
+        logger.debug(f"[do_backport] split_patch 返回类型: {type(pps_generator)}")
+        # 将生成器转换为列表，以便可以多次迭代和使用 len()
+        pps = list(pps_generator)
+        logger.debug(f"[do_backport] 补丁分割完成:")
+        logger.debug(f"  - hunk 数量: {len(pps)}")
 
-    # 逐个处理每个 hunk
-    logger.debug("=" * 80)
-    logger.debug("[do_backport] 开始逐个处理 hunk")
-    logger.debug("=" * 80)
-    for idx, pp in enumerate(pps):
-        logger.debug("-" * 80)
-        logger.debug(f"[do_backport] 处理 hunk {idx}/{len(pps)-1}")
-        logger.debug("-" * 80)
-        logger.debug(f"  - hunk 内容: {pp}")
-        
-        # 重置状态
-        project.round_succeeded = False
-        project.context_mismatch_times = 0
-        logger.debug(f"[do_backport] 重置状态: round_succeeded={project.round_succeeded}, context_mismatch_times={project.context_mismatch_times}")
-
-        # 尝试应用 hunk
-        logger.debug(f"[do_backport] 尝试应用 hunk {idx} 到 target_release={data.target_release}")
-        ret = project._apply_hunk(data.target_release, pp, False)
-        logger.debug(f"[do_backport] hunk 应用结果: ret 长度={len(ret)} 字符")
-        logger.debug(f"[do_backport] hunk 应用结果内容: {ret}")
-        logger.debug(f"[do_backport] round_succeeded={project.round_succeeded}")
-        
-        if project.round_succeeded:
-            logger.debug(f"[do_backport] Hunk {idx} 可以无冲突地应用，跳过")
-            continue
-        else:
-            # 使用正则表达式提取相似代码块
-            logger.debug(f"[do_backport] Hunk {idx} 无法直接应用，使用 LLM 生成修复")
-            logger.debug(f"[do_backport] 从应用结果中提取相似代码块...")
-            block_list = re.findall(r"older version.\n(.*?)\nBesides,", ret, re.DOTALL)
-            logger.debug(f"[do_backport] 找到相似代码块数量: {len(block_list)}")
-            for i, block in enumerate(block_list):
-                logger.debug(f"  - 代码块 {i} 长度: {len(block)} 字符")
-                logger.debug(f"  - 代码块 {i} 内容: {block[:200]}..." if len(block) > 200 else f"  - 代码块 {i} 内容: {block}")
+        # 逐个处理每个 hunk
+        logger.debug("=" * 80)
+        logger.debug("[do_backport] 开始逐个处理 hunk")
+        logger.debug("=" * 80)
+        for idx, pp in enumerate(pps):
+            logger.debug("-" * 80)
+            logger.debug(f"[do_backport] 处理 hunk {idx}/{len(pps)-1}")
+            logger.debug("-" * 80)
+            logger.debug(f"  - hunk 内容: {pp}")
             
-            similar_block = "\n".join(block_list)
-            logger.debug(f"[do_backport] 合并后的相似代码块长度: {len(similar_block)} 字符")
-            logger.debug(f"[do_backport] 相似代码块内容: {similar_block[:300]}..." if len(similar_block) > 300 else f"[do_backport] 相似代码块内容: {similar_block}")
+            # 重置状态
+            project.round_succeeded = False
+            project.context_mismatch_times = 0
+            logger.debug(f"[do_backport] 重置状态: round_succeeded={project.round_succeeded}, context_mismatch_times={project.context_mismatch_times}")
 
-            # 设置当前处理的 hunk
-            project.now_hunk = pp
-            project.now_hunk_num = idx
-            logger.debug(f"[do_backport] 设置当前 hunk: now_hunk_num={project.now_hunk_num}")
-            logger.debug(f"[do_backport] 当前 hunk 内容: {project.now_hunk[:200]}..." if len(project.now_hunk) > 200 else f"[do_backport] 当前 hunk 内容: {project.now_hunk}")
-
-            # 调用 LLM 代理生成修复
-            logger.debug("[do_backport] 调用 LLM 代理生成修复...")
-            invoke_input = {
-                "project_url": data.project_url,
-                "new_patch_parent": data.new_patch_parent,
-                "new_patch": pp,
-                "target_release": data.target_release,
-                "similar_block": similar_block,
-            }
-            
-            logger.debug("[do_backport] 执行 agent_executor.invoke()...")
-            agent_executor.invoke(
-                invoke_input,
-                {"callbacks": [log_handler]},
-            )
-            logger.debug(f"[do_backport] agent_executor.invoke() 执行完成")
+            # 尝试应用 hunk
+            logger.debug(f"[do_backport] 尝试应用 hunk {idx} 到 target_release={data.target_release}")
+            ret = project._apply_hunk(data.target_release, pp, False)
+            logger.debug(f"[do_backport] hunk 应用结果: ret 长度={len(ret)} 字符")
+            logger.debug(f"[do_backport] hunk 应用结果内容: {ret}")
             logger.debug(f"[do_backport] round_succeeded={project.round_succeeded}")
-            logger.debug(f"[do_backport] context_mismatch_times={project.context_mismatch_times}")
             
-            if not project.round_succeeded:
-                logger.debug(
-                    f"[do_backport] 回移植 hunk {idx} 失败\n----------------------------------\n{pp}\n----------------------------------\n"
-                )
-                logger.error(f"[do_backport] Hunk {idx} 达到最大迭代次数")
-                logger.debug("[do_backport] 提前返回，停止处理后续 hunk")
-                return
+            if project.round_succeeded:
+                logger.debug(f"[do_backport] Hunk {idx} 可以无冲突地应用，跳过")
+                continue
+            else:
+                # 使用正则表达式提取相似代码块
+                logger.debug(f"[do_backport] Hunk {idx} 无法直接应用，使用 LLM 生成修复")
+                logger.debug(f"[do_backport] 从应用结果中提取相似代码块...")
+                block_list = re.findall(r"older version.\n(.*?)\nBesides,", ret, re.DOTALL)
+                logger.debug(f"[do_backport] 找到相似代码块数量: {len(block_list)}")
+                for i, block in enumerate(block_list):
+                    logger.debug(f"  - 代码块 {i} 长度: {len(block)} 字符")
+                    logger.debug(f"  - 代码块 {i} 内容: {block[:200]}..." if len(block) > 200 else f"  - 代码块 {i} 内容: {block}")
+                
+                similar_block = "\n".join(block_list)
+                logger.debug(f"[do_backport] 合并后的相似代码块长度: {len(similar_block)} 字符")
+                logger.debug(f"[do_backport] 相似代码块内容: {similar_block[:300]}..." if len(similar_block) > 300 else f"[do_backport] 相似代码块内容: {similar_block}")
 
-    # 所有 hunk 应用成功
-    logger.debug("=" * 80)
-    logger.debug("[do_backport] 所有 hunk 处理完成")
-    logger.debug("=" * 80)
-    project.all_hunks_applied_succeeded = True
-    logger.info(f"[do_backport] 应用补丁中的所有 hunk 成功")
-    logger.debug(f"[do_backport] all_hunks_applied_succeeded={project.all_hunks_applied_succeeded}")
-    
-    project.now_hunk = "completed"
-    logger.debug(f"[do_backport] now_hunk={project.now_hunk}")
-    
-    # 合并所有成功的补丁
-    complete_patch = "\n".join(project.succeeded_patches)
-    logger.debug(f"[do_backport] 合并后的完整补丁:")
-    logger.debug(f"  - succeeded_patches 数量: {len(project.succeeded_patches)}")
-    logger.debug(f"  - complete_patch 长度: {len(complete_patch)} 字符")
-    logger.debug(f"  - complete_patch 内容: {complete_patch}")
+                # 设置当前处理的 hunk
+                project.now_hunk = pp
+                project.now_hunk_num = idx
+                logger.debug(f"[do_backport] 设置当前 hunk: now_hunk_num={project.now_hunk_num}")
+                logger.debug(f"[do_backport] 当前 hunk 内容: {project.now_hunk[:200]}..." if len(project.now_hunk) > 200 else f"[do_backport] 当前 hunk 内容: {project.now_hunk}")
+
+                # 调用 LLM 代理生成修复
+                logger.debug("[do_backport] 调用 LLM 代理生成修复...")
+                invoke_input = {
+                    "project_url": data.project_url,
+                    "new_patch_parent": data.new_patch_parent,
+                    "new_patch": pp,
+                    "target_release": data.target_release,
+                    "similar_block": similar_block,
+                }
+                
+                logger.debug("[do_backport] 执行 agent_executor.invoke()...")
+                agent_executor.invoke(
+                    invoke_input,
+                    {"callbacks": [log_handler]},
+                )
+                logger.debug(f"[do_backport] agent_executor.invoke() 执行完成")
+                logger.debug(f"[do_backport] round_succeeded={project.round_succeeded}")
+                logger.debug(f"[do_backport] context_mismatch_times={project.context_mismatch_times}")
+                
+                if not project.round_succeeded:
+                    logger.debug(
+                        f"[do_backport] 回移植 hunk {idx} 失败\n----------------------------------\n{pp}\n----------------------------------\n"
+                    )
+                    logger.error(f"[do_backport] Hunk {idx} 达到最大迭代次数")
+                    logger.debug("[do_backport] 提前返回，停止处理后续 hunk")
+                    return
+
+        # 所有 hunk 应用成功
+        logger.debug("=" * 80)
+        logger.debug("[do_backport] 所有 hunk 处理完成")
+        logger.debug("=" * 80)
+        project.all_hunks_applied_succeeded = True
+        logger.info(f"[do_backport] 应用补丁中的所有 hunk 成功")
+        logger.debug(f"[do_backport] all_hunks_applied_succeeded={project.all_hunks_applied_succeeded}")
+        
+        project.now_hunk = "completed"
+        logger.debug(f"[do_backport] now_hunk={project.now_hunk}")
+        
+        # 合并所有成功的补丁
+        complete_patch = "\n".join(project.succeeded_patches)
+        logger.debug(f"[do_backport] 合并后的完整补丁:")
+        logger.debug(f"  - succeeded_patches 数量: {len(project.succeeded_patches)}")
+        logger.debug(f"  - complete_patch 长度: {len(complete_patch)} 字符")
+        logger.debug(f"  - complete_patch 内容: {complete_patch}")
     
     # 清理工作区（在目标仓库中）
     logger.debug("[do_backport] 清理工作区（git clean -fdx）...")
