@@ -25,7 +25,47 @@ import yaml
 from .agent.invoke_llm import do_backport, initial_agent
 from .check.usage import get_usage
 from .tools.logger import add_file_handler, logger
-from .tools.project import Project
+from .tools.project import Project, safe_git_reset_hard
+
+
+def _sync_remote_branch_and_rev_parse(
+    target_release: str, target_repo_dir: str, log_prefix: str
+) -> str:
+    """
+    在解析 target_release 前，尽量与远程分支同步，避免本地改动污染 rev_parse。
+
+    Args:
+        target_release: 目标分支名或引用（用户输入）
+        target_repo_dir: 目标仓库路径
+        log_prefix: 日志前缀，区分调用来源（load_yml/load_config_from_dict）
+
+    Returns:
+        str: 解析后的 commit SHA1
+    """
+    try:
+        target_repo = git.Repo(target_repo_dir)
+        if target_repo.is_dirty(untracked_files=True):
+            safe_git_reset_hard(target_repo)
+            target_repo.git.clean("-fdx")
+        if "origin" in [r.name for r in target_repo.remotes]:
+            origin = target_repo.remotes.origin
+            origin.fetch()
+            origin_ref = f"origin/{target_release}"
+            if origin_ref in [r.name for r in origin.refs]:
+                if target_release in [h.name for h in target_repo.heads]:
+                    target_repo.git.checkout(target_release)
+                else:
+                    target_repo.git.checkout("-b", target_release, origin_ref)
+                safe_git_reset_hard(target_repo)
+                target_repo.git.reset("--hard", origin_ref)
+                target_repo.git.clean("-fdx")
+    except Exception as e:
+        logger.debug(
+            "[%s] 同步远程分支失败，继续使用当前仓库状态: %s",
+            log_prefix,
+            e,
+        )
+    return rev_parse_commit(target_release, target_repo_dir)
 
 
 def is_commit_valid(commit_id: str, project_dir: str):
@@ -294,9 +334,12 @@ def load_yml(file_path: str):
     logger.debug(f"[load_yml] new_patch: {original_new_patch} -> {data.new_patch}")
     
     original_target_release = data.target_release
+    data.target_release_name = original_target_release
     # target_release 应该在目标仓库中解析（如果指定了 target_path）
     target_repo_dir = data.target_path if data.target_path else data.project_dir
-    data.target_release = rev_parse_commit(data.target_release, target_repo_dir)
+    data.target_release = _sync_remote_branch_and_rev_parse(
+        original_target_release, target_repo_dir, "load_yml"
+    )
     logger.debug(f"[load_yml] target_release: {original_target_release} -> {data.target_release}")
     logger.debug(f"[load_yml] target_release 在仓库中解析: {target_repo_dir}")
     
@@ -425,8 +468,11 @@ def load_config_from_dict(config_dict: dict):
     data.new_patch = rev_parse_commit(data.new_patch, data.project_dir)
     
     original_target_release = data.target_release
+    data.target_release_name = original_target_release
     target_repo_dir = data.target_path if data.target_path else data.project_dir
-    data.target_release = rev_parse_commit(data.target_release, target_repo_dir)
+    data.target_release = _sync_remote_branch_and_rev_parse(
+        original_target_release, target_repo_dir, "load_config_from_dict"
+    )
     
     original_new_patch_parent = data.new_patch_parent
     data.new_patch_parent = rev_parse_commit(data.new_patch_parent, data.project_dir)
