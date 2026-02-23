@@ -9,7 +9,7 @@
 
 ## 依赖
 - 系统依赖: tar
-- Python依赖: 见src/requirements.txt
+- Python依赖: mcp>=0.9.0
 
 
 ## 工具函数
