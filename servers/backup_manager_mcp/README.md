@@ -7,30 +7,8 @@
 - 自动清理旧备份（保留最新N个）
 - 完整的审计日志记录
 
-## 依赖
-- 系统依赖: tar
-- Python依赖: 见src/requirements.txt
-
 ## 使用方法
-1. 安装MCP服务器：
-```bash
-yum install backup_manager_mcp
-```
 
-2. 在MCP客户端配置中添加：
-```json
-{
-  "backup_manager_mcp": {
-    "command": "uv",
-    "args": [
-      "--directory",
-      "/opt/mcp-servers/servers/backup_manager_mcp/src",
-      "run",
-      "server.py"
-    ]
-  }
-}
-```
 
 3. 调用功能：
 - 创建备份：`create_backup(source_path)`
