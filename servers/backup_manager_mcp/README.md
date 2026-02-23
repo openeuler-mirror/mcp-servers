@@ -7,25 +7,18 @@
 - 自动清理旧备份（保留最新N个）
 - 完整的审计日志记录
 
-## 使用方法
+## 依赖
+- 系统依赖: tar
+- Python依赖: 见src/requirements.txt
 
 
-3. 调用功能：
+## 工具函数
+
 - 创建备份：`create_backup(source_path)`
 - 恢复备份：`restore_backup(backup_file, target_path)`
 - 查看备份列表：`list_backups()`
 
-## 示例
-```python
-# 创建备份
-result = create_backup("/home/user/docs")
 
-# 查看所有备份
-backups = list_backups()
-
-# 恢复备份
-result = restore_backup("/var/backups/mcp/docs_20260223.tar.gz", "/tmp/restore")
-```
 
 ## 配置说明
 在 `src/server.py` 中可修改以下配置：
@@ -39,5 +32,4 @@ result = restore_backup("/var/backups/mcp/docs_20260223.tar.gz", "/tmp/restore")
 ## 注意事项
 1. 默认备份目录 `/var/backups/mcp` 需要创建并设置适当权限
 2. 审计日志默认存储在 `/var/log/mcp/backup_manager.log`
-3. 路径白名单限制确保操作安全
-4. 备份文件会自动清理，只保留最新的 MAX_BACKUPS 个
+3. 备份文件会自动清理，只保留最新的 MAX_BACKUPS 个
