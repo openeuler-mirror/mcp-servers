@@ -1,0 +1,31 @@
+# MCP Server RPM打包配置
+name: "backup-manager-mcp"
+summary: "备份管理工具MCP服务"
+description: |
+  提供文件目录和数据库的备份、恢复、管理功能，支持自动清理旧备份和压缩存储
+
+# 依赖配置
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+  packages:
+    - tar
+  optional:
+    - mysql-client
+    - postgresql-client
+
+# 文件配置
+files:
+  required:
+    - mcp_config.json
+    - src/server.py
+    - src/requirements.txt
+    - README.md
+
+# 安装后脚本
+post_install: |
+  echo "备份管理工具MCP服务安装完成"
+  echo "默认备份目录: /var/backups/mcp"
+  echo "配置文件: /etc/mcp/backup_config.json"
