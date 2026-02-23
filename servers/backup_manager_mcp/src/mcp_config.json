@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "backup_manager_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/backup_manager_mcp/src",
+        "run",
+        "server.py"
+      ],
+      "disabled": false,
+      "alwaysAllow": [
+        "create_backup",
+        "restore_backup",
+        "list_backups"
+      ]
+    }
+  }
+}
