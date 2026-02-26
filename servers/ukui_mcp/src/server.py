@@ -12,11 +12,11 @@ mcp = FastMCP("UKUI桌面助手")
 @mcp.tool()
 def get_active_window() -> str:
     """
-    获取当前 UKUI 桌面正在使用的活动窗口标题
+    获取当前UKUI桌面正在使用的活动窗口标题
     注意：需要提前安装xdotool
     
     Returns:
-        str: 窗口标题或错误信息
+        str:窗口标题或错误信息
     """
     try:
         cmd = ["xdotool", "getactivewindow", "getwindowname"]
@@ -28,13 +28,13 @@ def get_active_window() -> str:
 @mcp.tool()
 def get_recent_documents(limit: int = 5) -> list[str]:
     """
-    读取 UKUI/XDG 标准的最近打开文件记录
+    读取UKUI/XDG标准的最近打开文件记录
     让AI了解最近处理的文档、图片或项目
     
     Args:
-        limit: 返回的最近文件数量限制，默认5个
+        limit:返回的最近文件数量限制，默认5个
     Returns:
-        list[str]: 最近打开的文件路径列表
+        list[str]:最近打开的文件路径列表
     """
     recent_file_path = os.path.expanduser("~/.local/share/recently-used.xbel")
     if not os.path.exists(recent_file_path):
@@ -60,9 +60,9 @@ def set_ukui_wallpaper(image_path: str) -> str:
     UKUI壁纸更改工具(与GNOME兼容)
     
     Args:
-        image_path: 图片的绝对路径
+        image_path:图片的绝对路径
     Returns:
-        str: 设置结果消息
+        str:设置结果消息
     """
     schema = "org.gnome.desktop.background"
     key = "picture-uri"
