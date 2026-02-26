@@ -57,7 +57,7 @@ def get_recent_documents(limit: int = 5) -> list[str]:
 @mcp.tool()
 def set_ukui_wallpaper(image_path: str) -> str:
     """
-    专门针对 UKUI 架构的壁纸更改工具
+    UKUI壁纸更改工具(与GNOME兼容)
     
     Args:
         image_path: 图片的绝对路径
