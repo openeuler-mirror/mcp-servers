@@ -1,0 +1,24 @@
+name: "ukui_mcp"  # 必须与目录名一致 
+summary: "MCP server for UKUI management"
+description: |
+  Provides MCP tools for managing UKUI settings, wallpapers, and desktop information.
+  Includes tools to get active window, recent documents, and set UKUI wallpaper.
+
+dependencies:
+   system:  # 系统级依赖
+     - python3
+     - uv
+     - python3-mcp
+     - jq
+     - xdotool
+     - gsettings-desktop-schemas
+   packages: # 额外的软件包依赖
+     - rpm-build
+
+files:
+   required:  # 必须存在的文件
+     - mcp_config.json
+     - src/server.py
+   optional:  # 可选文件
+     - src/requirements.txt
+     - src/pyproject.toml
