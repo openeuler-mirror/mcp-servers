@@ -13,6 +13,7 @@ from .utils.apply_patch import apply_patch
 from .utils.create_pr import create_pr
 from .utils.locales import i18n
 from .utils.backporting import run_backport_from_config
+from .utils.backport_batch import handle_backport_batch
 
 logger = logging.getLogger(__name__)
 apply_patch_lock = multiprocessing.Lock()
@@ -34,7 +35,7 @@ def main():
 
     # 操作模式参数
     parser.add_argument('--action', type=str,
-                      choices=['parse-issue', 'get-commits', 'analyze-branches', 'setup-env', 'apply-patch', 'create-pr', 'backport'],
+                      choices=['parse-issue', 'get-commits', 'analyze-branches', 'setup-env', 'apply-patch', 'create-pr', 'backport', 'backport-batch'],
                       default='analyze-branches',
                       help='''执行模式: 
                       parse-issue(解析issue),
@@ -43,7 +44,8 @@ def main():
                       setup-env(设置仓库环境),
                       apply-patch(应用patch),
                       create-pr(创建PR),
-                      backport(补丁回移植)''')
+                      backport(补丁回移植),
+                      backport-batch(批量补丁回移植)''')
 
 
     # 输入源参数组（互斥组：必须提供CVE ID或Issue URL）
@@ -103,6 +105,14 @@ def main():
                                help='错误信息 (可选)')
     backport_group.add_argument('--sanitizer', type=str,
                                help='Sanitizer类型 (可选)')
+    backport_group.add_argument('--backport-config', type=str,
+                               help='批量回移植配置文件路径 (YAML/JSON)，用于 backport-batch')
+    backport_group.add_argument(
+        '-i',
+        '--interactive',
+        action='store_true',
+        help='交互式编辑 backport-batch 报告配置（如 merged_in_target）'
+    )
 
     args = parser.parse_args()
 
@@ -128,11 +138,11 @@ def main():
             )
 
     # 检查必要的 gitee-token
-    if not args.gitee_token and args.action != 'setup-env' and args.action != 'backport':
+    if not args.gitee_token and args.action not in ['setup-env', 'backport', 'backport-batch']:
         parser.error("必须提供Gitee访问令牌(通过--gitee-token参数或GITEE_TOKEN环境变量)")
 
     # 检查必要的cve-id或issue-url（setup-env模式不需要）
-    if args.action != 'setup-env' and not (args.cve_id or args.issue_url):
+    if args.action not in ['setup-env', 'backport-batch'] and not (args.cve_id or args.issue_url):
         parser.error("非setup-env模式需提供--cve-id或--issue-url参数")
     
     # 检查必要的fork-repo-url（某些action需要）
@@ -204,6 +214,9 @@ def handle_action(args):
             'status': 'success',
             'repo_path': repo_path
         }
+    if args.action == 'backport-batch':
+        return handle_backport_batch(args)
+
     if args.cve_id and not args.issue_url:
         args.issue_url = get_issue_url_from_cve_id(args.cve_id, args.gitee_token)
 
@@ -225,6 +238,7 @@ def handle_action(args):
     else:
         raise RuntimeError("action not supported: %s", args.action)
 
+
 def handle_apply_patch(cve_id, args):
     """应用patch并把branch提交到fork分支"""
     apply_patch_lock.acquire()
@@ -243,6 +257,7 @@ def handle_apply_patch(cve_id, args):
     finally:
         apply_patch_lock.release()
     return result
+
 
 def handle_create_pr(cve_id, args):
     """创建pr"""
