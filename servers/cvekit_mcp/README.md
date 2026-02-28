@@ -3,7 +3,7 @@
 ## 安装指导
 1. 安装依赖
 ```bash
-cd servers/cvekit_mcp/src && pip install -r requirements.txt && pip install babel
+cd servers/cvekit_mcp/src && pip install -r requirements.txt
 ```
 2. 编译语言包
 
@@ -120,3 +120,61 @@ cvekit --action create-pr --cve-id ${CVE_ID} --branch ${BRANCH_NAME}
 ```bash
 cvekit --action backport --cve-id ${CVE_ID} --branch ${BRANCH_NAME} --api-key ${API_KEY} --llm-provider ${LLM_PROVIDER}
 ```
+
+9. 批量回移植（backport-batch）
+
+`backport-batch` 通过一个 YAML/JSON 配置文件批量检查/回移植提交，并输出 `*.report.yml` 报告文件用于复跑与人工确认。
+
+- **依赖说明**：该功能依赖 `GitPython`（提供 `import git`）与 `PyYAML`；若启用交互模式（`-i/--interactive`）建议安装 `tabulate` 用于表格展示（已在 `requirements.txt` 中包含）。
+
+### 配置文件（raw 模式）
+
+raw 配置用于“批量检查 + 生成报告”，默认会对 commits 做排序、合入/冲突检测，并生成 `${backport-config}.report.yml`，**不会在目标仓直接落地回移植结果**（用于先摸底）。
+
+示例（不要把 token / api_key 写进文件，建议用环境变量或命令行传参）：
+
+```yaml
+project: linux
+project_url: https://gitee.com/openeuler/kernel
+project_dir: /path/to/source-repo
+source_branch: OLK-6.6              # 可选：用于在多候选 title 匹配时优先过滤
+target_path: /path/to/target-repo
+target_release: openEuler-24.03-LTS-SP1-patchpool
+patch_dataset_dir: /path/to/patch_dataset
+llm_provider: minimax               # 可选：report 模式回移植时使用
+api_key: ${API_KEY}                 # 建议通过环境变量或命令行 --api-key
+commits:
+- commit: 2d1a8bfb61ec
+  commit_title: 'etm4x: Fix etm4_count race by moving cpuhp callbacks to init'
+- commit: 16a0cbac6609
+  commit_title: 'drivers: arch_topology: Refactor do-while loops'
+```
+
+运行：
+
+```bash
+# 通过已安装的入口（python setup.py install 后）
+cvekit --action backport-batch --backport-config /path/to/backport-batch.yml --debug --json
+
+# 或直接用模块运行（开发调试更直观）
+python -m cvekit.cli --action backport-batch --backport-config /path/to/backport-batch.yml --debug --json
+```
+
+### 报告文件（report 模式）
+
+当配置文件后缀为 `.report.yml`（或 commits 条目包含 `merged_in_target/has_conflict/...` 等字段）时视为 report 配置。
+
+report 配置用于“按报告执行”：
+- **merged_in_target=true**：跳过
+- **has_conflict=true**：触发回移植（调用 `backport` 流程/LLM）
+- **has_conflict=false**：直接在目标仓尝试 `cherry-pick` 应用
+
+运行（可选交互编辑）：
+
+```bash
+cvekit --action backport-batch --backport-config /path/to/backport-batch.yml.report.yml -i --debug --json
+```
+
+注意：
+- 建议用环境变量传入敏感信息：`GITEE_TOKEN`、`API_KEY`，或通过命令行 `--gitee-token/--api-key` 传入。
+- `backport-batch` 会写出报告文件，请关注同目录下生成的 `*.report.yml` 并以它作为下一轮输入。
