@@ -372,7 +372,12 @@ def _try_cherry_pick_backport(project: Project, data) -> tuple[bool, Optional[st
 
 
 def do_backport(
-    agent_executor: AgentExecutor, project: Project, data, llm: ChatOpenAI, logfile: str
+    agent_executor: AgentExecutor,
+    project: Project,
+    data,
+    llm: ChatOpenAI,
+    logfile: str,
+    skip_cherry_pick: bool = False,
 ):
     """
     执行补丁回移植的主函数
@@ -391,6 +396,7 @@ def do_backport(
         data: 配置数据对象（包含 new_patch, target_release 等）
         llm: LLM 模型对象
         logfile: 日志文件路径
+        skip_cherry_pick: 是否跳过 cherry-pick 直回流程
     """
     logger.debug("=" * 80)
     logger.debug("[do_backport] 开始执行补丁回移植")
@@ -419,14 +425,20 @@ def do_backport(
     logger.debug(f"  - patch 内容预览: {patch[:200]}..." if len(patch) > 200 else f"  - patch 内容: {patch}")
 
     # 先尝试用 cherry-pick 直接回移植，成功则跳过分 hunk + LLM
-    cherry_pick_ok, cherry_pick_patch = _try_cherry_pick_backport(project, data)
-    if cherry_pick_ok and cherry_pick_patch:
-        project.all_hunks_applied_succeeded = True
-        project.succeeded_patches = [cherry_pick_patch]
-        project.now_hunk = "completed"
-        complete_patch = cherry_pick_patch
-        logger.debug("[do_backport] cherry-pick 成功，跳过分 hunk + LLM 流程")
+    cherry_pick_ok = False
+    cherry_pick_patch = None
+    if not skip_cherry_pick:
+        cherry_pick_ok, cherry_pick_patch = _try_cherry_pick_backport(project, data)
+        if cherry_pick_ok and cherry_pick_patch:
+            project.all_hunks_applied_succeeded = True
+            project.succeeded_patches = [cherry_pick_patch]
+            project.now_hunk = "completed"
+            complete_patch = cherry_pick_patch
+            logger.debug("[do_backport] cherry-pick 成功，跳过分 hunk + LLM 流程")
     else:
+        logger.debug("[do_backport] skip_cherry_pick=True，跳过 cherry-pick 直回流程")
+
+    if skip_cherry_pick or not (cherry_pick_ok and cherry_pick_patch):
         # 分割补丁为多个 hunk
         logger.debug("[do_backport] 分割补丁为多个 hunk...")
         pps_generator = split_patch(patch, True)

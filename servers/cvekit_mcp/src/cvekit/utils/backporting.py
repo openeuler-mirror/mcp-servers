@@ -470,9 +470,24 @@ def load_config_from_dict(config_dict: dict):
     original_target_release = data.target_release
     data.target_release_name = original_target_release
     target_repo_dir = data.target_path if data.target_path else data.project_dir
-    data.target_release = _sync_remote_branch_and_rev_parse(
-        original_target_release, target_repo_dir, "load_config_from_dict"
-    )
+    if config_dict.get("skip_cherry_pick", False):
+        try:
+            target_repo = git.Repo(target_repo_dir)
+            if target_repo.is_dirty(untracked_files=True):
+                safe_git_reset_hard(target_repo)
+                target_repo.git.clean("-fdx")
+            if original_target_release in [h.name for h in target_repo.heads]:
+                target_repo.git.checkout(original_target_release)
+        except Exception as e:
+            logger.debug(
+                "[load_config_from_dict] 本地分支切换失败，继续使用当前仓库状态: %s",
+                e,
+            )
+        data.target_release = rev_parse_commit(original_target_release, target_repo_dir)
+    else:
+        data.target_release = _sync_remote_branch_and_rev_parse(
+            original_target_release, target_repo_dir, "load_config_from_dict"
+        )
     
     original_new_patch_parent = data.new_patch_parent
     data.new_patch_parent = rev_parse_commit(data.new_patch_parent, data.project_dir)
@@ -517,6 +532,7 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
     
     # 加载配置
     data = load_config_from_dict(config_dict)
+    skip_cherry_pick = bool(config_dict.get("skip_cherry_pick", False))
     
     # 使用 LLM 进行补丁回移植
     project = Project(data)
@@ -582,7 +598,14 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
         logger.debug("=" * 80)
         logger.debug("Starting patch backporting...")
         logger.debug("=" * 80)
-        do_backport(agent_executor, project, data, llm, logfile)
+        do_backport(
+            agent_executor,
+            project,
+            data,
+            llm,
+            logfile,
+            skip_cherry_pick=skip_cherry_pick,
+        )
         
         end_time = time.time()
         
@@ -597,6 +620,7 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
         # 获取调整后的补丁文件
         backported_patch_path = None
         diff_path = None
+        empty_patch = False
         
         if project.succeeded_patches:
             # 保存调整后的补丁文件
@@ -637,36 +661,40 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
                 normalized_patches.append(_normalize_unified_diff(patch))
 
             export_patch = project.validated_patch or "\n".join(normalized_patches)
-            # 防呆：导出前先做 git apply --check
-            try:
-                project._check_patch(export_patch, data.target_release)
-            except Exception as e:
-                logger.error(f"导出补丁前 git apply --check 失败: {e}")
-                raise RuntimeError("backported patch failed git apply --check")
+            if not export_patch.strip():
+                empty_patch = True
+                logger.info("导出补丁前发现为空补丁，视为无需回移植，跳过 git apply --check")
+            else:
+                # 防呆：导出前先做 git apply --check
+                try:
+                    project._check_patch(export_patch, data.target_release)
+                except Exception as e:
+                    logger.error(f"导出补丁前 git apply --check 失败: {e}")
+                    raise RuntimeError("backported patch failed git apply --check")
 
-            with open(backported_patch_path, 'w', encoding='utf-8') as f:
-                f.write(export_patch)
-            
-            # 生成 diff 文件显示差异
-            import difflib
-            diff_path = os.path.join(data.patch_dataset_dir, f"diff_{data.tag}_{data.target_release}.diff")
-            original_lines = original_patch_content.splitlines(keepends=True)
-            backported_lines = export_patch.splitlines(keepends=True)
-            
-            diff = difflib.unified_diff(
-                original_lines,
-                backported_lines,
-                fromfile=f"original_{data.new_patch}.patch",
-                tofile=f"backported_{data.tag}_{data.target_release}.patch",
-                lineterm=''
-            )
-            
-            with open(diff_path, 'w', encoding='utf-8') as f:
-                f.writelines(diff)
-            
-            logger.info(f"原始补丁文件: {original_patch_path}")
-            logger.info(f"调整后补丁文件: {backported_patch_path}")
-            logger.info(f"差异文件: {diff_path}")
+                with open(backported_patch_path, 'w', encoding='utf-8') as f:
+                    f.write(export_patch)
+                
+                # 生成 diff 文件显示差异
+                import difflib
+                diff_path = os.path.join(data.patch_dataset_dir, f"diff_{data.tag}_{data.target_release}.diff")
+                original_lines = original_patch_content.splitlines(keepends=True)
+                backported_lines = export_patch.splitlines(keepends=True)
+                
+                diff = difflib.unified_diff(
+                    original_lines,
+                    backported_lines,
+                    fromfile=f"original_{data.new_patch}.patch",
+                    tofile=f"backported_{data.tag}_{data.target_release}.patch",
+                    lineterm=''
+                )
+                
+                with open(diff_path, 'w', encoding='utf-8') as f:
+                    f.writelines(diff)
+                
+                logger.info(f"原始补丁文件: {original_patch_path}")
+                logger.info(f"调整后补丁文件: {backported_patch_path}")
+                logger.info(f"差异文件: {diff_path}")
         
         result = {
             'status': 'success',
@@ -674,7 +702,8 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
             'time_cost': int(end_time - start_time),
             'original_patch_path': original_patch_path,
             'backported_patch_path': backported_patch_path,
-            'diff_path': diff_path
+            'diff_path': diff_path,
+            'empty_patch': empty_patch
         }
         
         if data.llm_provider == "openai":

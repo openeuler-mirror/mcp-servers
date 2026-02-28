@@ -228,39 +228,63 @@ class Project:
         """
         # 优化：只扫描 C/C++ 源文件，避免扫描文档、配置文件等
         # 对于 Linux 内核等大型项目，这可以节省大量时间
-        ctags = subprocess.run(
-            [
-                "ctags",
-                "--excmd=number",
-                "-R",
-                "--languages=C,C++",
-                "--c-kinds=+p",  # 包含函数原型
-                "--c++-kinds=+p",
-                "--extras=+q",  # 包含限定符
-                ".",
-            ],
-            stdout=subprocess.PIPE,
-            cwd=self.target_dir,  # 在目标仓库中生成 ctags
-            stdin=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
-        ctags.check_returncode()
+        with tempfile.NamedTemporaryFile(prefix="ctags-", suffix=".tags", delete=False) as f:
+            tags_path = f.name
+        try:
+            ctags = subprocess.run(
+                [
+                    "ctags",
+                    "--excmd=number",
+                    "-R",
+                    "--languages=C,C++",
+                    "--c-kinds=+p",  # 包含函数原型
+                    "--c++-kinds=+p",
+                    "--extras=+q",  # 包含限定符
+                    "-f",
+                    tags_path,
+                    ".",
+                ],
+                stdout=subprocess.PIPE,
+                cwd=self.target_dir,  # 在目标仓库中生成 ctags
+                stdin=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            if ctags.returncode != 0:
+                stderr = (ctags.stderr or "").strip()
+                if stderr:
+                    logger.warning(f"[_prepare] ctags 退出码 {ctags.returncode}: {stderr[:500]}")
+                # 若 tags 文件不可用，仍然视为失败
+                if not os.path.exists(tags_path) or os.path.getsize(tags_path) == 0:
+                    raise subprocess.CalledProcessError(
+                        ctags.returncode, ctags.args, output=ctags.stdout, stderr=ctags.stderr
+                    )
 
-        self.symbol_map[ref] = {}
-        # 在目标仓库中查找 tags 文件
-        with open(os.path.join(self.target_dir, "tags"), "rb") as f:
-            for line in f.readlines():
-                if text := line.decode("utf-8", errors="ignore"):
-                    if text.startswith("!_TAG_"):
-                        continue
-                    try:
-                        symbol, file, lineno = text.strip().split(';"')[0].split("\t")
-                        lineno = int(lineno)
-                        if symbol not in self.symbol_map[ref]:
-                            self.symbol_map[ref][symbol] = []
-                        self.symbol_map[ref][symbol].append((file, lineno))
-                    except:
-                        continue
+            if not os.path.exists(tags_path) or os.path.getsize(tags_path) == 0:
+                raise subprocess.CalledProcessError(
+                    ctags.returncode, ctags.args, output=ctags.stdout, stderr=ctags.stderr
+                )
+
+            self.symbol_map[ref] = {}
+            with open(tags_path, "rb") as f:
+                for line in f.readlines():
+                    if text := line.decode("utf-8", errors="ignore"):
+                        if text.startswith("!_TAG_"):
+                            continue
+                        try:
+                            symbol, file, lineno = text.strip().split(';"')[0].split("\t")
+                            lineno = int(lineno)
+                            if symbol not in self.symbol_map[ref]:
+                                self.symbol_map[ref][symbol] = []
+                            self.symbol_map[ref][symbol].append((file, lineno))
+                        except:
+                            continue
+        finally:
+            try:
+                if os.path.exists(tags_path):
+                    os.unlink(tags_path)
+            except Exception:
+                pass
 
     def _viewcode(self, ref: str, path: str, startline: int, endline: int) -> str:
         """
@@ -276,16 +300,10 @@ class Project:
             str: The content of the file between the specified startline and endline.
                  If the file doesn't exist in the commit, a message indicating that is returned.
         """
-        try:
-            ref = self._resolve_target_ref(ref)
-            # 在目标仓库中查找文件
-            file = self.target_repo.tree(ref) / path
-            # 目录或非文件对象直接返回提示
-            if hasattr(file, "type") and file.type != "blob":
-                return "The given path is not a file in this commit."
-        except:
-            return "This file doesn't exist in this commit."
-        content = file.data_stream.read().decode("utf-8", errors="ignore")
+        ref = self._resolve_target_ref(ref)
+        content = self._read_target_file_content(ref, path)
+        if content is None:
+            return "This file doesn't exist in this commit or target source directory."
         lines = content.split("\n")
         if not lines:
             return "This file is empty in this commit."
@@ -306,6 +324,29 @@ class Project:
             "\n".join(ret)
             + "\nBased on the previous information, think carefully do you see the target code? You may want to keep checking if you don't.\n"
         )
+
+    def _read_target_file_content(self, ref: str, path: str) -> str | None:
+        """
+        Read file content from target git tree first, then fallback to target source directory.
+        This fallback is needed when source files exist on disk but are ignored/untracked in git.
+        """
+        try:
+            file_obj = self.target_repo.tree(ref) / path
+            if hasattr(file_obj, "type") and file_obj.type != "blob":
+                return None
+            return file_obj.data_stream.read().decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+
+        try:
+            norm_path = os.path.normpath(path).lstrip(os.sep)
+            fs_path = os.path.join(self.target_dir, norm_path)
+            if os.path.isfile(fs_path):
+                with open(fs_path, "r", encoding="utf-8", errors="ignore") as f:
+                    return f.read()
+        except Exception:
+            pass
+        return None
 
     def _locate_symbol(self, ref: str, symbol: str) -> List[Tuple[str, int]] | None:
         """
@@ -504,31 +545,32 @@ class Project:
             Tuple[str, str]: Bug patch similar code block information and difference between patch context and original code context.
 
         """
-        path = re.findall(r"--- a/(.*)", revised_patch)[0]
+        patch_paths = re.findall(r"--- a/(.*)", revised_patch)
+        path = patch_paths[0] if patch_paths else ""
         revised_patch_line = revised_patch.split("\n")[3:]
         contexts, num_context, _, _ = utils.extract_context(revised_patch_line)
         lineno = -1
         lines = []
         min_distance = float("inf")
 
-        try:
-            ref = self._resolve_target_ref(ref)
-            # 在目标仓库中查找文件
-            file = self.target_repo.tree(ref) / path
-            content = file.data_stream.read().decode("utf-8", errors="ignore")
+        ref = self._resolve_target_ref(ref)
+        content = self._read_target_file_content(ref, path)
+        if content is not None:
             lines = content.split("\n")
             lineno, dist = utils.find_most_similar_block(
                 contexts, lines, num_context, False
             )
-        except:
+        else:
             # 在目标仓库目录中查找相似文件
-            similar_files = utils.find_most_similar_files(path.split("/")[-1], self.target_dir)
+            filename = path.split("/")[-1] if path else ""
+            similar_files = utils.find_most_similar_files(filename, self.target_dir)
             for similar_file in similar_files:
-                file = self.target_repo.tree(ref) / similar_file
-                content = file.data_stream.read().decode("utf-8", errors="ignore")
+                content = self._read_target_file_content(ref, similar_file)
+                if content is None:
+                    continue
                 similar_lines = content.split("\n")
                 current_line, current_dist = utils.find_most_similar_block(
-                    "\n".join(contexts), similar_lines, num_context, False
+                    contexts, similar_lines, num_context, False
                 )
 
                 if current_dist < min_distance:
@@ -537,8 +579,20 @@ class Project:
                     path = similar_file
                     lines = similar_lines
 
+        if not lines:
+            block = (
+                "I cannot locate the target file from git tree or target source directory. "
+                "Please check your patch path and try a nearby file path.\n"
+            )
+            differ = (
+                "Cannot generate context diff because source file content is unavailable.\n"
+            )
+            return block, differ
+
         startline = max(lineno - 1, 0)
-        endline = min(lineno + num_context, len(lines))
+        endline = min(max(lineno, 1) + num_context, len(lines))
+        if endline < startline:
+            endline = startline
         block = "Here are lines {} through {} of file {} for commit {}.\n".format(
             startline, endline, path, ref
         )
@@ -550,12 +604,20 @@ class Project:
         differ = "```context diff\n"
         contexts = contexts[: min(len(lines), len(contexts))]
         j = 0
+        base_index = lineno - 1
         for i, context in enumerate(revised_patch_line):
             if context.startswith(" ") or context.startswith("-"):
-                if context[1:] != lines[lineno - 1 + j]:
+                idx = base_index + j
+                if idx < 0 or idx >= len(lines):
                     differ += f"On the line {i + 4} of your patch.\n"
                     differ += f"          Your patch:{context[1:]}\n"
-                    differ += f"Original source code:{lines[lineno - 1 + j]}\n"
+                    differ += "Original source code:<out of range>\n"
+                    j += 1
+                    continue
+                if context[1:] != lines[idx]:
+                    differ += f"On the line {i + 4} of your patch.\n"
+                    differ += f"          Your patch:{context[1:]}\n"
+                    differ += f"Original source code:{lines[idx]}\n"
                 j += 1
 
         if differ == "```context diff\n":
@@ -692,7 +754,7 @@ class Project:
             except:
                 logger.debug("Can not find a symbol in given patch.")
                 file_paths = utils.find_most_similar_files(
-                    missing_file_path.split("/")[-1], self.dir
+                    missing_file_path.split("/")[-1], self.target_dir
                 )
 
         # try to apply patch to the target files

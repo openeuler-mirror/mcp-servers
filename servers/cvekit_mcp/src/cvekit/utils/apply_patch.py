@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import subprocess
+from difflib import SequenceMatcher
 
 from .gitee import setup_repository
 from .patch import getUrlText, ensure_patch_file
@@ -12,6 +13,17 @@ from .tools.project import safe_git_reset_hard
 from .branches import check_analyse_cache_result
 
 logger = logging.getLogger(__name__)
+
+
+def _patch_is_mbox_format(patch_path: str) -> bool:
+    """检测补丁文件是否为 git am 所需的 mbox 格式（首行为 'From ' 等邮件头）。"""
+    try:
+        with open(patch_path, "rb") as f:
+            first_line = f.readline().decode("utf-8", errors="ignore").strip()
+        return first_line.startswith("From ")
+    except Exception:
+        return False
+
 
 def config_git_signer(signer_name, signer_email, repo_path):
     subprocess.run(
@@ -279,6 +291,125 @@ def _parse_patch_headers_and_body(patch_content: str):
     body = "\n".join(lines[idx:]) if idx < len(lines) else ""
     return headers, body
 
+
+def _extract_patch_modified_files(patch_path: str):
+    """
+    从 patch 文本中提取“实际修改的文件名”列表（去重且保序）。
+    优先解析 `diff --git a/... b/...`，并用 `+++ b/...` 兜底。
+    """
+    files = []
+    seen = set()
+    try:
+        with open(patch_path, "r", encoding="utf-8", errors="ignore") as f:
+            for raw_line in f:
+                line = raw_line.rstrip("\n")
+                m = re.match(r"^diff --git a/(.+?) b/(.+)$", line)
+                if m:
+                    # 一般以 b/ 路径作为“补丁实际应用后的文件路径”
+                    candidate = m.group(2).strip()
+                    if candidate and candidate != "/dev/null" and candidate not in seen:
+                        seen.add(candidate)
+                        files.append(candidate)
+                    continue
+
+                m = re.match(r"^\+\+\+\s+b/(.+)$", line)
+                if m:
+                    candidate = m.group(1).strip()
+                    if candidate and candidate != "/dev/null" and candidate not in seen:
+                        seen.add(candidate)
+                        files.append(candidate)
+    except Exception as ex:
+        logger.warning(
+            "extract patch modified files failed, patch_path=%s, err=%s",
+            patch_path,
+            ex,
+        )
+    return files
+
+
+def _extract_patch_file_pairs(patch_path: str):
+    """
+    从 patch 中按顺序提取文件对 (a_path, b_path)。
+    主要用于在“原始补丁文件名”和“调整后补丁文件名”之间做位置映射。
+    """
+    pairs = []
+    try:
+        with open(patch_path, "r", encoding="utf-8", errors="ignore") as f:
+            for raw_line in f:
+                line = raw_line.rstrip("\n")
+                m = re.match(r"^diff --git a/(.+?) b/(.+)$", line)
+                if not m:
+                    continue
+                a_path = m.group(1).strip()
+                b_path = m.group(2).strip()
+                pairs.append((a_path, b_path))
+    except Exception as ex:
+        logger.warning(
+            "extract patch file pairs failed, patch_path=%s, err=%s",
+            patch_path,
+            ex,
+        )
+    return pairs
+
+
+def _map_original_conflict_to_adjusted_file(
+    conflict_file: str,
+    adjusted_file_pairs,
+    adjusted_modified_files,
+):
+    """
+    将原始补丁中的冲突文件，映射到“调整后补丁”中的实际修改文件。
+    映射策略（从严到宽）：
+    1) 精确路径命中（命中 adjusted 的 a_path/b_path）；
+    2) basename 唯一命中；
+    3) 路径相似度兜底（仅高相似度时采纳）。
+    """
+    if not conflict_file:
+        return None
+
+    conflict_file = conflict_file.strip()
+    if not conflict_file:
+        return None
+
+    # 1) 精确路径命中：若冲突路径正好出现在调整后补丁的 a/b 路径中，直接取对应 b 路径。
+    alias_to_target = {}
+    for adj_a, adj_b in adjusted_file_pairs:
+        if not adj_b or adj_b == "/dev/null":
+            continue
+        if adj_a and adj_a != "/dev/null":
+            alias_to_target[adj_a] = adj_b
+        alias_to_target[adj_b] = adj_b
+    exact = alias_to_target.get(conflict_file)
+    if exact:
+        return exact
+
+    # 2) basename 唯一命中
+    conflict_base = os.path.basename(conflict_file)
+    base_hits = [
+        p for p in adjusted_modified_files
+        if os.path.basename(p) == conflict_base
+    ]
+    if len(base_hits) == 1:
+        return base_hits[0]
+
+    # 3) 相似度兜底：避免误配，设置较高阈值
+    best_path = None
+    best_score = 0.0
+    for candidate in adjusted_modified_files:
+        full_ratio = SequenceMatcher(None, conflict_file, candidate).ratio()
+        base_ratio = SequenceMatcher(
+            None, conflict_base, os.path.basename(candidate)
+        ).ratio()
+        score = full_ratio * 0.7 + base_ratio * 0.3
+        if score > best_score:
+            best_score = score
+            best_path = candidate
+    if best_path and best_score >= 0.72:
+        return best_path
+
+    return None
+
+
 def get_patch(branch_commit, clone_dir):
     """
     获取指定 commit 的 patch 文件路径。
@@ -299,22 +430,28 @@ def get_patch(branch_commit, clone_dir):
     )
 
 
-def get_conflict_file_message(cve_id, repo, clone_dir, branch_commit):
-    patch_path = get_patch(branch_commit, clone_dir)
+def get_conflict_file_message(cve_id, repo, clone_dir, branch_commit, adjusted_patch_path=None):
+    # 原始补丁路径始终需要，用于 git apply --check 获取真实冲突信息。
+    original_patch_path = get_patch(branch_commit, clone_dir)
+    # 实际修改文件列表优先从“调整后的补丁”提取；未提供时回退原始补丁。
+    patch_for_modified_files = adjusted_patch_path or original_patch_path
+    patch_modified_files = _extract_patch_modified_files(patch_for_modified_files)
+    adjusted_file_pairs = _extract_patch_file_pairs(patch_for_modified_files)
     logger.info(
-        "get_conflict_file_message: start, cve_id=%s, branch_commit=%s, patch_path=%s",
+        "get_conflict_file_message: start, cve_id=%s, branch_commit=%s, original_patch=%s, modified_files_patch=%s",
         cve_id,
         branch_commit,
-        patch_path,
+        original_patch_path,
+        patch_for_modified_files,
     )
     conflict_message = ""
     try:
         logger.info(
             "get_conflict_file_message: 执行 git apply --check %s (repo=%s)",
-            patch_path,
+            original_patch_path,
             repo.working_dir,
         )
-        res = repo.git.apply("--check", patch_path)
+        res = repo.git.apply("--check", original_patch_path)
         logger.info(
             "get_conflict_file_message: git apply --check 无冲突，返回=%r",
             res,
@@ -325,28 +462,68 @@ def get_conflict_file_message(cve_id, repo, clone_dir, branch_commit):
             "get_conflict_file_message: git apply --check 失败，stderr 原文:\n%s",
             error_info,
         )
-        for line in e.stderr.split('\n'):
+        seen_files = set()
+
+        for raw_line in e.stderr.split('\n'):
+            line = raw_line
             logger.debug("get_conflict_file_message: 处理 stderr 行: %r", line)
             line = line.strip()
             if not line:
                 continue
-            res = re.match(r'error: (.*): patch does not apply', line)
-            if not res:
-                res = re.match(r'错误：(.*)：补丁未应用', line)
-            if not res:
+
+            # 兼容 GitPython stderr 的包装格式，例如:
+            # "stderr: 'error: drivers/net/can/usb/esd_usb.c: No such file or directory'"
+            normalized = line
+            if normalized.startswith("stderr:"):
+                normalized = normalized[len("stderr:"):].strip()
+            normalized = normalized.strip().strip("'").strip('"')
+
+            # 统一提取路径: 支持英文/中文报错、文件不存在、以及 GitPython 的 stderr 包装行。
+            # 这里用一组更宽松的模式，避免因引号或大小写差异漏掉冲突文件。
+            patterns = [
+                ("apply_conflict", r'error:\s+(.+?):\s+patch does not apply\b'),
+                ("apply_conflict", r'错误[:：]\s*(.+?)[:：]\s*补丁未应用\b'),
+                ("missing_file", r'error:\s+(.+?):\s+No such file or directory\b'),
+                ("missing_file", r'error:\s+(.+?):\s+没有那个文件或目录\b'),
+            ]
+
+            conflict_file = None
+            conflict_kind = None
+            for kind, pattern in patterns:
+                matched = re.search(pattern, normalized, flags=re.IGNORECASE)
+                if matched:
+                    conflict_file = matched.group(1).strip()
+                    conflict_kind = kind
+                    break
+
+            if not conflict_file:
                 logger.debug(
                     "get_conflict_file_message: 行未匹配到冲突文件模式，跳过: %r",
-                    line,
+                    normalized,
                 )
                 continue
             logger.info(
-                "get_conflict_file_message: 匹配到冲突文件: %s",
-                res.group(1),
+                "get_conflict_file_message: 匹配到冲突/问题文件: %s",
+                conflict_file,
             )
+            if conflict_file in seen_files:
+                continue
+            seen_files.add(conflict_file)
             if conflict_message:
-                conflict_message = f"{conflict_message}\n    {res.group(1)}"
+                conflict_message = f"{conflict_message}\n    {conflict_file}"
             else:
-                conflict_message = f"\nConflicts:\n     {res.group(1)}"
+                conflict_message = f"\nConflicts:\n     {conflict_file}"
+
+            # 文件不存在时，除了报错文件，还补充 patch 实际修改的文件名，便于定位路径差异问题。
+            if conflict_kind == "missing_file":
+                mapped_patch_file = _map_original_conflict_to_adjusted_file(
+                    conflict_file,
+                    adjusted_file_pairs,
+                    patch_modified_files,
+                )
+                if mapped_patch_file and mapped_patch_file not in seen_files:
+                    seen_files.add(mapped_patch_file)
+                    conflict_message = f"{conflict_message}\n    {mapped_patch_file}"
     if conflict_message:
         conflict_message = f"{conflict_message}\n[ Context conflict ]"
         logger.info(
@@ -485,25 +662,31 @@ def apply_patch(
             }
     logger.info("apply_patch: 预检查补丁冲突文件（git apply --check）...")
     try:
-        conflict_message = get_conflict_file_message(cve_id, repo, clone_dir, branch_commit)
+        conflict_message = get_conflict_file_message(
+            cve_id,
+            repo,
+            clone_dir,
+            branch_commit,
+            adjusted_patch_path=patch_path,
+        )
     except Exception as e:
         logger.warning(f"get conflict file message failed: {str(e)}")
         conflict_message = ""
 
     logger.info(f"apply_patch: 应用补丁文件，patch_path={patch_path}")
     try:
-        # 执行 git apply patch_path
-        if conflict_message:
+        # 有冲突说明时用 git apply；无冲突时仅当补丁为 mbox 格式才用 git am，否则用 git apply
+        use_apply = bool(conflict_message) or not _patch_is_mbox_format(patch_path)
+        if use_apply:
             repo.git.apply(patch_path)
             repo.git.add("--all")
             author = headers.get("From", f"{signer_name} <{signer_email}>")
             date = headers.get("Date")
+            msg = f"{commit_msg}{conflict_message}" if conflict_message else commit_msg
             if date:
-                repo.git.commit("-m", f"{commit_msg}{conflict_message}",
-                f"--author={author}", f"--date={date}", "-s")
+                repo.git.commit("-m", msg, f"--author={author}", f"--date={date}", "-s")
             else:
-                repo.git.commit("-m", f"{commit_msg}{conflict_message}",
-                f"--author={author}", "-s")
+                repo.git.commit("-m", msg, f"--author={author}", "-s")
         else:
             repo.git.am(patch_path)
             repo.git.add("-u")
