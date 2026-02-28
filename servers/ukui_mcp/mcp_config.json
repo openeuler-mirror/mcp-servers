@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "unpack_rpm_tar_mcp": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/opt/mcp-servers/servers/ukui_manager_mcp",
+        "run",
+        "src/server.py"
+      ],
+      "disabled": false,
+      "autoApprove": [],
+      "alwaysAllow": [
+        "get_active_window",
+        "get_recent_documents",
+        "set_ukui_wallpaper"
+      ]
+    }
+  }
+}
