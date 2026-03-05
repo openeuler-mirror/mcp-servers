@@ -28,6 +28,7 @@ servers/cvekit_mcp/src/openEuler.repo
 servers/cvekit_mcp/src/_downloads/
 servers/cvekit_mcp/src/public-inbox/
 servers/cvekit_mcp/src/rpmbuild/
+servers/cvekit_mcp/src/cvekit/utils/package/run.py
 # Claude
 .claude
 CLAUDE.md
