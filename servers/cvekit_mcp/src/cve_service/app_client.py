@@ -28,7 +28,7 @@ def parse_args():
     parser.add_argument(
         "--action",
         default="branches-analysis",
-        choices=["branches-analysis", "patch-apply-pr-creation", "pipeline"],
+        choices=["branches-analysis", "patch-apply-pr-creation", "pipeline", "package-pipeline"],
         help="操作类型（默认：branches-analysis）"
     )
     parser.add_argument(
@@ -50,6 +50,16 @@ def parse_args():
         "--clone-dir",
         type=str,
         default=""
+    )
+    parser.add_argument(
+        "--package-name",
+        type=str,
+        help="软件包名称"
+    )
+    parser.add_argument(
+        "--branch",
+        type=str,
+        help="软件包分支"
     )
     return parser.parse_args()
 
@@ -148,7 +158,6 @@ async def main() -> None:
             "cve_id": args.cve_id
         }
 
-        
         if args.action == "patch-apply-pr-creation":
             message_text_dict["branches"] = args.branches
             message_text_dict["signer_name"] = args.signer_name
@@ -159,7 +168,9 @@ async def main() -> None:
             message_text_dict["signer_email"] = args.signer_email
             if args.clone_dir:
                 message_text_dict["clone_dir"] = args.clone_dir
-
+        if args.action == "package-pipeline":
+            message_text_dict["package_name"] = args.package_name
+            message_text_dict["branch"] = args.branch
 
         send_message_payload: dict[str, Any] = {
             'message': {
@@ -177,7 +188,7 @@ async def main() -> None:
         )
         async for chunk in client.send_message_streaming(streaming_request):
             chunk_dict = chunk.model_dump(mode='json', exclude_none=True)
-            logging.info(json.dumps(chunk_dict["result"]))
+            logging.info(json.dumps(chunk_dict["result"], ensure_ascii=False))
 
 
 if __name__ == '__main__':

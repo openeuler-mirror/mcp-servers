@@ -18,8 +18,8 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-SRC_DIR = Path(__file__).parent.parent.absolute()
-ENV_PATH = SRC_DIR / '.env'
+SRC_DIR = Path(__file__).parent.parent.parent.absolute()
+ENV_PATH = SRC_DIR / "cve_service"/ '.env'
 
 # 加载环境变量（override=True 确保覆盖系统环境变量）
 load_dotenv(ENV_PATH, override=True)

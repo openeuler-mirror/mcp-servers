@@ -4,6 +4,7 @@ import subprocess
 import re
 import json
 import os
+import glob
 
 from .patch import getUrlText
 from .commits import get_vulnerability_commits
@@ -117,15 +118,43 @@ def create_pr(
     base_org_name = parts[-2]
     base_repo_name = parts[-1].replace('.git', '')
     title = f"Fix {cve_id}"
-    body = generate_pr_body(cve_id, issue_url, clone_dir)
+    body = generate_pr_body(cve_id, issue_url, clone_dir) if base_org_name == "kernel" else title
     issue_num = os.path.basename(issue_url)
     fix_branch = f"fix-{branch}-{issue_num}"
 
-
-    repo_path = os.path.join(clone_dir, "kernel")
+    repo_path = os.path.join(clone_dir, base_repo_name)
     repo = git.Repo(repo_path)
     temp_remote_name = fix_branch
+
     try:
+        if not repo.git.branch("--list", fix_branch).strip():
+            try:
+                repo.git.checkout(branch)
+            except Exception:
+                repo.git.checkout("-b", branch, f"origin/{branch}")
+            repo.git.checkout("-b", fix_branch)
+
+            specs = [
+                *glob.glob(os.path.join(repo_path, "*.spec")),
+                *glob.glob(os.path.join(repo_path, "SPECS", "*.spec")),
+            ]
+            patches = [
+                *glob.glob(os.path.join(repo_path, "*.patch")),
+                *glob.glob(os.path.join(repo_path, "SOURCES", "*.patch")),
+            ]
+
+            if specs:
+                repo.index.add([os.path.relpath(p, repo_path) for p in specs])
+            else:
+                logger.info("No .spec files found under %s", repo_path)
+            if patches:
+                repo.index.add([os.path.relpath(p, repo_path) for p in patches])
+            else:
+                logger.info("No .patch files found under %s", repo_path)
+
+            if repo.is_dirty(index=True, working_tree=True, untracked_files=True):
+                repo.index.commit(f"Fix {cve_id}")
+
         fork_repo_with_token = fork_repo_url.replace(
             "https://", 
             f"https://oauth2:{gitee_token}@"

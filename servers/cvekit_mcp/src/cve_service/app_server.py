@@ -1,19 +1,27 @@
 import os
+import sys
 import json
 import asyncio
 from typing import Dict, Optional
-from dotenv import load_dotenv
 import logging
-from threading import Lock 
+from threading import Lock
 
+# 添加 cvekit 模块路径
+cvekit_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, cvekit_path)
+
+from cvekit.utils.env_loader import (
+    get_gitee_token,
+    get_api_key,
+    get_llm_provider,
+    get_rpmbuild_path,
+)
 from camel.models import ModelFactory
 from camel.types import ModelPlatformType
 from camel.configs import SiliconFlowConfig, ChatGPTConfig
 from camel.agents import CallbackMCPAgent
 
-from a2a.types import (
-    AgentSkill, AgentCard, AgentCapabilities, TextPart, TaskState
-)
+from a2a.types import AgentSkill, AgentCard, AgentCapabilities, TextPart, TaskState
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater, InMemoryTaskStore
@@ -21,8 +29,6 @@ from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.utils import new_task
 from typing_extensions import override
-
-
 
 SYS_MSG = """
 You are a helpful assistant, and you prefer to use tools provided by the user 
@@ -47,39 +53,45 @@ Otherwise, you should respond to the user directly.
 def validate_request(data: Dict) -> Optional[str]:
     """验证请求参数"""
     action = data.get("action")
-    if not action or action not in ["branches-analysis", "patch-apply-pr-creation","pipeline"]:
-        return "action 参数必须是 'branches-analysis'、'patch-apply-pr-creation'、'pipeline'"
+    if not action or action not in [
+        "branches-analysis",
+        "patch-apply-pr-creation",
+        "pipeline",
+        "package-pipeline",
+    ]:
+        return "action 参数必须是 'branches-analysis'、'patch-apply-pr-creation'、'pipeline'、'package-pipeline'"
 
     if not data.get("cve_id"):
         return "cve_id 参数缺失"
 
-    if action == "patch-apply-pr-creation" and not (data.get("branches") and data.get("signer_name") and data.get("signer_email")):
+    if action == "patch-apply-pr-creation" and not (
+        data.get("branches") and data.get("signer_name") and data.get("signer_email")
+    ):
         return "patch-apply-pr-creation 操作必须提供 branches, signer-name, signer-email 参数"
-    if action == "pipeline" and not (data.get("branches") and data.get("signer_name") and data.get("signer_email")):
+    if action == "pipeline" and not (
+        data.get("branches") and data.get("signer_name") and data.get("signer_email")
+    ):
         return "pipeline 操作必须提供 branches, signer-name, signer-email 参数"
-
+    if action == "package-pipeline" and not (
+        data.get("package_name") and data.get("branch")
+    ):
+        return "package-pipeline 操作必须提供 package_name, branch 参数"
     return None
 
 
 def build_config_from_request(data: Dict) -> Dict:
     """从请求构建配置"""
-    
+
     # 获取 gitee token,不提供默认值
-    gitee_token = os.getenv("GITEE_TOKEN") or data.get("gitee_token")
+    gitee_token = data.get("gitee_token") or get_gitee_token()
     if not gitee_token:
         raise ValueError("必须提供 GITEE_TOKEN(环境变量或请求参数)")
 
     # 统一使用 api_key / llm_provider 命名，并做约束：
     # - 当 LLM_PROVIDER != local 时，必须提供 api_key；
     # - 当 LLM_PROVIDER == local 时，允许不提供 api_key（支持本地免鉴权模型）。
-    api_key = (
-        data.get("api_key")
-        or data.get("openai_key")
-        or os.getenv("API_KEY")
-        or os.getenv("OPENAI_KEY")
-        or os.getenv("SILICONFLOW_API_KEY")
-    )
-    llm_provider = data.get("llm_provider") or os.getenv("LLM_PROVIDER") or "openai"
+    api_key = data.get("api_key") or data.get("openai_key") or get_api_key()
+    llm_provider = data.get("llm_provider") or get_llm_provider() or "openai"
     provider_lower = str(llm_provider).strip().lower()
 
     if not api_key and provider_lower != "local":
@@ -109,6 +121,8 @@ def build_config_from_request(data: Dict) -> Dict:
         or os.getenv("DEFAULT_TARGET_REPO")
     )
 
+    rpmbuild_path = get_rpmbuild_path() or os.path.expanduser("~/rpmbuild")
+
     return {
         "fork_repo_url": data.get("fork_repo", os.getenv("DEFAULT_FORK_REPO")),
         "repo_url": repo_url,
@@ -119,20 +133,28 @@ def build_config_from_request(data: Dict) -> Dict:
         "branches": data.get("branches"),
         "api_key": api_key,
         "llm_provider": llm_provider,
+        "rpmbuild_path": rpmbuild_path,
     }
+
 
 def build_agent_message(action: str, data: Dict, config: Dict) -> str:
     """构建发送给 agent 的消息（优化后更易被 agent 解析）"""
     # 关键配置信息（JSON格式化，便于解析）
-    base_config = json.dumps({
-        "fork_repo_url": config["fork_repo_url"],
-        "repo_url": config["repo_url"],
-        "clone_dir": config["clone_dir"],
-        "gitee_token": config["gitee_token"],
-        "llm_provider": config["llm_provider"],
-        "api_key": config["api_key"],
-        "signer": {"name": data.get("signer_name"), "email":data.get("signer_email")}
-    }, ensure_ascii=False)
+    base_config = json.dumps(
+        {
+            "fork_repo_url": config["fork_repo_url"],
+            "repo_url": config["repo_url"],
+            "clone_dir": config["clone_dir"],
+            "gitee_token": config["gitee_token"],
+            "llm_provider": config["llm_provider"],
+            "api_key": config["api_key"],
+            "signer": {
+                "name": data.get("signer_name"),
+                "email": data.get("signer_email"),
+            },
+        },
+        ensure_ascii=False,
+    )
 
     if action == "branches-analysis":
         return (
@@ -162,6 +184,14 @@ def build_agent_message(action: str, data: Dict, config: Dict) -> str:
             f"【注意】补丁应用（apply-patch）与PR创建（create-pr）仅针对目标分支列表 {data.get('branches')}；\n"
             f"【注意】所有步骤自动串联执行，直至PR创建完成，无需中途等待用户确认。"
         )
+    elif action == "package-pipeline":
+        return (
+            f"【任务】软件包CVE修复流程\n"
+            f"【核心指令】1. 分析CVE补丁；2. 分析当前分支受CVE补丁影响；3. 应用CVE补丁；4. 创建PR\n"
+            f"【参数】CVE_ID: {data.get('cve_id')}, 软件包名称: {data.get('package_name')}, 目标分支: {data.get('branch')}, rpm构建路径: {config['rpmbuild_path']} \n"
+            f"【基础配置】{base_config}\n"
+            f"【注意】请依次执行软件包CVE修复流程的所有步骤，直至pr创建完毕\n"
+        )
 
 
 async def create_mcp_agent(
@@ -179,8 +209,6 @@ async def create_mcp_agent(
       传入 ModelFactory.create，避免强依赖特定环境变量名。
     """
     try:
-        load_dotenv()
-
         # 确定 MCP 配置文件路径：
         # 1. 优先使用调用方传入的 local_config（通常来自 DEFAULT_LOCAL_CONFIG 环境变量）
         # 2. 然后尝试环境变量 DEFAULT_LOCAL_CONFIG
@@ -191,7 +219,9 @@ async def create_mcp_agent(
             or os.path.join(os.path.dirname(__file__), "mcp_settings.json")
         )
 
-        provider_lower = (llm_provider or os.getenv("LLM_PROVIDER") or "siliconflow").strip().lower()
+        provider_lower = (
+            (llm_provider or get_llm_provider() or "siliconflow").strip().lower()
+        )
 
         # 统一模型名称：
         # - 优先使用调用方显式传入的 model_type；
@@ -203,16 +233,15 @@ async def create_mcp_agent(
             or (
                 "deepseek-ai/DeepSeek-V3"
                 if provider_lower == "siliconflow"
-                else ("MiniMax-M2.1" if provider_lower in ("minimax", "minimaxi") else "gpt-4o-mini")
+                else (
+                    "MiniMax-M2.1"
+                    if provider_lower in ("minimax", "minimaxi")
+                    else "gpt-4o-mini"
+                )
             )
         )
 
-        effective_api_key = (
-            api_key
-            or os.getenv("SILICONFLOW_API_KEY")
-            or os.getenv("API_KEY")
-            or os.getenv("OPENAI_KEY")
-        )
+        effective_api_key = api_key or get_api_key()
 
         # 对于远程模型必须提供 API Key（local 可不提供）
         if provider_lower != "local" and not effective_api_key:
@@ -230,7 +259,9 @@ async def create_mcp_agent(
             ).as_dict()
         elif provider_lower in ("minimax", "minimaxi", "openai", "local"):
             if not hasattr(ModelPlatformType, "OPENAI"):
-                raise RuntimeError("当前 Camel 版本不支持 OpenAI 平台，请升级 Camel 或调整配置。")
+                raise RuntimeError(
+                    "当前 Camel 版本不支持 OpenAI 平台，请升级 Camel 或调整配置。"
+                )
             model_platform = ModelPlatformType.OPENAI
             base_url = (
                 os.getenv("BASE_URL")
@@ -239,9 +270,7 @@ async def create_mcp_agent(
             )
             if provider_lower in ("minimax", "minimaxi") and not base_url:
                 base_url = "https://api.minimaxi.com/v1"
-            model_config_dict = ChatGPTConfig(
-                temperature=0.2, stream=False
-            ).as_dict()
+            model_config_dict = ChatGPTConfig(temperature=0.2, stream=False).as_dict()
             model_url = base_url
         else:
             raise RuntimeError(f"不支持的 LLM_PROVIDER: {provider_lower}")
@@ -266,7 +295,8 @@ async def create_mcp_agent(
 
 class CVEAgentExecutor(AgentExecutor):
     def __init__(self):
-        load_dotenv()
+        pass
+
     async def execute(
         self,
         context: RequestContext,
@@ -287,20 +317,22 @@ class CVEAgentExecutor(AgentExecutor):
                 await updater.update_status(
                     state=TaskState.failed,
                     message=updater.new_agent_message(
-                        parts=[TextPart(
-                            text=error_msg,
-                            metadata={"phase":"failed"})]))
+                        parts=[TextPart(text=error_msg, metadata={"phase": "failed"})]
+                    ),
+                )
                 return
             print(task_params)
-            
+
             validate_msg = validate_request(task_params)
             if validate_msg:
                 await updater.update_status(
                     state=TaskState.failed,
                     message=updater.new_agent_message(
-                        parts=[TextPart(
-                            text=validate_msg,
-                            metadata={"phase":"failed"})]))
+                        parts=[
+                            TextPart(text=validate_msg, metadata={"phase": "failed"})
+                        ]
+                    ),
+                )
                 return
 
             try:
@@ -309,8 +341,9 @@ class CVEAgentExecutor(AgentExecutor):
                 await updater.update_status(
                     state=TaskState.failed,
                     message=updater.new_agent_message(
-                        parts=[TextPart(text=str(e),
-                                        metadata={"phase":"failed"})]))
+                        parts=[TextPart(text=str(e), metadata={"phase": "failed"})]
+                    ),
+                )
                 return
 
             action = task_params.get("action")
@@ -329,17 +362,21 @@ class CVEAgentExecutor(AgentExecutor):
 
             async def agent_run():
                 return await local_agent.astep(agent_message)
-            timeout = int(os.getenv("TIMEOUT", 300)) 
+
+            timeout = int(os.getenv("TIMEOUT", 300))
             try:
-                response = await asyncio.wait_for(agent_run(), timeout=timeout) 
+                response = await asyncio.wait_for(agent_run(), timeout=timeout)
             except asyncio.TimeoutError:
-                error_msg = f"Task {task.id} execution timeout (exceeded {timeout/60} minutes)"
+                error_msg = (
+                    f"Task {task.id} execution timeout (exceeded {timeout/60} minutes)"
+                )
                 logging.error(error_msg)
                 await updater.update_status(
                     state=TaskState.failed,
                     message=updater.new_agent_message(
-                        parts=[TextPart(text=error_msg,
-                                        metadata={"phase":"failed"})]))
+                        parts=[TextPart(text=error_msg, metadata={"phase": "failed"})]
+                    ),
+                )
                 return
 
             result = str(response) if response else "无返回结果"
@@ -356,34 +393,33 @@ class CVEAgentExecutor(AgentExecutor):
             error_msg = f"【任务 {task.id if 'task' in locals() else '未知'}】处理请求时出错: {str(e)}"
             print(error_msg)
             import traceback
+
             traceback.print_exc()
-            
+
             await updater.update_status(
                 state=TaskState.failed,
                 message=updater.new_agent_message(
-                    parts=[TextPart(text=error_msg,
-                                    metadata={"phase":"failed"})]))
+                    parts=[TextPart(text=error_msg, metadata={"phase": "failed"})]
+                ),
+            )
         finally:
             if local_agent:
                 try:
                     await local_agent.disconnect()
                 except Exception as e:
-                    print(f"【任务 {task.id if 'task' in locals() else '未知'}】断开 agent 连接时出错: {e}")
+                    print(
+                        f"【任务 {task.id if 'task' in locals() else '未知'}】断开 agent 连接时出错: {e}"
+                    )
 
     @override
-    async def cancel(
-        self,
-        context: RequestContext,
-        event_queue: EventQueue
-    ) -> None:
+    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         """取消任务"""
         task_updater = TaskUpdater(
             event_queue=event_queue,
             task_id=context.task_id,
-            context_id=context.context_id
+            context_id=context.context_id,
         )
-        
-        
+
         try:
             await task_updater.cancel()
             logging.info(f"任务 {context.task_id} 已取消")
@@ -392,10 +428,14 @@ class CVEAgentExecutor(AgentExecutor):
                 state=TaskState.failed,
                 message=task_updater.new_agent_message(
                     parts=[TextPart(text=f"取消任务 {context.task_id} 失败: {str(e)}")],
-                    metadata={"phase":"failed"}))
+                    metadata={"phase": "failed"},
+                ),
+            )
+
 
 class ConcurrentSafeInMemoryTaskStore(InMemoryTaskStore):
     """并发安全的内存任务存储（添加锁保护）"""
+
     def __init__(self):
         super().__init__()
         self._lock = Lock()  # 线程锁，保护读写操作
@@ -411,7 +451,8 @@ class ConcurrentSafeInMemoryTaskStore(InMemoryTaskStore):
     def update_task(self, task):
         with self._lock:  # 更新操作加锁
             return super().update_task(task)
-        
+
+
 # 定义技能
 skills = [
     AgentSkill(
@@ -421,29 +462,39 @@ skills = [
         tags=["cve", "branches", "analysis"],
         examples=[
             "分析 CVE-2023-0001 在各分支的影响",
-            '{"action": "branches-analysis", "cve_id": "CVE-2023-0001"}'
-        ]
+            '{"action": "branches-analysis", "cve_id": "CVE-2023-0001"}',
+        ],
     ),
     AgentSkill(
         id="cve_patch_apply_pr_creation",
         name="CVE补丁应用与PR创建",
         description="为已修复的 CVE 漏洞创建 PR 提交到目标仓库",
-        tags=["cve","patch","apply", "pr", "creation"],
+        tags=["cve", "patch", "apply", "pr", "creation"],
         examples=[
             "为 CVE-2023-0001 创建 PR",
-            '{"action": "pr-creation", "cve_id": "CVE-2023-0001", "branches": "OLK-6.6"}'
-        ]
+            '{"action": "pr-creation", "cve_id": "CVE-2023-0001", "branches": "OLK-6.6"}',
+        ],
     ),
     AgentSkill(
         id="cve_pipeline",
         name="CVE修复全流程",
-        description="为已修复的 CVE 漏洞创建 PR 提交到目标仓库",
-        tags=["cve","pipeline"],
+        description="为 内核CVE 漏洞分析、修复和 PR 创建执行全流程",
+        tags=["cve", "pipeline"],
         examples=[
             "为 CVE-2023-0001 创建 PR",
-            '{"action": "pipeline", "cve_id": "CVE-2023-0001"}'
-        ]
-    )
+            '{"action": "pipeline", "cve_id": "CVE-2023-0001"}',
+        ],
+    ),
+    AgentSkill(
+        id="cve_pipeline_package",
+        name="软件包CVE漏洞修复流程",
+        description="为 软件包CVE 漏洞分析、修复和 PR 创建执行全流程",
+        tags=["cve", "package", "pipeline"],
+        examples=[
+            "为 CVE-2023-0001 创建 PR",
+            '{"action": "package-pipeline", "cve_id": "CVE-2023-0001", "package_name": "kernel", "branch": "OLK-6.6"}',
+        ],
+    ),
 ]
 
 # 创建 agent card
@@ -460,16 +511,16 @@ agent_card = AgentCard(
 
 request_handler = DefaultRequestHandler(
     agent_executor=CVEAgentExecutor(),
-    task_store=ConcurrentSafeInMemoryTaskStore(),)
+    task_store=ConcurrentSafeInMemoryTaskStore(),
+)
 
-app = A2AStarletteApplication(
-    agent_card=agent_card,
-    http_handler=request_handler)
+app = A2AStarletteApplication(agent_card=agent_card, http_handler=request_handler)
 
 
 starlette_app = app.build()
 
 if __name__ == "__main__":
     import uvicorn
+
     port = int(os.getenv("PORT", 9991))
     uvicorn.run(starlette_app, host="0.0.0.0", port=port, log_level="debug", workers=1)
