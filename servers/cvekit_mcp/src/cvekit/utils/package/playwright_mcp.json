@@ -1,0 +1,18 @@
+{
+    "mcpServers": {
+        "playwright": {
+            "command": "npx",
+            "args": [
+                "@playwright/mcp@latest"
+            ],
+            "alwaysAllow": [
+                "browser_install",
+                "browser_navigate",
+                "browser_click"
+            ],
+            "disabled": false,
+            "description": "Playwright浏览器控制服务",
+            "timeout": 1200
+        }
+    }
+}
