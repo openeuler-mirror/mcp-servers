@@ -412,6 +412,24 @@ def do_backport(
     logger.debug(f"  - llm={llm} (类型: {type(llm)})")
     logger.debug(f"  - logfile={logfile}")
 
+    def _enforce_complete_patch_check_or_raise() -> None:
+        """
+        Success criteria is the full patch bundle must pass `git apply --check`.
+        """
+        patch_to_check = project.validated_patch or project.rebuild_complete_patch()
+        has_valid_diff_header = (
+            any(marker in patch_to_check for marker in ("diff --git ", "\n--- ", "\n+++ ", "\n@@ "))
+            or patch_to_check.startswith(("diff --git ", "--- ", "+++ ", "@@ "))
+        )
+        if not patch_to_check.strip() or not has_valid_diff_header:
+            if getattr(project, "equivalent_exists", False):
+                logger.info(
+                    "[do_backport] 最终结果为等效存在（need not ported），跳过 git apply --check"
+                )
+                return
+            raise RuntimeError("empty or non-diff complete patch is not allowed as success")
+        project._check_patch(patch_to_check, data.target_release)
+
     # 创建文件回调处理器
     logger.debug(f"[do_backport] 创建文件回调处理器: logfile={logfile}")
     log_handler = FileCallbackHandler(logfile)
@@ -438,105 +456,172 @@ def do_backport(
     else:
         logger.debug("[do_backport] skip_cherry_pick=True，跳过 cherry-pick 直回流程")
 
+    frozen_file_patches = []
     if skip_cherry_pick or not (cherry_pick_ok and cherry_pick_patch):
-        # 分割补丁为多个 hunk
-        logger.debug("[do_backport] 分割补丁为多个 hunk...")
-        pps_generator = split_patch(patch, True)
-        logger.debug(f"[do_backport] split_patch 返回类型: {type(pps_generator)}")
-        # 将生成器转换为列表，以便可以多次迭代和使用 len()
-        pps = list(pps_generator)
-        logger.debug(f"[do_backport] 补丁分割完成:")
-        logger.debug(f"  - hunk 数量: {len(pps)}")
+        # 分割补丁为多个 hunk，并按文件合并，确保单文件内多 hunk 组合验证
+        logger.debug("[do_backport] 分割补丁并按文件聚合...")
+        pps = list(split_patch(patch, True))
+        logger.debug(f"[do_backport] hunk 数量: {len(pps)}")
 
-        # 逐个处理每个 hunk
+        def _normalize_diff_chunk(pp: str) -> str:
+            """
+            Trim non-diff metadata (commit/author/message) and keep only unified
+            diff content starting from `--- a/...` or `--- /dev/null`.
+            """
+            if not pp:
+                return ""
+            lines = pp.splitlines()
+            start_idx = -1
+            for i, line in enumerate(lines):
+                if line.startswith("--- a/") or line.startswith("--- /dev/null"):
+                    start_idx = i
+                    break
+            if start_idx < 0:
+                return ""
+            normalized = "\n".join(lines[start_idx:])
+            if normalized and not normalized.endswith("\n"):
+                normalized += "\n"
+            return normalized
+
+        def _file_key(pp: str) -> str:
+            normalized = _normalize_diff_chunk(pp)
+            old_match = re.search(r"^--- a/(.+)$", normalized, re.MULTILINE)
+            if old_match:
+                return old_match.group(1)
+            new_match = re.search(r"^\+\+\+ b/(.+)$", normalized, re.MULTILINE)
+            if new_match:
+                return new_match.group(1)
+            return "__unknown__"
+
+        grouped_files = []
+        grouped_index = {}
+        for pp in pps:
+            key = _file_key(pp)
+            if key == "__unknown__":
+                logger.warning("[do_backport] 跳过无法解析文件路径的 patch chunk")
+                continue
+            if key not in grouped_index:
+                grouped_index[key] = len(grouped_files)
+                grouped_files.append([key, []])
+            grouped_files[grouped_index[key]][1].append(_normalize_diff_chunk(pp))
+
+        file_patches = []
+        for key, hunks in grouped_files:
+            header_a = ""
+            header_b = ""
+            hunk_bodies = []
+            header_written = False
+            for hunk in hunks:
+                h_lines = hunk.splitlines()
+                if not h_lines:
+                    continue
+                if not header_written:
+                    if len(h_lines) < 3:
+                        continue
+                    header_a = h_lines[0]
+                    header_b = h_lines[1]
+                    header_written = True
+                # 仅拼接 hunk 体（从第一个 @@ 开始），避免重复/污染文件头
+                hunk_start = -1
+                for idx, line in enumerate(h_lines):
+                    if line.startswith("@@"):
+                        hunk_start = idx
+                        break
+                if hunk_start >= 0:
+                    hunk_bodies.append("\n".join(h_lines[hunk_start:]))
+            if header_written and hunk_bodies:
+                file_patch = f"{header_a}\n{header_b}\n" + "\n".join(hunk_bodies) + "\n"
+                file_patches.append((key, file_patch))
+
+        logger.debug(f"[do_backport] 文件块数量: {len(file_patches)}")
+
+        # 文件级处理：一个文件通过后冻结，不再重复验证
         logger.debug("=" * 80)
-        logger.debug("[do_backport] 开始逐个处理 hunk")
+        logger.debug("[do_backport] 开始逐个处理文件补丁（文件级冻结）")
         logger.debug("=" * 80)
-        for idx, pp in enumerate(pps):
+        for file_idx, (file_key, file_patch) in enumerate(file_patches):
             logger.debug("-" * 80)
-            logger.debug(f"[do_backport] 处理 hunk {idx}/{len(pps)-1}")
+            logger.debug(
+                f"[do_backport] 处理文件补丁 {file_idx}/{len(file_patches)-1}: {file_key}"
+            )
             logger.debug("-" * 80)
-            logger.debug(f"  - hunk 内容: {pp}")
-            
-            # 重置状态
+
             project.round_succeeded = False
             project.context_mismatch_times = 0
-            logger.debug(f"[do_backport] 重置状态: round_succeeded={project.round_succeeded}, context_mismatch_times={project.context_mismatch_times}")
+            project.set_succeeded_patches(frozen_file_patches)
 
-            # 尝试应用 hunk
-            logger.debug(f"[do_backport] 尝试应用 hunk {idx} 到 target_release={data.target_release}")
-            ret = project._apply_hunk(data.target_release, pp, False)
-            logger.debug(f"[do_backport] hunk 应用结果: ret 长度={len(ret)} 字符")
-            logger.debug(f"[do_backport] hunk 应用结果内容: {ret}")
-            logger.debug(f"[do_backport] round_succeeded={project.round_succeeded}")
-            
-            if project.round_succeeded:
-                logger.debug(f"[do_backport] Hunk {idx} 可以无冲突地应用，跳过")
-                continue
-            else:
-                # 使用正则表达式提取相似代码块
-                logger.debug(f"[do_backport] Hunk {idx} 无法直接应用，使用 LLM 生成修复")
-                logger.debug(f"[do_backport] 从应用结果中提取相似代码块...")
+            ret = project._apply_hunk(data.target_release, file_patch, False)
+            logger.debug(f"[do_backport] 文件补丁应用结果长度: {len(ret)}")
+
+            if not project.round_succeeded:
+                logger.debug(
+                    f"[do_backport] 文件补丁 {file_key} 无法直接应用，调用 LLM 修复"
+                )
                 block_list = re.findall(r"older version.\n(.*?)\nBesides,", ret, re.DOTALL)
-                logger.debug(f"[do_backport] 找到相似代码块数量: {len(block_list)}")
-                for i, block in enumerate(block_list):
-                    logger.debug(f"  - 代码块 {i} 长度: {len(block)} 字符")
-                    logger.debug(f"  - 代码块 {i} 内容: {block[:200]}..." if len(block) > 200 else f"  - 代码块 {i} 内容: {block}")
-                
                 similar_block = "\n".join(block_list)
-                logger.debug(f"[do_backport] 合并后的相似代码块长度: {len(similar_block)} 字符")
-                logger.debug(f"[do_backport] 相似代码块内容: {similar_block[:300]}..." if len(similar_block) > 300 else f"[do_backport] 相似代码块内容: {similar_block}")
 
-                # 设置当前处理的 hunk
-                project.now_hunk = pp
-                project.now_hunk_num = idx
-                logger.debug(f"[do_backport] 设置当前 hunk: now_hunk_num={project.now_hunk_num}")
-                logger.debug(f"[do_backport] 当前 hunk 内容: {project.now_hunk[:200]}..." if len(project.now_hunk) > 200 else f"[do_backport] 当前 hunk 内容: {project.now_hunk}")
-
-                # 调用 LLM 代理生成修复
-                logger.debug("[do_backport] 调用 LLM 代理生成修复...")
+                project.now_hunk = file_patch
+                project.now_hunk_num = file_idx
                 invoke_input = {
                     "project_url": data.project_url,
                     "new_patch_parent": data.new_patch_parent,
-                    "new_patch": pp,
+                    "new_patch": file_patch,
                     "target_release": data.target_release,
                     "similar_block": similar_block,
                 }
-                
-                logger.debug("[do_backport] 执行 agent_executor.invoke()...")
                 agent_executor.invoke(
                     invoke_input,
                     {"callbacks": [log_handler]},
                 )
-                logger.debug(f"[do_backport] agent_executor.invoke() 执行完成")
-                logger.debug(f"[do_backport] round_succeeded={project.round_succeeded}")
-                logger.debug(f"[do_backport] context_mismatch_times={project.context_mismatch_times}")
-                
-                if not project.round_succeeded:
-                    logger.debug(
-                        f"[do_backport] 回移植 hunk {idx} 失败\n----------------------------------\n{pp}\n----------------------------------\n"
-                    )
-                    logger.error(f"[do_backport] Hunk {idx} 达到最大迭代次数")
-                    logger.debug("[do_backport] 提前返回，停止处理后续 hunk")
-                    return
 
-        # 所有 hunk 应用成功
-        logger.debug("=" * 80)
-        logger.debug("[do_backport] 所有 hunk 处理完成")
-        logger.debug("=" * 80)
+            if not project.round_succeeded:
+                logger.error(f"[do_backport] 文件补丁 {file_key} 达到最大迭代次数")
+                return
+
+            # 当前文件通过，冻结“修正后的成功版本”，而不是原始输入版本
+            frozen_patch = project.build_succeeded_patch_for_file(file_key)
+            if not frozen_patch:
+                logger.warning(
+                    f"[do_backport] 未能从成功结果提取文件补丁，回退使用输入版本: {file_key}"
+                )
+                frozen_patch = file_patch
+            frozen_file_patches.append(frozen_patch)
+            project.set_succeeded_patches(frozen_file_patches)
+            logger.debug(
+                f"[do_backport] 文件补丁已冻结: {file_key}, 当前冻结数={len(frozen_file_patches)}"
+            )
+
+        # 末尾只做全量检查；若失败仅回滚最后新增文件（栈式）
+        while frozen_file_patches:
+            candidate_patch = "\n".join(frozen_file_patches)
+            try:
+                project._check_patch(candidate_patch, data.target_release)
+                complete_patch = candidate_patch
+                break
+            except Exception as e:
+                removed = frozen_file_patches.pop()
+                logger.warning(
+                    "[do_backport] 全量 git apply --check 失败，仅回滚最后新增文件补丁。"
+                    f"剩余冻结数={len(frozen_file_patches)}; error={e}"
+                )
+                logger.debug(
+                    f"[do_backport] 已回滚补丁长度: {len(removed)}"
+                )
+
+        if not frozen_file_patches:
+            project.set_succeeded_patches([])
+            project.validated_patch = ""
+            logger.error("[do_backport] 全量检查后无可用冻结补丁，终止")
+            return
+
+        project.set_succeeded_patches(frozen_file_patches)
         project.all_hunks_applied_succeeded = True
-        logger.info(f"[do_backport] 应用补丁中的所有 hunk 成功")
-        logger.debug(f"[do_backport] all_hunks_applied_succeeded={project.all_hunks_applied_succeeded}")
-        
         project.now_hunk = "completed"
-        logger.debug(f"[do_backport] now_hunk={project.now_hunk}")
-        
-        # 合并所有成功的补丁
-        complete_patch = "\n".join(project.succeeded_patches)
-        logger.debug(f"[do_backport] 合并后的完整补丁:")
-        logger.debug(f"  - succeeded_patches 数量: {len(project.succeeded_patches)}")
-        logger.debug(f"  - complete_patch 长度: {len(complete_patch)} 字符")
-        logger.debug(f"  - complete_patch 内容: {complete_patch}")
+        logger.info("[do_backport] 文件级冻结流程完成")
+    else:
+        frozen_file_patches = [cherry_pick_patch]
+        project.set_succeeded_patches(frozen_file_patches)
+        complete_patch = cherry_pick_patch
     
     # 清理工作区（在目标仓库中）
     logger.debug("[do_backport] 清理工作区（git clean -fdx）...")
@@ -583,6 +668,8 @@ def do_backport(
     logger.debug(f"  - poc_succeeded={project.poc_succeeded}")
     
     if project.poc_succeeded:
+        # 强制整包可 apply，失败不能宣告成功
+        _enforce_complete_patch_check_or_raise()
         logger.info(
             f"[do_backport] 成功将补丁回移植到目标发布版本 {data.target_release}"
         )
@@ -664,6 +751,8 @@ def do_backport(
 
     # 检查最终结果
     if project.poc_succeeded:
+        # 强制整包可 apply，失败不能宣告成功
+        _enforce_complete_patch_check_or_raise()
         logger.info(
             f"[do_backport] 成功将补丁回移植到目标发布版本 {data.target_release}"
         )

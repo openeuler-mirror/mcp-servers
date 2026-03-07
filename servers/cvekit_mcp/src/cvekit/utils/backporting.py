@@ -621,6 +621,7 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
         backported_patch_path = None
         diff_path = None
         empty_patch = False
+        equivalent_exists = bool(getattr(project, "equivalent_exists", False))
         
         if project.succeeded_patches:
             # 保存调整后的补丁文件
@@ -655,15 +656,30 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
                 return "\n".join(out_lines)
 
             normalized_patches = []
-            for patch in project.succeeded_patches:
+            patch_candidates = project.succeeded_patches
+            rebuilt_complete_patch = project.rebuild_complete_patch()
+            if rebuilt_complete_patch:
+                patch_candidates = [rebuilt_complete_patch]
+            for patch in patch_candidates:
                 if patch and not patch.endswith("\n"):
                     patch = patch + "\n"
                 normalized_patches.append(_normalize_unified_diff(patch))
 
             export_patch = project.validated_patch or "\n".join(normalized_patches)
-            if not export_patch.strip():
-                empty_patch = True
-                logger.info("导出补丁前发现为空补丁，视为无需回移植，跳过 git apply --check")
+            has_valid_diff_header = any(
+                marker in export_patch
+                for marker in ("diff --git ", "\n--- ", "\n+++ ", "\n@@ ")
+            ) or export_patch.startswith(("diff --git ", "--- ", "+++ ", "@@ "))
+            if not export_patch.strip() or not has_valid_diff_header:
+                if equivalent_exists:
+                    empty_patch = True
+                    logger.info(
+                        "导出补丁为空或非标准 diff，且已确认目标分支等效存在，按无需回移植处理"
+                    )
+                else:
+                    raise RuntimeError(
+                        "backported patch is empty or non-standard diff without equivalence proof"
+                    )
             else:
                 # 防呆：导出前先做 git apply --check
                 try:
@@ -695,7 +711,7 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
                 logger.info(f"原始补丁文件: {original_patch_path}")
                 logger.info(f"调整后补丁文件: {backported_patch_path}")
                 logger.info(f"差异文件: {diff_path}")
-        
+
         result = {
             'status': 'success',
             'logfile': logfile,
@@ -703,7 +719,8 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
             'original_patch_path': original_patch_path,
             'backported_patch_path': backported_patch_path,
             'diff_path': diff_path,
-            'empty_patch': empty_patch
+            'empty_patch': empty_patch,
+            'equivalent_exists': equivalent_exists,
         }
         
         if data.llm_provider == "openai":

@@ -413,18 +413,29 @@ def analyze_branches(
                     # 如果details为空，尝试直接从backport_result获取（兼容不同的返回结构）
                     if not details:
                         details = backport_result
-                    
+
+                    empty_patch = bool(details.get("empty_patch") or backport_result.get("empty_patch"))
                     # 获取调整后的补丁路径
                     backported_patch_path = details.get('backported_patch_path') or backport_result.get('backported_patch_path')
-                    if backported_patch_path:
+                    if empty_patch:
+                        item[i18n('冲突点')] = ''
+                        item[i18n('适配状态')] = i18n('无需执行（补丁已存在）')
+                        item[i18n('建议调整文件')] = 'N/A'
+                        item[i18n('是否存在冲突')] = i18n('是')
+                        item[i18n('差异文件')] = 'N/A'
+                        item['_skip_apply'] = True
+                        logging.info(i18n("backport识别为空补丁: 分支 %s 已无需执行第五/第六步") % target_branch)
+                    elif backported_patch_path:
                         item[i18n('冲突点')] = backported_patch_path
                         item[i18n('适配状态')] = i18n('成功')
                         item[i18n('建议调整文件')] = backported_patch_path
                         item[i18n('是否存在冲突')] = i18n('是')
+                        item['_skip_apply'] = False
                         logging.info(i18n("backport成功: 更新冲突点/建议调整文件为 %s") % backported_patch_path)
                     
                         logging.info(f"缓存已更新: {cache_key} 中的冲突点/建议调整文件为 {backported_patch_path}")
                     else:
+                        item['_skip_apply'] = False
                         logging.warning(i18n("backport成功但未找到backported_patch_path"))
 
                     # 添加差异文件路径
@@ -441,7 +452,12 @@ def analyze_branches(
                     if cached_result:  
                         for cache_item in cached_result:
                             if cache_item.get(i18n("目标分支")) == target_branch:
-                                if backported_patch_path:
+                                if empty_patch:
+                                    cache_item[i18n("冲突点")] = ''
+                                    cache_item[i18n("适配状态")] = i18n('无需执行（补丁已存在）')
+                                    cache_item[i18n("建议调整文件")] = 'N/A'
+                                    cache_item[i18n("是否存在冲突")] = i18n('是')
+                                elif backported_patch_path:
                                     cache_item[i18n("冲突点")] = backported_patch_path
                                     cache_item[i18n("适配状态")] = i18n('成功')
                                     cache_item[i18n("建议调整文件")] = backported_patch_path
@@ -516,7 +532,7 @@ def analyze_branches(
             is_affected_str in [i18n('无法判断'), '无法判断'] or
             '无法判断' in is_affected_str
         )
-        if is_branch_affected:
+        if is_branch_affected and not item.get('_skip_apply', False):
             status_desc = i18n("适配状态: %s") % adapt_status
             if conflict_point:
                 status_desc += i18n(", 补丁路径: %s") % conflict_point
@@ -574,7 +590,7 @@ def apply_patch(
     gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
 ) -> str:
     
-    if not os.path.exists(patch_path):
+    if not patch_path or not os.path.exists(patch_path):
         branches = sorted([branch.strip() for branch in args.branches_to_analyze.split(',')])
         cache_key = _get_cache_key(cve_id, ','.join(branches))
         cached_result = get_cached_data(BRANCHES_ANALYSIS_CACHE, cache_key)
@@ -583,6 +599,12 @@ def apply_patch(
             if res[i18n('目标分支')]==branch:
                 patch_path = res[i18n("冲突点")]
                 break
+
+    if not patch_path:
+        res = i18n("该分支无需执行第五步：已识别为补丁无需应用（empty_patch）。\n")
+        res += i18n("- 目标分支: %s\n") % (branch)
+        res += i18n("可直接跳过该分支的 apply_patch/create_pr。")
+        return res
     
     result = run_cvekit('apply-patch', {
         'cve_id': cve_id,

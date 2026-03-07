@@ -45,6 +45,46 @@ blacklist = [
 ]
 
 
+def validate_unified_diff_patch(patch: str) -> Tuple[bool, str, str]:
+    """
+    Validate patch text before revise/apply:
+    - must look like unified diff (`---`, `+++`, `@@`)
+    - must not contain bare commit metadata noise before first file header
+    """
+    if not patch or not patch.strip():
+        return False, "empty patch", patch
+
+    lines = patch.splitlines()
+    first_file_header = -1
+    for idx, line in enumerate(lines):
+        if line.startswith("--- a/") or line.startswith("--- /dev/null"):
+            first_file_header = idx
+            break
+    if first_file_header == -1:
+        return False, "missing file header (`--- a/...` or `--- /dev/null`)", patch
+
+    normalized_patch = "\n".join(lines[first_file_header:])
+    if normalized_patch and not normalized_patch.endswith("\n"):
+        normalized_patch += "\n"
+    normalized_lines = normalized_patch.splitlines()
+
+    has_plus_header = any(
+        line.startswith("+++ b/") or line.startswith("+++ /dev/null")
+        for line in normalized_lines
+    )
+    if not has_plus_header:
+        return False, "missing file header (`+++ b/...` or `+++ /dev/null`)", normalized_patch
+
+    if not any(line.startswith("@@ ") or line.startswith("@@") for line in normalized_lines):
+        return False, "missing hunk header (`@@ ... @@`)", normalized_patch
+
+    # Accept git-show / format-patch metadata before the first file header.
+    # We already normalize by trimming to the first `---` header.
+    # This avoids rejecting valid patches that include commit message blocks.
+
+    return True, "", normalized_patch
+
+
 def find_most_similar_files(target_filename: str, search_directory: str) -> List[str]:
     """
     Find the five file paths that are most similar to non-existent files.
@@ -127,6 +167,11 @@ def find_most_similar_block(
                 best_start_index += offset
                 break
 
+    # Clamp to valid 1-based range to avoid downstream index overflow.
+    if len(main) <= 0:
+        return 1, min_distance
+    max_start = max(1, len(main) - p_len + 1)
+    best_start_index = max(1, min(best_start_index, max_start))
     return best_start_index, min_distance
 
 
@@ -175,7 +220,9 @@ def revise_patch(
     def revise_hunk(lines: list[str], target_file_lines: list[str]) -> tuple[str, bool]:
         """fix lines from "@@" to the end"""
         fixed = False
-        if len(lines[-1]) == 0 or "\ No newline at end of file" in lines[-1]:
+        if not target_file_lines:
+            return "\n".join(lines), fixed
+        if len(lines[-1]) == 0 or "\\ No newline at end of file" in lines[-1]:
             lines = lines[:-1]
 
         # fix corrupt patch
@@ -199,7 +246,13 @@ def revise_patch(
         for line in tmp_lines:
             if line.startswith(" ") or line.startswith("-"):
                 sign = line[0]
-                new_line = target_file_lines[lineno - 1 + i]
+                target_idx = lineno - 1 + i
+                if target_idx < 0 or target_idx >= len(target_file_lines):
+                    # Keep original patch line when inferred anchor drifts out of file range.
+                    revised_lines.append(line)
+                    i += 1
+                    continue
+                new_line = target_file_lines[target_idx]
                 if revise_context:
                     revised_lines.append(" " + new_line.strip("\n"))
                 elif re.sub(r"\s+", "", line[1:]) == re.sub(r"\s+", "", new_line):
@@ -223,11 +276,17 @@ def revise_patch(
                 )
                 dlineno = dlineno + last_line
                 last_line = dlineno
-                revised_lines[dlineno - 1] = "-" + revised_lines[dlineno - 1][1:]
+                if 0 < dlineno <= len(revised_lines):
+                    revised_lines[dlineno - 1] = "-" + revised_lines[dlineno - 1][1:]
 
-            if not revised_lines[-1].startswith(" "):
+            if revised_lines and not revised_lines[-1].startswith(" "):
+                next_idx = lineno - 1 + i
+                if next_idx < 0:
+                    next_idx = 0
+                if next_idx >= len(target_file_lines):
+                    next_idx = len(target_file_lines) - 1
                 revised_lines.append(
-                    " " + target_file_lines[lineno - 1 + i].strip("\n")
+                    " " + target_file_lines[next_idx].strip("\n")
                 )
 
         # fix wrong line number
@@ -439,8 +498,6 @@ def split_patch(patch: str, flag_commit: bool) -> Generator[str, None, None]:
         logger.debug("[split_patch] 开始遍历补丁行，查找文件块...")
         for line_no in range(len(lines)):
             current_line = lines[line_no]
-            logger.debug(f"[split_patch] 处理第 {line_no}/{len(lines)-1} 行:")
-            logger.debug(f"  - 行内容: {current_line[:100]}..." if len(current_line) > 100 else f"  - 行内容: {current_line}")
             
             # 检查是否是文件块开始（--- a/）
             if current_line.startswith("--- a/"):

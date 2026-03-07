@@ -13,7 +13,10 @@ from .utils.apply_patch import apply_patch
 from .utils.create_pr import create_pr
 from .utils.locales import i18n
 from .utils.backporting import run_backport_from_config
-from .utils.backport_batch import handle_backport_batch
+from .utils.backport_batch import (
+    handle_backport_batch,
+    generate_backport_batch_config_from_excel,
+)
 
 logger = logging.getLogger(__name__)
 apply_patch_lock = multiprocessing.Lock()
@@ -108,10 +111,31 @@ def main():
     backport_group.add_argument('--backport-config', type=str,
                                help='批量回移植配置文件路径 (YAML/JSON)，用于 backport-batch')
     backport_group.add_argument(
+        '--backport-excel',
+        type=str,
+        help='Excel 输入路径（包含 commit title 与 commit hash），用于生成 backport-batch 原始配置'
+    )
+    backport_group.add_argument(
+        '-o',
+        '--output',
+        type=str,
+        help='输出路径（用于 backport-batch 的配置生成子功能）'
+    )
+    backport_group.add_argument(
+        '--excel-sheet',
+        type=str,
+        help='指定 Excel sheet 名称（默认第一个）'
+    )
+    backport_group.add_argument(
         '-i',
         '--interactive',
         action='store_true',
         help='交互式编辑 backport-batch 报告配置（如 merged_in_target）'
+    )
+    backport_group.add_argument(
+        '--apply',
+        type=str,
+        help='仅在 backport-batch 下使用：直接应用补丁（可传 backported patch 路径或 commit id）'
     )
 
     args = parser.parse_args()
@@ -215,6 +239,13 @@ def handle_action(args):
             'repo_path': repo_path
         }
     if args.action == 'backport-batch':
+        if args.backport_excel:
+            return generate_backport_batch_config_from_excel(
+                excel_path=args.backport_excel,
+                output_path=args.output,
+                template_config_path=args.backport_config,
+                sheet_name=args.excel_sheet,
+            )
         return handle_backport_batch(args)
 
     if args.cve_id and not args.issue_url:
@@ -326,12 +357,13 @@ def handle_backport(cve_id, args):
     backport_result = run_backport_from_config(config_dict, debug_mode=args.debug)
     
     # 构建与分支分析结果对应的返回结构
+    is_empty_patch = bool(backport_result.get('empty_patch'))
     result = {
         i18n("补丁ID"): cve_id,
         i18n("目标分支"): target_branch,
         i18n("是否受影响"): i18n("受影响"),
         i18n("适配状态"): i18n("成功") if backport_result.get('status') == 'success' else i18n("需要调整"),
-        i18n("冲突点"): backport_result.get('backported_patch_path', backport_result.get('original_patch_path', '')),
+        i18n("冲突点"): "" if is_empty_patch else (backport_result.get('backported_patch_path') or backport_result.get('original_patch_path', '')),
         i18n("建议调整文件"): "N/A" if backport_result.get('status') == 'success' else "",
     }
     
@@ -344,6 +376,7 @@ def handle_backport(cve_id, args):
         'original_patch_path': backport_result.get('original_patch_path'),
         'backported_patch_path': backport_result.get('backported_patch_path'),
         'diff_path': backport_result.get('diff_path'),
+        'empty_patch': is_empty_patch,
         'logfile': backport_result.get('logfile'),
         'time_cost': backport_result.get('time_cost'),
         'status': backport_result.get('status'),

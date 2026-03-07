@@ -292,6 +292,100 @@ def _parse_patch_headers_and_body(patch_content: str):
     return headers, body
 
 
+def extract_commit_message_from_patch(patch_path: str):
+    """
+    从 patch 中提取原始 commit message（仅保留原提交标题与正文，不拼接额外头信息）。
+    """
+    if not patch_path or not os.path.exists(patch_path):
+        raise ValueError(f"patch 文件不存在: {patch_path}")
+
+    with open(patch_path, "r", encoding="utf-8", errors="ignore") as f:
+        patch_content = f.read()
+    lines = patch_content.splitlines()
+
+    # 兼容 git show 风格补丁（以 "commit <sha>" 开头，正文每行常见 4 空格缩进）
+    if lines and lines[0].startswith("commit "):
+        message_lines = []
+        idx = 1
+        # 跳过 Author/Date/Merge 等头部直到正文块
+        while idx < len(lines):
+            line = lines[idx]
+            if line.startswith("diff --git "):
+                break
+            if line.startswith("    ") or line.startswith("\t"):
+                break
+            idx += 1
+
+        while idx < len(lines):
+            line = lines[idx]
+            if line.startswith("diff --git "):
+                break
+            if line.startswith("    "):
+                message_lines.append(line[4:])
+            elif line.startswith("\t"):
+                message_lines.append(line[1:])
+            else:
+                # 遇到非缩进行通常意味着提交说明结束
+                if line.strip():
+                    break
+                message_lines.append("")
+            idx += 1
+
+        # 规范化首尾空行
+        while message_lines and not message_lines[0].strip():
+            message_lines.pop(0)
+        while message_lines and not message_lines[-1].strip():
+            message_lines.pop()
+        if not message_lines:
+            raise ValueError(f"无法从 patch 提取提交说明: {patch_path}")
+        return "\n".join(message_lines), {}
+
+    headers, body = _parse_patch_headers_and_body(patch_content)
+
+    subject = (headers.get("Subject") or "").strip()
+    if subject:
+        # 去除 [PATCH]、[PATCH v2]、[PATCH 1/3] 等前缀
+        subject = re.sub(
+            r"\s*\[(?=[^\]]*PATCH)[^\]]*\]\s*",
+            " ",
+            subject,
+            flags=re.IGNORECASE,
+        ).strip()
+
+    msg_part = body
+    split_indexes = []
+    split_m1 = re.search(r"(?m)^---\s*$", msg_part)
+    split_m2 = re.search(r"(?m)^diff --git ", msg_part)
+    if split_m1:
+        split_indexes.append(split_m1.start())
+    if split_m2:
+        split_indexes.append(split_m2.start())
+    if split_indexes:
+        msg_part = msg_part[: min(split_indexes)]
+    msg_body = msg_part.strip()
+
+    if not subject:
+        for line in msg_body.splitlines():
+            candidate = line.strip()
+            if candidate:
+                subject = candidate
+                break
+    if not subject:
+        raise ValueError(f"无法从 patch 提取提交标题: {patch_path}")
+
+    if msg_body:
+        first_non_empty = ""
+        for line in msg_body.splitlines():
+            candidate = line.strip()
+            if candidate:
+                first_non_empty = candidate
+                break
+        if first_non_empty == subject:
+            return msg_body, headers
+        return f"{subject}\n\n{msg_body}", headers
+    return subject, headers
+
+
 def _extract_patch_modified_files(patch_path: str):
     """
     从 patch 文本中提取“实际修改的文件名”列表（去重且保序）。
