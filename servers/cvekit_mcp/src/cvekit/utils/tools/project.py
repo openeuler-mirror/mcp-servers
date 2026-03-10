@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import time
 import warnings
+from collections import OrderedDict
 from types import SimpleNamespace
 from typing import List, Tuple
 
@@ -152,6 +153,8 @@ class Project:
         self.new_patch_parent = data.new_patch_parent
         self.target_release = data.target_release
         self.succeeded_patches = []
+        # key=(file_path, old_start, old_count), value=latest patch chunk text
+        self.succeeded_patch_map = OrderedDict()
         self.context_mismatch_times = 0
         self.round_succeeded = False
         self.all_hunks_applied_succeeded = False
@@ -165,6 +168,173 @@ class Project:
         self.add_percent = 0
         self.last_context = []
         self.validated_patch = None
+        # Only allow "need not ported" when equivalence is explicitly proven.
+        self.equivalent_exists = bool(getattr(data, "equivalent_exists", False))
+
+    def _extract_hunk_identity(
+        self, patch_chunk: str
+    ) -> tuple[str, int, int, int, int] | None:
+        """
+        Build a stable identity for a patch chunk:
+        (file_path, old_start, old_count, new_start, new_count).
+
+        For new-file hunks (`--- /dev/null`), use the `+++ b/...` path as identity
+        so multiple new files do not overwrite each other.
+        """
+        if not patch_chunk:
+            return None
+        old_file_path = None
+        new_file_path = None
+        old_start = None
+        old_count = None
+        new_start = None
+        new_count = None
+        for line in patch_chunk.splitlines():
+            if line.startswith("--- "):
+                # e.g. --- a/path/to/file
+                old_file_path = line[4:].strip()
+                if old_file_path.startswith("a/"):
+                    old_file_path = old_file_path[2:]
+            elif line.startswith("+++ "):
+                # e.g. +++ b/path/to/file
+                new_file_path = line[4:].strip()
+                if new_file_path.startswith("b/"):
+                    new_file_path = new_file_path[2:]
+            elif line.startswith("@@"):
+                m = re.search(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
+                if m:
+                    old_start = int(m.group(1))
+                    old_count = int(m.group(2) or "1")
+                    new_start = int(m.group(3))
+                    new_count = int(m.group(4) or "1")
+                    break
+        file_path = old_file_path
+        if old_file_path in (None, "/dev/null"):
+            file_path = new_file_path
+
+        if (
+            file_path is None
+            or old_start is None
+            or old_count is None
+            or new_start is None
+            or new_count is None
+        ):
+            return None
+        return (file_path, old_start, old_count, new_start, new_count)
+
+    def _sync_succeeded_patches_from_map(self) -> None:
+        self.succeeded_patches = list(self.succeeded_patch_map.values())
+
+    def _upsert_succeeded_patch(self, revised_patch: str) -> None:
+        """
+        Upsert successful patch chunks by identity instead of blindly appending.
+        """
+        identities = list(utils.split_patch(revised_patch, False))
+        if not identities:
+            # Non-standard patch text fallback
+            key = (f"raw:{hash(revised_patch)}", 0, 0)
+            self.succeeded_patch_map[key] = revised_patch
+            self._sync_succeeded_patches_from_map()
+            return
+
+        for chunk in identities:
+            identity = self._extract_hunk_identity(chunk)
+            if identity is None:
+                identity = (f"raw:{hash(chunk)}", 0, 0)
+            self.succeeded_patch_map[identity] = chunk
+        self._sync_succeeded_patches_from_map()
+
+    def rebuild_complete_patch(self) -> str:
+        """
+        Build complete patch from deduplicated successful chunks.
+        """
+        if self.succeeded_patch_map:
+            return "\n".join(self.succeeded_patch_map.values())
+        return "\n".join(self.succeeded_patches)
+
+    def _set_complete_patch_as_single_result(self, complete_patch: str) -> None:
+        """
+        Replace all staged successful chunks with final validated complete patch.
+        """
+        self.succeeded_patch_map.clear()
+        if complete_patch:
+            self.succeeded_patch_map[("__complete_patch__", 0, 0)] = complete_patch
+        self._sync_succeeded_patches_from_map()
+
+    def set_succeeded_patches(self, patches: list[str]) -> None:
+        """
+        Replace current successful patch set with ordered patch chunks.
+
+        Used by higher-level file-freeze flow to keep only validated file patches.
+        """
+        self.succeeded_patch_map.clear()
+        for patch in patches or []:
+            if not patch:
+                continue
+            self._upsert_succeeded_patch(patch)
+        self._sync_succeeded_patches_from_map()
+
+    def build_succeeded_patch_for_file(self, file_path: str) -> str:
+        """
+        Build a normalized patch that contains all successful hunks of one file.
+        """
+        if not file_path:
+            return ""
+
+        file_chunks = []
+        for chunk in self.succeeded_patch_map.values():
+            chunk_path = self._extract_patch_target_path(chunk)
+            if chunk_path == file_path:
+                file_chunks.append(chunk)
+
+        if not file_chunks:
+            return ""
+
+        header_a = ""
+        header_b = ""
+        hunk_bodies = []
+        for chunk in file_chunks:
+            lines = chunk.splitlines()
+            if len(lines) < 3:
+                continue
+            if not header_a:
+                header_a = lines[0]
+                header_b = lines[1]
+            hunk_start = -1
+            for idx, line in enumerate(lines):
+                if line.startswith("@@"):
+                    hunk_start = idx
+                    break
+            if hunk_start >= 0:
+                hunk_bodies.append("\n".join(lines[hunk_start:]))
+
+        if not header_a or not header_b or not hunk_bodies:
+            return ""
+        return f"{header_a}\n{header_b}\n" + "\n".join(hunk_bodies) + "\n"
+
+    def _is_unified_diff_patch(self, patch: str) -> bool:
+        """
+        Check whether text looks like a unified diff patch.
+        """
+        if not patch or not patch.strip():
+            return False
+        return (
+            any(marker in patch for marker in ("diff --git ", "\n--- ", "\n+++ ", "\n@@ "))
+            or patch.startswith(("diff --git ", "--- ", "+++ ", "@@ "))
+        )
+
+    def _extract_patch_target_path(self, patch_text: str) -> str:
+        """
+        Extract target path from unified diff.
+        For new-file patches (`--- /dev/null`), fallback to `+++ b/...`.
+        """
+        old_paths = re.findall(r"^--- a/(.*)$", patch_text, flags=re.MULTILINE)
+        if old_paths:
+            return old_paths[0]
+        new_paths = re.findall(r"^\+\+\+ b/(.*)$", patch_text, flags=re.MULTILINE)
+        if new_paths:
+            return new_paths[0]
+        return ""
 
     def _resolve_target_ref(self, ref: str) -> str:
         """
@@ -327,23 +497,15 @@ class Project:
 
     def _read_target_file_content(self, ref: str, path: str) -> str | None:
         """
-        Read file content from target git tree first, then fallback to target source directory.
-        This fallback is needed when source files exist on disk but are ignored/untracked in git.
+        Read file content strictly from the target git tree at the given ref.
+        Do not fallback to workspace files to avoid leaking untracked/local-only content
+        into ref-based lookup decisions.
         """
         try:
             file_obj = self.target_repo.tree(ref) / path
             if hasattr(file_obj, "type") and file_obj.type != "blob":
                 return None
             return file_obj.data_stream.read().decode("utf-8", errors="ignore")
-        except Exception:
-            pass
-
-        try:
-            norm_path = os.path.normpath(path).lstrip(os.sep)
-            fs_path = os.path.join(self.target_dir, norm_path)
-            if os.path.isfile(fs_path):
-                with open(fs_path, "r", encoding="utf-8", errors="ignore") as f:
-                    return f.read()
         except Exception:
             pass
         return None
@@ -409,10 +571,49 @@ class Project:
         """
         if self.now_hunk != "completed":
             hunk = self.now_hunk
-            filepath = re.findall(r"--- a/(.*)", hunk)[0]
-            chunks = re.findall(r"@@ -(\d+),(\d+) \+(\d+),(\d+) @@(.*)", hunk)[0]
-            start_line = chunks[0]
-            end_line = int(chunks[0]) + int(chunks[1]) - 1
+
+            # Prefer new-path (`+++ b/...`) so new-file hunks (`--- /dev/null`)
+            # still map to a real file path.
+            filepath = None
+            plus_match = re.search(r"^\+\+\+ b/(.+)$", hunk, re.MULTILINE)
+            minus_match = re.search(r"^--- a/(.+)$", hunk, re.MULTILINE)
+            if plus_match and plus_match.group(1).strip() != "/dev/null":
+                filepath = plus_match.group(1).strip()
+            elif minus_match and minus_match.group(1).strip() != "/dev/null":
+                filepath = minus_match.group(1).strip()
+            if not filepath:
+                logger.debug("[_git_history] 无法从 hunk 解析文件路径")
+                return (
+                    "Can not parse file path from current hunk. "
+                    "Please provide a standard unified diff with `---/+++` headers.\n"
+                )
+
+            # Support both `@@ -a,b +c,d @@` and `@@ -a +c @@` forms.
+            chunk_match = re.search(
+                r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@",
+                hunk,
+            )
+            if not chunk_match:
+                logger.debug("[_git_history] 无法从 hunk 解析 @@ 行号信息")
+                return (
+                    "Can not parse hunk range from current patch. "
+                    "Please ensure the patch contains valid `@@ ... @@` headers.\n"
+                )
+
+            old_start = int(chunk_match.group(1))
+            old_count = int(chunk_match.group(2) or "1")
+            if old_count <= 0 or old_start <= 0:
+                logger.debug(
+                    "[_git_history] 新增文件或无旧上下文场景，跳过 git log -L 查询"
+                )
+                return (
+                    "Current hunk is a pure new-file/addition context (no old lines), "
+                    "so `git_history` cannot use `git log -L`. "
+                    "Please use `git_show`/`viewcode` for related commit context.\n"
+                )
+
+            start_line = old_start
+            end_line = old_start + old_count - 1
             
             # 判断是否跨仓库（target_path 和 project_dir 是不同的仓库）
             is_cross_repo = (hasattr(self, 'target_dir') and 
@@ -467,7 +668,7 @@ class Project:
         else:
             # XXX TBD
             # JUST return each hunk related refs
-            pass
+            return "No active hunk for git_history.\n"
 
     def _git_show(self) -> str:
         """
@@ -545,8 +746,7 @@ class Project:
             Tuple[str, str]: Bug patch similar code block information and difference between patch context and original code context.
 
         """
-        patch_paths = re.findall(r"--- a/(.*)", revised_patch)
-        path = patch_paths[0] if patch_paths else ""
+        path = self._extract_patch_target_path(revised_patch)
         revised_patch_line = revised_patch.split("\n")[3:]
         contexts, num_context, _, _ = utils.extract_context(revised_patch_line)
         lineno = -1
@@ -823,6 +1023,19 @@ class Project:
         logger.debug("[_apply_hunk] 重置工作区（git reset --hard）...")
         safe_git_reset_hard(self.target_repo)
         logger.debug("[_apply_hunk] 工作区重置完成")
+
+        # 单一入口：统一由工具函数完成前导噪音裁剪 + unified diff 校验。
+        valid_diff, invalid_reason, normalized_patch = utils.validate_unified_diff_patch(patch)
+        if not valid_diff:
+            self.round_succeeded = False
+            ret = (
+                "Rejected invalid patch before revise/apply: "
+                f"{invalid_reason}. Please provide a standard unified diff.\n"
+            )
+            logger.debug(f"[_apply_hunk] unified diff 预检失败: {invalid_reason}")
+            logger.debug(f"[_apply_hunk] 返回结果: {ret}")
+            return ret
+        patch = normalized_patch
         
         # 修正补丁（使用目标仓库的路径）
         if revise_context:
@@ -860,8 +1073,8 @@ class Project:
             ret += "Patch applied successfully\n"
             logger.debug(f"[_apply_hunk] 返回结果: {ret}")
             
-            # 记录成功的补丁
-            self.succeeded_patches.append(revised_patch)
+            # 记录成功的补丁（同文件同区域用替换而非累积）
+            self._upsert_succeeded_patch(revised_patch)
             logger.debug(f"[_apply_hunk] 成功补丁已添加到列表，当前成功补丁数: {len(self.succeeded_patches)}")
             
             # 标记本轮成功
@@ -978,8 +1191,16 @@ class Project:
                 logger.debug(
                     f"Failed to apply Complete patch hunk {idx}, file {f.name}"
                 )
+                err_detail = ""
+                if hasattr(e, "stderr") and e.stderr:
+                    err_detail = str(e.stderr).strip()
+                    logger.debug(
+                        f"[_compile_patch] joined hunk {idx} git apply stderr: {err_detail[:1000]}"
+                    )
                 # TODO: give feedback to LLM about which line can not be applied
                 ret = f"For the patch you just generated, there was an APPLY failure during testing. Specifically there was a context mismatch in hunk {idx} across the patch, below is part of the feedback I found for you.\n"
+                if err_detail:
+                    ret += f"Raw git apply error for hunk {idx}:\n{err_detail}\n"
                 block, differ = self._apply_error_handling(ref, revised_patch)
                 ret += block
                 ret += f"Here is the source code near the hunk context for your reference, a good patch context should look exactly like the source code.\n"
@@ -1127,8 +1348,7 @@ class Project:
         if not os.path.exists(os.path.join(self.target_dir, "poc.sh")):
             logger.debug("No poc.sh file found, considered as PoC passed.")
             self.poc_succeeded = True
-            self.succeeded_patches.clear()
-            self.succeeded_patches.append(complete_patch)
+            self._set_complete_patch_as_single_result(complete_patch)
             ret += "Existing PoC could NOT TRIGGER the bug, which means your patch successfully fix the bug! I really thank you for your great efforts.\n"
             return ret
         poc_process = subprocess.Popen(
@@ -1162,8 +1382,7 @@ class Project:
         else:
             logger.info(f"PoC test                          PASS")
             ret += "Existing PoC could NOT TRIGGER the bug, which means your patch successfully fix the bug! I really thank you for your great efforts.\n"
-            self.succeeded_patches.clear()
-            self.succeeded_patches.append(complete_patch)
+            self._set_complete_patch_as_single_result(complete_patch)
             self.poc_succeeded = True
         return ret
 
@@ -1179,7 +1398,42 @@ class Project:
             str: The validation result.
 
         """
+        patch_text = (patch or "").strip()
+        is_need_not_ported = patch_text.lower() == "need not ported"
+
+        # Handle "need not ported" uniformly to avoid causal inversion:
+        # a non-diff marker must never overwrite an already materialized patch result.
+        if is_need_not_ported:
+            if not self.equivalent_exists:
+                self.round_succeeded = False
+                return (
+                    "Rejected: 'need not ported' is not accepted without explicit "
+                    "equivalence evidence in target branch.\n"
+                )
+
+            existing_patch = self.validated_patch or self.rebuild_complete_patch()
+            if self._is_unified_diff_patch(existing_patch):
+                self.round_succeeded = False
+                return (
+                    "Rejected: concrete patch has been materialized and validated; "
+                    "'need not ported' cannot overwrite it.\n"
+                )
+
+            # Explicitly record equivalence mode as final result: no exported patch.
+            self.round_succeeded = True
+            self.compile_succeeded = True
+            self.testcase_succeeded = True
+            self.poc_succeeded = True
+            self.validated_patch = ""
+            self._set_complete_patch_as_single_result("")
+            return "Patch is equivalent in target branch; need not ported.\n"
+
         if self.all_hunks_applied_succeeded:
+            if not self._is_unified_diff_patch(patch):
+                self.round_succeeded = False
+                return (
+                    "Rejected: final validation expects a unified diff patch, got non-diff text.\n"
+                )
             ret = ""
             if not self.compile_succeeded:
                 ret += self._compile_patch(
@@ -1197,10 +1451,6 @@ class Project:
                 ret += self._run_poc(patch_to_run)
             return ret
         else:
-            if "need not ported" in patch:
-                self.round_succeeded = True
-                return "Patch applied successfully\n"
-
             ret = self._apply_hunk(
                 ref, patch, True if self.context_mismatch_times >= 2 else False
             )
@@ -1310,7 +1560,40 @@ def create_validate_tool(project: Project):
         """
         validate a patch on a specific ref of the target repository.
         """
-        return project._validate(ref, patch)
+        validated_ref = ref
+        fallback_ref = getattr(project, "target_release", None)
+
+        should_fallback = False
+        if not validated_ref or len(validated_ref) != 40:
+            should_fallback = True
+            logger.warning(
+                "[validate] LLM provided invalid ref format: %s (len=%s), "
+                "fallback to target_release=%s",
+                validated_ref,
+                len(validated_ref) if validated_ref else 0,
+                fallback_ref,
+            )
+        else:
+            try:
+                project.target_repo.commit(validated_ref)
+            except Exception:
+                should_fallback = True
+                logger.warning(
+                    "[validate] LLM provided unknown ref in target repo: %s, "
+                    "fallback to target_release=%s",
+                    validated_ref,
+                    fallback_ref,
+                )
+
+        if should_fallback and fallback_ref:
+            validated_ref = fallback_ref
+        elif should_fallback and not fallback_ref:
+            logger.warning(
+                "[validate] target_release is empty, keep original ref=%s",
+                ref,
+            )
+
+        return project._validate(validated_ref, patch)
 
     return validate
 
