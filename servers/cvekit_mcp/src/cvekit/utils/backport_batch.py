@@ -957,13 +957,87 @@ def _try_get_commit(repo: git.Repo, commit_id: str):
     except Exception as e:
         return None, str(e)
 
-def _sort_commit_items_by_time(commit_items, project_dir, preferred_ref: str = ""):
+def _sort_commit_items_by_gitlog(commit_items, project_dir, preferred_ref: str = ""):
+    """
+    根据 commit 在 git log 中的位置进行排序
+
+    排序策略（按优先级）：
+      1. git log 中的拓扑位置（主键）：反映 commit 在分支上的真实先后顺序，
+         比 committed_datetime 更准确（committed_datetime 相同时尤为重要）
+      2. committed_datetime（次键）：git log 位置相同或不在索引中时的兜底
+      3. 原始输入顺序（三键）：保证排序稳定性
+
+    性能实现：
+      使用 merge-base..newest 局部范围遍历建立拓扑位置索引。
+      下界 = 所有 candidate 的公共祖先，上界 = committed_datetime 最新的 candidate，
+      该范围通常只有几百个 commit，远小于全量历史遍历。
+
+    Args:
+        commit_items: 待排序的 commit 配置列表
+        project_dir:  源代码仓路径，用于查询 git log 顺序
+        preferred_ref: 优先使用的分支/引用名，用于按 commit title 查找 SHA
+
+    Returns:
+        (sorted_items, errors): 排序后的列表 和 解析失败的错误列表
+    """
     if not project_dir or not os.path.isdir(project_dir):
-        raise ValueError("backport-batch 需要提供有效的 project_dir 以按时间排序")
+        raise ValueError("backport-batch 需要提供有效的 project_dir 以按 git log 排序")
     repo = git.Repo(project_dir)
     commit_index, index_error = _build_commit_subject_index(repo)
     if index_error:
         raise ValueError(index_error)
+
+    # 构建 git log 拓扑顺序索引
+    # 核心思路：遍历 merge_base..newest 这个局部片段，建立严格拓扑位置索引
+    # - 下界：所有 candidate 的公共祖先（merge-base --octopus）
+    # - 上界：这批 commit 中 committed_datetime 最新的那个（不是 HEAD）
+    # 该范围通常只有几百个 commit，性能远好于全量历史遍历
+    # 注意：git rev-list --no-walk=sorted 只是按 committer date 排序，不是拓扑顺序，不适用
+    logger.info("[backport-batch] 构建 git log 拓扑顺序索引")
+    try:
+        # 先收集所有需要排序的完整 SHA
+        candidate_shas = []
+        candidate_objs = {}  # sha -> commit_obj
+        for item in commit_items:
+            commit_id, _, _ = _extract_commit_item(item)
+            if commit_id and _looks_like_commit_sha(commit_id):
+                try:
+                    full_sha = repo.git.rev_parse(commit_id)
+                    candidate_shas.append(full_sha)
+                    candidate_objs[full_sha] = repo.commit(full_sha)
+                except Exception:
+                    pass
+
+        if candidate_shas:
+            # 下界：所有 candidate 的公共祖先
+            try:
+                merge_base = repo.git.merge_base("--octopus", *candidate_shas).strip()
+            except Exception:
+                merge_base = None
+
+            # 上界：这批 commit 中 committed_datetime 最新的那个
+            newest_sha = max(candidate_objs, key=lambda s: candidate_objs[s].committed_datetime)
+
+            if merge_base:
+                rev_range = f"{merge_base}..{newest_sha}"
+            else:
+                # 无公共祖先（极少见），回退到 newest 的全量祖先历史
+                rev_range = newest_sha
+                logger.warning("[backport-batch] 无法找到公共祖先，回退为 newest 的全量历史")
+
+            # rev-list 输出严格拓扑顺序（从新到旧），转换为从旧到新的位置索引
+            rev_list = repo.git.rev_list(rev_range).splitlines()
+            commit_position = {sha: (len(rev_list) - 1 - i) for i, sha in enumerate(rev_list)}
+            logger.info(
+                "[backport-batch] git log 拓扑索引构建完成：range=%s, 共 %d 个 commits",
+                rev_range, len(commit_position)
+            )
+        else:
+            commit_position = {}
+            logger.info("[backport-batch] 无有效 candidate SHA，跳过 git log 索引")
+    except Exception as e:
+        logger.error("[backport-batch] 构建 git log 索引失败：%s", e)
+        raise ValueError(f"无法构建 git log 索引：{e}")
 
     sortable = []
     errors = []
@@ -1020,25 +1094,41 @@ def _sort_commit_items_by_time(commit_items, project_dir, preferred_ref: str = "
                 normalized_title = commit_obj.summary.strip()
 
             commit_time = commit_obj.committed_datetime
-            logger.info(
-                "[backport-batch] 提交解析成功: index=%d, commit=%s, time=%s",
-                idx,
-                commit_id,
-                commit_time.isoformat(),
-            )
-            sortable.append((commit_time, idx, commit_id, input_commit, normalized_title, item_config))
+            commit_sha = commit_obj.hexsha
+            position = commit_position.get(commit_sha)
+            if position is None:
+                # commit 不在索引中（可能来自其他分支），排在最后，以 committed_datetime 兜底
+                logger.warning(
+                    "[backport-batch] commit 不在 git log 索引中，将排在末尾: %s, time=%s",
+                    commit_id,
+                    commit_time.isoformat(),
+                )
+                position = 999999999
+            else:
+                logger.info(
+                    "[backport-batch] 提交解析成功: index=%d, commit=%s, git_log_position=%d, time=%s",
+                    idx,
+                    commit_id,
+                    position,
+                    commit_time.isoformat(),
+                )
+
+            # 排序元组：(git_log_position, committed_datetime, original_idx)
+            sortable.append((position, commit_time, idx, commit_id, input_commit, normalized_title, item_config))
         except Exception as e:
             errors.append((idx, item, f"无法在源代码仓中解析 commit: {commit_id}, error={e}"))
 
-    sortable.sort(key=lambda x: (x[0], x[1]))
+    # 优先按 git log 位置排序，其次按时间，最后按原始索引（保证稳定性）
+    sortable.sort(key=lambda x: (x[0], x[1], x[2]))
     sorted_items = []
-    for commit_time, _, commit_id, input_commit, commit_title, item_config in sortable:
+    for position, commit_time, _, commit_id, input_commit, commit_title, item_config in sortable:
         sorted_items.append({
             "commit": commit_id,
             "input_commit": input_commit,
             "commit_title": commit_title,
             "item_config": item_config,
-            "committed_datetime": commit_time.isoformat()
+            "committed_datetime": commit_time.isoformat(),
+            "git_log_position": position if position != 999999999 else None,
         })
     return sorted_items, errors
 
@@ -1217,11 +1307,11 @@ def _resolve_sorted_backport_items(commit_items, is_report_config, base_project_
         return commit_items, []
 
     try:
-        logger.info("[backport-batch] 开始按时间排序: project_dir=%s", base_project_dir)
+        logger.info("[backport-batch] 开始按 git log 顺序排序: project_dir=%s", base_project_dir)
         preferred_ref = base_config.get("source_branch") or base_config.get("source_ref") or ""
         if preferred_ref:
             logger.info("[backport-batch] 使用源仓优先分支: %s", preferred_ref)
-        sorted_items, sort_errors = _sort_commit_items_by_time(
+        sorted_items, sort_errors = _sort_commit_items_by_gitlog(
             commit_items, base_project_dir, preferred_ref
         )
         logger.info(
