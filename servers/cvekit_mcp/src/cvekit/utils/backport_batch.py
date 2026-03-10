@@ -959,7 +959,7 @@ def _try_get_commit(repo: git.Repo, commit_id: str):
 
 def _sort_commit_items_by_gitlog(commit_items, project_dir, preferred_ref: str = ""):
     """
-    根据 commit 在 git log 中的位置进行排序
+    根据 commit 在 git log 中的位置进行排序（两阶段优化版本）
 
     排序策略（按优先级）：
       1. git log 中的拓扑位置（主键）：反映 commit 在分支上的真实先后顺序，
@@ -967,10 +967,14 @@ def _sort_commit_items_by_gitlog(commit_items, project_dir, preferred_ref: str =
       2. committed_datetime（次键）：git log 位置相同或不在索引中时的兜底
       3. 原始输入顺序（三键）：保证排序稳定性
 
-    性能实现：
-      使用 merge-base..newest 局部范围遍历建立拓扑位置索引。
-      下界 = 所有 candidate 的公共祖先，上界 = committed_datetime 最新的 candidate，
-      该范围通常只有几百个 commit，远小于全量历史遍历。
+    性能优化策略（两阶段排序）：
+      阶段一：先按 committed_datetime 预排序，检查是否存在时间戳相同的提交。
+              若所有提交时间戳都不同，直接返回结果，无需调用 git。
+      阶段二：若存在时间戳冲突，仅对这些冲突组进行 git log 拓扑排序。
+
+      该优化基于一个观察：实际场景中，一批 CVE 补丁的 committed_datetime
+      通常各不相同（它们来自不同时间点的修复）。只有当时间戳相同时（如
+      批量 cherry-pick、CI 自动化提交等），才需要拓扑排序来打破平局。
 
     Args:
         commit_items: 待排序的 commit 配置列表
@@ -987,77 +991,27 @@ def _sort_commit_items_by_gitlog(commit_items, project_dir, preferred_ref: str =
     if index_error:
         raise ValueError(index_error)
 
-    # 构建 git log 拓扑顺序索引
-    # 核心思路：遍历 merge_base..newest 这个局部片段，建立严格拓扑位置索引
-    # - 下界：所有 candidate 的公共祖先（merge-base --octopus）
-    # - 上界：这批 commit 中 committed_datetime 最新的那个（不是 HEAD）
-    # 该范围通常只有几百个 commit，性能远好于全量历史遍历
-    # 注意：git rev-list --no-walk=sorted 只是按 committer date 排序，不是拓扑顺序，不适用
-    logger.info("[backport-batch] 构建 git log 拓扑顺序索引")
-    try:
-        # 先收集所有需要排序的完整 SHA
-        candidate_shas = []
-        candidate_objs = {}  # sha -> commit_obj
-        for item in commit_items:
-            commit_id, _, _ = _extract_commit_item(item)
-            if commit_id and _looks_like_commit_sha(commit_id):
-                try:
-                    full_sha = repo.git.rev_parse(commit_id)
-                    candidate_shas.append(full_sha)
-                    candidate_objs[full_sha] = repo.commit(full_sha)
-                except Exception:
-                    pass
+    # 阶段一：收集所有 commit 的元数据，按 committed_datetime 预排序
+    logger.info("[backport-batch] 开始两阶段排序：先按时间预排序，检查是否需要拓扑排序")
 
-        if candidate_shas:
-            # 下界：所有 candidate 的公共祖先
-            try:
-                merge_base = repo.git.merge_base("--octopus", *candidate_shas).strip()
-            except Exception:
-                merge_base = None
-
-            # 上界：这批 commit 中 committed_datetime 最新的那个
-            newest_sha = max(candidate_objs, key=lambda s: candidate_objs[s].committed_datetime)
-
-            if merge_base:
-                rev_range = f"{merge_base}..{newest_sha}"
-            else:
-                # 无公共祖先（极少见），回退到 newest 的全量祖先历史
-                rev_range = newest_sha
-                logger.warning("[backport-batch] 无法找到公共祖先，回退为 newest 的全量历史")
-
-            # rev-list 输出严格拓扑顺序（从新到旧），转换为从旧到新的位置索引
-            rev_list = repo.git.rev_list(rev_range).splitlines()
-            commit_position = {sha: (len(rev_list) - 1 - i) for i, sha in enumerate(rev_list)}
-            logger.info(
-                "[backport-batch] git log 拓扑索引构建完成：range=%s, 共 %d 个 commits",
-                rev_range, len(commit_position)
-            )
-        else:
-            commit_position = {}
-            logger.info("[backport-batch] 无有效 candidate SHA，跳过 git log 索引")
-    except Exception as e:
-        logger.error("[backport-batch] 构建 git log 索引失败：%s", e)
-        raise ValueError(f"无法构建 git log 索引：{e}")
-
-    sortable = []
+    # 先解析所有 commit，收集完整信息
+    parsed_items = []  # (idx, commit_id, input_commit, normalized_title, item_config, commit_obj)
     errors = []
+
     for idx, item in enumerate(commit_items):
         commit_id, commit_title, item_config = _extract_commit_item(item)
         normalized_title = _normalize_commit_title(commit_title)
         input_commit = commit_id
-        logger.info(
-            "[backport-batch] 解析提交项: index=%d, commit_id=%s, commit_title=%s",
-            idx,
-            commit_id,
-            normalized_title,
-        )
+
         if commit_id and not normalized_title and not _looks_like_commit_sha(commit_id):
             normalized_title = _normalize_commit_title(commit_id)
             if normalized_title:
                 commit_id = None
+
         if not commit_id and not normalized_title:
             errors.append((idx, item, "commits 列表中的元素必须是字符串、二元组或包含 commit/commit_id/commit_title"))
             continue
+
         try:
             commit_obj, commit_error = _try_get_commit(repo, commit_id)
             if commit_obj:
@@ -1065,10 +1019,7 @@ def _sort_commit_items_by_gitlog(commit_items, project_dir, preferred_ref: str =
                 if normalized_title and actual_title != normalized_title:
                     logger.info(
                         "[backport-batch] commit 与 title 不匹配，使用 commit 实际标题: index=%d, commit=%s, input_title=%s, actual_title=%s",
-                        idx,
-                        commit_id,
-                        normalized_title,
-                        actual_title,
+                        idx, commit_id, normalized_title, actual_title,
                     )
                 normalized_title = actual_title
             elif not commit_obj and normalized_title:
@@ -1078,8 +1029,7 @@ def _sort_commit_items_by_gitlog(commit_items, project_dir, preferred_ref: str =
                 if resolved_sha:
                     logger.info(
                         "[backport-batch] commit 无法解析，已由 title 修正: index=%d, new_commit=%s",
-                        idx,
-                        resolved_sha,
+                        idx, resolved_sha,
                     )
                     commit_id = resolved_sha
                     commit_obj = repo.commit(commit_id)
@@ -1093,43 +1043,127 @@ def _sort_commit_items_by_gitlog(commit_items, project_dir, preferred_ref: str =
             if commit_obj and not normalized_title:
                 normalized_title = commit_obj.summary.strip()
 
-            commit_time = commit_obj.committed_datetime
-            commit_sha = commit_obj.hexsha
-            position = commit_position.get(commit_sha)
-            if position is None:
-                # commit 不在索引中（可能来自其他分支），排在最后，以 committed_datetime 兜底
-                logger.warning(
-                    "[backport-batch] commit 不在 git log 索引中，将排在末尾: %s, time=%s",
-                    commit_id,
-                    commit_time.isoformat(),
-                )
-                position = 999999999
-            else:
-                logger.info(
-                    "[backport-batch] 提交解析成功: index=%d, commit=%s, git_log_position=%d, time=%s",
-                    idx,
-                    commit_id,
-                    position,
-                    commit_time.isoformat(),
-                )
-
-            # 排序元组：(git_log_position, committed_datetime, original_idx)
-            sortable.append((position, commit_time, idx, commit_id, input_commit, normalized_title, item_config))
+            parsed_items.append((idx, commit_id, input_commit, normalized_title, item_config, commit_obj))
         except Exception as e:
             errors.append((idx, item, f"无法在源代码仓中解析 commit: {commit_id}, error={e}"))
 
-    # 优先按 git log 位置排序，其次按时间，最后按原始索引（保证稳定性）
+    if not parsed_items:
+        return [], errors
+
+    # 按 committed_datetime 预排序
+    parsed_items.sort(key=lambda x: (x[5].committed_datetime, x[0]))
+
+    # 检查是否存在时间戳相同的提交（精确到秒）
+    from collections import defaultdict
+    time_groups = defaultdict(list)
+    for item in parsed_items:
+        # 使用 Unix 时间戳（秒级）作为分组键
+        time_key = int(item[5].committed_date)
+        time_groups[time_key].append(item)
+
+    # 判断是否需要拓扑排序
+    conflict_groups = [group for group in time_groups.values() if len(group) > 1]
+
+    if not conflict_groups:
+        # 所有提交时间戳都不同，直接按时间排序返回（无需 git 调用）
+        logger.info("[backport-batch] 所有提交时间戳不同，直接按时间排序返回，无需拓扑排序")
+        sorted_items = []
+        for idx, commit_id, input_commit, normalized_title, item_config, commit_obj in parsed_items:
+            sorted_items.append({
+                "commit": commit_obj.hexsha,
+                "input_commit": input_commit,
+                "commit_title": normalized_title,
+                "item_config": item_config,
+                "committed_datetime": commit_obj.committed_datetime.isoformat(),
+                "git_log_position": None,  # 未使用拓扑排序
+            })
+        return sorted_items, errors
+
+    # 阶段二：存在时间戳冲突，需要拓扑排序
+    logger.info("[backport-batch] 发现 %d 组时间戳冲突的提交，执行拓扑排序", len(conflict_groups))
+
+    # 收集所有需要拓扑排序的 SHA（仅冲突组中的提交）
+    conflict_shas = set()
+    for group in conflict_groups:
+        for item in group:
+            conflict_shas.add(item[5].hexsha)
+
+    logger.info("[backport-batch] 共 %d 个提交需要拓扑排序", len(conflict_shas))
+
+    # 构建拓扑位置索引（仅对冲突的提交）
+    commit_position = {}
+    try:
+        if conflict_shas:
+            # 下界：所有冲突提交的公共祖先
+            try:
+                merge_base = repo.git.merge_base("--octopus", *conflict_shas).strip()
+            except Exception:
+                merge_base = None
+
+            # 上界：冲突提交中时间最新的那个
+            newest_sha = max(conflict_shas, key=lambda s: repo.commit(s).committed_datetime)
+
+            if merge_base:
+                rev_range = f"{merge_base}..{newest_sha}"
+            else:
+                rev_range = newest_sha
+                logger.warning("[backport-batch] 无法找到公共祖先，回退为 newest 的全量历史")
+
+            # rev-list 输出严格拓扑顺序（从新到旧）
+            rev_list = repo.git.rev_list(rev_range).splitlines()
+            # 只记录冲突提交的拓扑位置
+            for i, sha in enumerate(rev_list):
+                if sha in conflict_shas:
+                    # 位置值越小表示越旧（从旧到新排序）
+                    commit_position[sha] = len(rev_list) - 1 - i
+
+            logger.info(
+                "[backport-batch] 拓扑索引构建完成：range=%s, 冲突提交中 %d/%d 个在索引中",
+                rev_range, len(commit_position), len(conflict_shas)
+            )
+    except Exception as e:
+        logger.error("[backport-batch] 拓扑索引构建失败：%s", e)
+        # 失败时回退到纯时间排序，但给冲突组一个基于原始索引的微调
+        commit_position = {}
+
+    # 最终排序：时间（主键）+ 拓扑位置（次键，同时间组内）+ 原始索引（三键）
+    # 构造排序键：(time_key, topo_position_or_fallback, original_idx)
+    sortable = []
+    for idx, commit_id, input_commit, normalized_title, item_config, commit_obj in parsed_items:
+        sha = commit_obj.hexsha
+        time_key = int(commit_obj.committed_date)
+
+        # 拓扑位置：如果在索引中则用真实位置，否则用原始索引作为兜底（保证稳定性）
+        if sha in commit_position:
+            topo_pos = commit_position[sha]
+        else:
+            # 不在拓扑索引中（可能是独立分支），用原始索引+大偏移量排在后面
+            topo_pos = 999999 + idx
+
+        sortable.append((
+            time_key,      # 主键：时间戳
+            topo_pos,      # 次键：拓扑位置（同时间组内）
+            idx,           # 三键：原始索引（保证稳定性）
+            sha,
+            input_commit,
+            normalized_title,
+            item_config,
+            commit_obj.committed_datetime.isoformat(),
+        ))
+
     sortable.sort(key=lambda x: (x[0], x[1], x[2]))
+
     sorted_items = []
-    for position, commit_time, _, commit_id, input_commit, commit_title, item_config in sortable:
+    for _, topo_pos, _, sha, input_commit, normalized_title, item_config, iso_time in sortable:
         sorted_items.append({
-            "commit": commit_id,
+            "commit": sha,
             "input_commit": input_commit,
-            "commit_title": commit_title,
+            "commit_title": normalized_title,
             "item_config": item_config,
-            "committed_datetime": commit_time.isoformat(),
-            "git_log_position": position if position != 999999999 else None,
+            "committed_datetime": iso_time,
+            "git_log_position": topo_pos if topo_pos < 999999 else None,
         })
+
     return sorted_items, errors
 
 def _write_commit_patch_file(commit_id: str, project_dir: str):
