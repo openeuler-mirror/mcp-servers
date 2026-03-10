@@ -2,21 +2,26 @@ from __future__ import annotations
 
 import logging
 import os
+import copy
 
 import git
 import yaml
 from dataclasses import dataclass
 
 from .backporting import run_backport_from_config
+from .apply_patch import extract_commit_message_from_patch
 from .locales import i18n
 from tabulate import tabulate
 
 logger = logging.getLogger(__name__)
 
+import readline
+
 @dataclass
 class BackportBatchContext:
     config: dict
     is_report_config: bool
+    report_output_path: str
     base_config: dict
     base_project_dir: str
     base_target_path: str
@@ -24,16 +29,144 @@ class BackportBatchContext:
     sort_errors: list
 
 
+def generate_backport_batch_config_from_excel(
+    *,
+    excel_path: str,
+    output_path: str,
+    template_config_path: str | None = None,
+    sheet_name: str | None = None,
+):
+    """根据 Excel 生成 backport-batch 原始配置文件。"""
+    if not excel_path:
+        raise ValueError("请提供 Excel 文件路径")
+    if not os.path.exists(excel_path):
+        raise ValueError(f"Excel 文件不存在: {excel_path}")
+    if not output_path:
+        raise ValueError("请通过 -o/--output 指定输出配置文件路径")
+
+    try:
+        from openpyxl import load_workbook
+    except Exception as e:
+        raise ValueError(
+            "缺少 openpyxl 依赖，无法读取 Excel。请先安装: pip install openpyxl"
+        ) from e
+
+    workbook = load_workbook(excel_path, read_only=True, data_only=True)
+    if sheet_name:
+        if sheet_name not in workbook.sheetnames:
+            raise ValueError(
+                f"指定 sheet 不存在: {sheet_name}，可选: {workbook.sheetnames}"
+            )
+        worksheet = workbook[sheet_name]
+    else:
+        worksheet = workbook[workbook.sheetnames[0]]
+
+    rows = worksheet.iter_rows(values_only=True)
+    try:
+        header_row = next(rows)
+    except StopIteration:
+        raise ValueError("Excel 内容为空，无法生成配置")
+
+    title_idx, hash_idx = _resolve_excel_commit_columns(header_row)
+    commits = []
+    for row in rows:
+        if not row:
+            continue
+        commit_title = _normalize_excel_cell_value(row, title_idx)
+        commit_hash = _normalize_excel_cell_value(row, hash_idx)
+        if not commit_title and not commit_hash:
+            continue
+        commit_item = {}
+        if commit_hash:
+            commit_item["commit"] = commit_hash
+        if commit_title:
+            commit_item["commit_title"] = commit_title
+        commits.append(commit_item)
+
+    if not commits:
+        raise ValueError("Excel 中未解析到有效提交记录（commit title / commit hash）")
+
+    base_config = {}
+    if template_config_path:
+        if not os.path.exists(template_config_path):
+            raise ValueError(f"模板配置文件不存在: {template_config_path}")
+        with open(template_config_path, "r", encoding="utf-8") as file:
+            loaded = yaml.safe_load(file) or {}
+        if not isinstance(loaded, dict):
+            raise ValueError("模板配置必须是对象/字典结构")
+        base_config = {k: v for k, v in loaded.items() if k != "commits"}
+
+    base_config["commits"] = commits
+    with open(output_path, "w", encoding="utf-8") as file:
+        yaml.safe_dump(base_config, file, allow_unicode=True, sort_keys=False)
+
+    return {
+        "status": "success",
+        "action": "generate-backport-batch-config",
+        "excel_path": excel_path,
+        "sheet_name": worksheet.title,
+        "output_path": output_path,
+        "commit_count": len(commits),
+        "template_config_path": template_config_path or "",
+    }
+
+
+def _normalize_excel_header(value) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip().lower()
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+def _resolve_excel_commit_columns(header_row):
+    if not header_row:
+        raise ValueError("Excel 首行为空，无法识别列名")
+    normalized_headers = [_normalize_excel_header(value) for value in header_row]
+
+    title_aliases = {"committitle", "title", "subject", "patchtitle"}
+    hash_aliases = {"commithash", "commit", "hash", "sha", "commitid"}
+
+    title_idx = None
+    hash_idx = None
+    for idx, normalized in enumerate(normalized_headers):
+        if title_idx is None and normalized in title_aliases:
+            title_idx = idx
+        if hash_idx is None and normalized in hash_aliases:
+            hash_idx = idx
+
+    if title_idx is None or hash_idx is None:
+        raise ValueError(
+            "Excel 缺少必需列，请包含 commit title 与 commit hash。"
+            f"检测到列: {list(header_row)}"
+        )
+    return title_idx, hash_idx
+
+
+def _normalize_excel_cell_value(row, idx) -> str:
+    if idx is None or idx >= len(row):
+        return ""
+    value = row[idx]
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 def handle_backport_batch(args):
     """处理批量补丁回移植逻辑（从 cli 入口拆分到 utils 模块）"""
+    if getattr(args, "apply", None):
+        return _handle_direct_apply_backported_patch(args)
     logger.info("[backport-batch] 开始处理: config=%s", args.backport_config)
     context = _prepare_backport_batch_context(args)
+    if context is None:
+        logger.info("[backport-batch] 用户在交互模式中选择退出，停止执行")
+        return []
     is_report_config = context.is_report_config
     base_config = context.base_config
     base_project_dir = context.base_project_dir
     base_target_path = context.base_target_path
     sorted_items = context.sorted_items
     sort_errors = context.sort_errors
+    report_output_path = context.report_output_path or args.backport_config
 
     default_target_branch = args.branch
     results, report_items = _execute_backport_batch_items(
@@ -55,8 +188,300 @@ def handle_backport_batch(args):
         llm_provider=args.llm_provider,
         report_items=report_items,
     )
-    _write_backport_batch_report(args.backport_config, is_report_config, report)
+    _write_backport_batch_report(report_output_path, is_report_config, report)
     return results
+
+
+def _build_commit_message_from_original_patch(original_patch_path: str):
+    message, _ = extract_commit_message_from_patch(original_patch_path)
+    return message
+
+
+def _looks_like_patch_path(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    return value.strip().endswith(".patch") or os.path.sep in value or value.startswith(".")
+
+
+def _resolve_item_config(item, is_report_config):
+    return item if is_report_config else item.get("item_config", {})
+
+
+def _select_apply_item(sorted_items, is_report_config, apply_value: str):
+    query = (apply_value or "").strip()
+    if not query:
+        raise ValueError("--apply 不能为空")
+
+    normalized_query = os.path.abspath(os.path.expanduser(query)) if _looks_like_patch_path(query) else query
+    by_path = _looks_like_patch_path(query)
+    matches = []
+    for item in sorted_items:
+        item_config = _resolve_item_config(item, is_report_config)
+        if by_path:
+            candidate_paths = [
+                item_config.get("backported_patch_path"),
+                item_config.get("patch_path"),
+                item_config.get("original_patch_path"),
+            ]
+            normalized_candidates = []
+            for candidate_path in candidate_paths:
+                if not candidate_path:
+                    continue
+                normalized_candidates.append(
+                    os.path.abspath(os.path.expanduser(str(candidate_path)))
+                )
+            if normalized_query in normalized_candidates:
+                matches.append(item)
+        else:
+            commit_candidates = [
+                str(item.get("commit") or "").strip(),
+                str(item.get("input_commit") or "").strip(),
+            ]
+            if any(candidate.lower().startswith(query.lower()) for candidate in commit_candidates if candidate):
+                matches.append(item)
+
+    if not matches:
+        mode = "patch路径" if by_path else "commit id"
+        raise ValueError(f"在配置中未找到匹配的 {mode}: {query}")
+    if len(matches) > 1:
+        raise ValueError(f"--apply 匹配到多个提交，请提供更精确值: {query}")
+    return matches[0]
+
+
+def _infer_original_patch_path(item_config: dict, commit_id: str, base_config: dict, args):
+    original_patch_path = item_config.get("original_patch_path")
+    if original_patch_path and os.path.exists(original_patch_path):
+        return original_patch_path
+
+    base_dataset_dir = (
+        item_config.get("patch_dataset_dir")
+        or base_config.get("patch_dataset_dir")
+        or args.patch_dataset_dir
+    )
+    if not base_dataset_dir or not commit_id:
+        return ""
+
+    commit_dataset_dir = os.path.join(base_dataset_dir, str(commit_id))
+    if not os.path.isdir(commit_dataset_dir):
+        return ""
+    candidates = sorted(
+        filename
+        for filename in os.listdir(commit_dataset_dir)
+        if filename.startswith("original_") and filename.endswith(".patch")
+    )
+    if not candidates:
+        return ""
+    return os.path.join(commit_dataset_dir, candidates[0])
+
+
+def _apply_patch_file_to_target_repo(
+    *,
+    target_path: str,
+    target_branch: str,
+    patch_path: str,
+    commit_message: str,
+    signer_name: str = "",
+    signer_email: str = "",
+):
+    if not patch_path or not os.path.exists(patch_path):
+        return {"status": "failed", "error": f"补丁文件不存在: {patch_path}"}
+
+    target_repo = git.Repo(target_path)
+    _ensure_clean_and_checkout(target_repo, target_branch)
+    original_head = target_repo.head.commit.hexsha
+
+    try:
+        already_applied, reverse_check_error = _is_patch_applied_in_target(
+            target_path, target_branch, patch_path
+        )
+        if already_applied:
+            return {"status": "skipped", "error": "目标分支已包含该补丁"}
+
+        target_repo.git.apply(patch_path)
+        target_repo.git.add("--all")
+        if not target_repo.is_dirty(index=True, working_tree=True, untracked_files=False):
+            return {"status": "skipped", "error": "补丁未产生变更（可能已等效存在）"}
+
+        commit_args = ["-m", commit_message, "-s"]
+        use_signer_identity = bool(signer_name and signer_email)
+        if use_signer_identity:
+            commit_args.append(f"--author={signer_name} <{signer_email}>")
+        if use_signer_identity:
+            with target_repo.git.custom_environment(
+                GIT_COMMITTER_NAME=signer_name,
+                GIT_COMMITTER_EMAIL=signer_email,
+            ):
+                target_repo.git.commit(*commit_args)
+        else:
+            target_repo.git.commit(*commit_args)
+        return {
+            "status": "success",
+            "commit": target_repo.head.commit.hexsha,
+        }
+    except Exception as e:
+        _reset_hard_and_clean(target_repo, original_head)
+        if reverse_check_error:
+            return {"status": "failed", "error": f"{e}; reverse-check={reverse_check_error}"}
+        return {"status": "failed", "error": str(e)}
+
+
+def _handle_direct_apply_backported_patch(args):
+    logger.info("[backport-batch] 进入直接 apply 模式: apply=%s", args.apply)
+    context = _prepare_backport_batch_context(args)
+    if context is None:
+        return {
+            "status": "cancelled",
+            "action": "backport-batch-apply",
+            "message": "用户在交互模式中退出",
+        }
+
+    item = _select_apply_item(
+        context.sorted_items,
+        context.is_report_config,
+        args.apply,
+    )
+    item_config = _resolve_item_config(item, context.is_report_config)
+    commit_id = item.get("commit") or item.get("input_commit") or ""
+    target_branch = _resolve_target_branch(item_config, context.base_config, args.branch)
+    if not target_branch:
+        raise ValueError("未找到目标分支，请在配置中设置 target_release/target_branch 或传入 --branch")
+
+    apply_value = str(args.apply).strip()
+    apply_by_path = _looks_like_patch_path(apply_value)
+    if apply_by_path:
+        patch_path = os.path.abspath(os.path.expanduser(apply_value))
+    else:
+        patch_path = (
+            item_config.get("backported_patch_path")
+            or item_config.get("patch_path")
+            or item_config.get("original_patch_path")
+            or ""
+        )
+
+    if not patch_path:
+        raise ValueError(f"未找到可应用的补丁路径: commit={commit_id}")
+    if not os.path.exists(patch_path):
+        raise ValueError(f"补丁文件不存在: {patch_path}")
+
+    original_patch_path = _infer_original_patch_path(
+        item_config=item_config,
+        commit_id=str(commit_id),
+        base_config=context.base_config,
+        args=args,
+    )
+    commit_message_source = original_patch_path or patch_path
+    commit_message = _build_commit_message_from_original_patch(commit_message_source)
+    apply_result = _apply_patch_file_to_target_repo(
+        target_path=context.base_target_path,
+        target_branch=target_branch,
+        patch_path=patch_path,
+        commit_message=commit_message,
+        signer_name=str(getattr(args, "signer_name", "") or "").strip(),
+        signer_email=str(getattr(args, "signer_email", "") or "").strip(),
+    )
+    if apply_result.get("status") == "success":
+        _write_apply_status_to_report_config(
+            config_path=args.backport_config,
+            config=context.config,
+            selected_item=item,
+            selected_item_config=item_config,
+            selected_commit_id=str(commit_id or ""),
+            applied_patch_path=patch_path,
+            target_branch=target_branch,
+            applied_commit=apply_result.get("commit"),
+        )
+    return {
+        "action": "backport-batch-apply",
+        "status": apply_result.get("status"),
+        "apply": args.apply,
+        "commit": commit_id,
+        "target_branch": target_branch,
+        "patch_path": patch_path,
+        "original_patch_path": original_patch_path,
+        "commit_message_source": commit_message_source,
+        "applied_commit": apply_result.get("commit"),
+        "error": apply_result.get("error"),
+    }
+
+
+def _write_apply_status_to_report_config(
+    *,
+    config_path: str,
+    config: dict,
+    selected_item: dict,
+    selected_item_config: dict,
+    selected_commit_id: str,
+    applied_patch_path: str,
+    target_branch: str,
+    applied_commit: str | None,
+):
+    if not isinstance(config, dict):
+        return
+    commit_items = config.get("commits")
+    if not isinstance(commit_items, list):
+        return
+
+    selected_input_commit = str(selected_item.get("input_commit") or "").strip()
+    selected_paths = set()
+    for path_value in [
+        applied_patch_path,
+        selected_item_config.get("backported_patch_path"),
+        selected_item_config.get("patch_path"),
+        selected_item_config.get("original_patch_path"),
+    ]:
+        if not path_value:
+            continue
+        selected_paths.add(os.path.abspath(os.path.expanduser(str(path_value))))
+
+    matched_index = None
+    for idx, item in enumerate(commit_items):
+        if not isinstance(item, dict):
+            continue
+        item_commit = str(item.get("commit") or "").strip()
+        item_input_commit = str(item.get("input_commit") or "").strip()
+        commit_matched = False
+        if selected_commit_id and item_commit and item_commit.lower().startswith(selected_commit_id.lower()):
+            commit_matched = True
+        elif selected_commit_id and selected_commit_id.lower().startswith(item_commit.lower()) and item_commit:
+            commit_matched = True
+        elif selected_input_commit and item_input_commit and item_input_commit.lower() == selected_input_commit.lower():
+            commit_matched = True
+
+        path_matched = False
+        for candidate in [
+            item.get("backported_patch_path"),
+            item.get("patch_path"),
+            item.get("original_patch_path"),
+        ]:
+            if not candidate:
+                continue
+            normalized = os.path.abspath(os.path.expanduser(str(candidate)))
+            if normalized in selected_paths:
+                path_matched = True
+                break
+
+        if commit_matched or path_matched:
+            matched_index = idx
+            break
+
+    if matched_index is None:
+        return
+
+    matched_item = commit_items[matched_index]
+    matched_item["merged_in_target"] = True
+    matched_item["merged_check_error"] = None
+    matched_item["has_conflict"] = False
+    matched_item["conflict_check_method"] = "apply"
+    matched_item["conflict_check_error"] = None
+    matched_item["status"] = "success"
+    matched_item["error"] = None
+    matched_item["patch_path"] = applied_patch_path
+    matched_item["target_branch"] = target_branch
+    if applied_commit:
+        matched_item["applied_commit"] = applied_commit
+
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
 
 
 def _load_backport_batch_config(config_path: str):
@@ -97,13 +522,23 @@ def _normalize_backport_batch_commits(commit_items):
 def _is_report_config(config_path: str, commit_items):
     if isinstance(config_path, str) and config_path.endswith(".report.yml"):
         return True
-    if not isinstance(commit_items, list):
-        return False
-    for item in commit_items:
-        if not isinstance(item, dict):
-            continue
-        if "has_conflict" in item or "conflict_check_method" in item or "merged_in_target" in item:
-            return True
+    # 非 .report.yml 一律视为原始配置：
+    # 即使条目中包含 report 字段（例如复制自 report 或手工补充），也不进入 report 执行路径，
+    # 只生成/刷新对应的 .report.yml，避免误触发补丁应用。
+    if isinstance(commit_items, list):
+        for item in commit_items:
+            if not isinstance(item, dict):
+                continue
+            if (
+                "has_conflict" in item
+                or "conflict_check_method" in item
+                or "merged_in_target" in item
+            ):
+                logger.info(
+                    "[backport-batch] 检测到 report 字段但配置文件非 .report.yml，仍按 raw 处理: config=%s",
+                    config_path,
+                )
+                break
     return False
 
 def _extract_commit_item(item):
@@ -131,7 +566,7 @@ def _normalize_commit_title(commit_title: str) -> str:
     return commit_title.strip() if isinstance(commit_title, str) else ""
 
 
-def _parse_merged_in_target_value(value: str):
+def _parse_merged_in_target_value(value: str, *, allow_skipped: bool = False):
     if value is None:
         return None
     text = str(value).strip().lower()
@@ -141,56 +576,282 @@ def _parse_merged_in_target_value(value: str):
         return False
     if text in {"none", "null", "na", "n/a", "-"}:
         return None
+    if allow_skipped and text == "skipped":
+        return "skipped"
     return "invalid"
+
+
+def _interactive_input(prompt_text: str) -> str:
+    """在可用时启用 readline 行编辑和历史能力。"""
+    if readline is not None:
+        try:
+            readline.parse_and_bind("set editing-mode emacs")
+            readline.parse_and_bind("tab: complete")
+        except Exception:
+            pass
+    text = input(prompt_text)
+    if readline is not None:
+        try:
+            stripped = text.strip()
+            if stripped:
+                readline.add_history(stripped)
+        except Exception:
+            pass
+    return text
+
+
+def _parse_bool_text(value: str):
+    if value is None:
+        return "invalid"
+    text = str(value).strip().lower()
+    if text in {"1", "true", "t", "yes", "y"}:
+        return True
+    if text in {"0", "false", "f", "no", "n"}:
+        return False
+    return "invalid"
+
+
+def _match_commit_item_with_query(item: dict, query: str):
+    if not isinstance(item, dict):
+        return False, "条目格式无效"
+    raw_query = (query or "").strip()
+    if not raw_query:
+        return False, "搜索条件不能为空"
+
+    key = ""
+    value = raw_query
+    if ":" in raw_query:
+        key, value = raw_query.split(":", 1)
+    elif "=" in raw_query:
+        key, value = raw_query.split("=", 1)
+    key = key.strip().lower()
+    value = value.strip()
+
+    if key in {"", "title", "tiltle", "commit_title"}:
+        title = str(item.get("commit_title") or "")
+        return title.lower().startswith(value.lower()), None
+
+    if key in {"has_conflict", "conflict"}:
+        expected = _parse_bool_text(value)
+        if expected == "invalid":
+            return False, "has_conflict 只支持 true/false"
+        actual = bool(item.get("has_conflict"))
+        return actual == expected, None
+
+    if key in {"merged_in_target", "merged"}:
+        expected = _parse_merged_in_target_value(value, allow_skipped=True)
+        if expected == "invalid":
+            return False, "merged_in_target 只支持 true/false/none/skipped"
+        actual = item.get("merged_in_target")
+        if item.get("is_merge_commit") or actual == "skipped":
+            actual = "skipped"
+        if isinstance(actual, str):
+            actual_text = actual.strip().lower()
+        else:
+            actual_text = actual
+        if expected == "skipped":
+            return actual_text == "skipped", None
+        return actual_text == expected, None
+
+    if key in {"commit", "sha"}:
+        commit_id = str(item.get("commit") or item.get("input_commit") or "")
+        return commit_id.lower().startswith(value.lower()), None
+
+    return False, f"不支持的搜索字段: {key}"
+
+
+def _filter_commit_items(commit_items: list, query: str):
+    filtered = []
+    for item in commit_items:
+        matched, error = _match_commit_item_with_query(item, query)
+        if error:
+            return None, error
+        if matched:
+            filtered.append(item)
+    return filtered, None
+
+
+def _parse_index_ranges(text: str, max_index: int):
+    if max_index <= 0:
+        return [], "当前没有可操作的提交"
+    if not text or not text.strip():
+        return [], "请输入索引或区间"
+
+    selected = set()
+    parts = [part.strip() for part in text.split(",") if part.strip()]
+    if not parts:
+        return [], "请输入索引或区间"
+    for part in parts:
+        if "-" in part:
+            left, right = part.split("-", 1)
+            left = left.strip()
+            right = right.strip()
+            if not left.isdigit() or not right.isdigit():
+                return [], f"区间格式无效: {part}"
+            start = int(left)
+            end = int(right)
+            if start > end:
+                start, end = end, start
+            if start < 0 or end >= max_index:
+                return [], f"索引超出范围: {part}"
+            for idx in range(start, end + 1):
+                selected.add(idx)
+        else:
+            if not part.isdigit():
+                return [], f"索引格式无效: {part}"
+            idx = int(part)
+            if idx < 0 or idx >= max_index:
+                return [], f"索引超出范围: {part}"
+            selected.add(idx)
+    return sorted(selected), None
+
+
+def _build_filtered_report_path(config_path: str):
+    if not isinstance(config_path, str) or not config_path:
+        return ""
+    suffix = ".report.yml"
+    if config_path.endswith(suffix):
+        prefix = config_path[: -len(suffix)]
+    else:
+        prefix = config_path
+    candidate = f"{prefix}.filtered.report.yml"
+    if not os.path.exists(candidate):
+        return candidate
+    index = 1
+    while True:
+        candidate = f"{prefix}.filtered.{index}.report.yml"
+        if not os.path.exists(candidate):
+            return candidate
+        index += 1
+
+
+def _save_filtered_report_config(config_path: str, config: dict, commit_items: list):
+    output_path = _build_filtered_report_path(config_path)
+    if not output_path:
+        return ""
+    new_config = dict(config or {})
+    new_config["commits"] = commit_items
+    with open(output_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(new_config, f, allow_unicode=True, sort_keys=False)
+    return output_path
+
+
+def _interactive_items_changed(original_items: list, working_items: list) -> bool:
+    return original_items != working_items
 
 
 def _interactive_adjust_merged_in_target(config_path: str, config: dict, commit_items: list):
     if not isinstance(commit_items, list) or not commit_items:
-        return
+        return "continue"
+    original_items = copy.deepcopy(commit_items)
+    working_items = copy.deepcopy(commit_items)
     print("")
     print("进入交互模式：可修改 merged_in_target（true/false/none）。")
+    print("说明：merged_in_target=skipped 代表 merge commit，且不可修改。")
     print("输入格式：<索引> <值>，例如：0 true")
-    print("输入 q 退出，输入 l 重新列表。")
+    print("输入 l 重新列表，输入 c 继续执行，输入 q 退出。")
+    print("输入 save 或 w 仅保存当前筛选结果并退出。")
+    print("输入 search 进入筛选；示例：search> has_conflict=true 或 search> title: drm/hisilicon/hibmc")
+    print("输入 d 或 delete 删除当前列表条目；示例：delete> 0-10, 18,19")
+    print("输入 reset 恢复到原始列表。")
     while True:
         rows = []
-        for idx, item in enumerate(commit_items):
+        for idx, item in enumerate(working_items):
             if not isinstance(item, dict):
-                item = {"commit": item}
-                commit_items[idx] = item
+                display_item = {"commit": item}
+            else:
+                display_item = item
+            display_commit = display_item.get("commit") or display_item.get("input_commit") or ""
+            if isinstance(display_commit, str) and _looks_like_commit_sha(display_commit):
+                display_commit = display_commit[:12]
+            display_merged_status = (
+                "skipped"
+                if display_item.get("is_merge_commit") or display_item.get("merged_in_target") == "skipped"
+                else display_item.get("merged_in_target")
+            )
             rows.append([
                 idx,
-                item.get("commit") or item.get("input_commit") or "",
-                (item.get("commit_title") or "")[:60],
-                item.get("target_branch") or item.get("target_release") or "",
-                item.get("merged_in_target"),
+                display_commit,
+                (display_item.get("commit_title") or "")[:60],
+                display_merged_status,
+                display_item.get("has_conflict"),
             ])
         print("")
-        print(tabulate(rows, headers=["idx", "commit", "title", "target", "merged_in_target"], tablefmt="github"))
-        cmd = input("merged_in_target> ").strip()
+        print(f"当前显示提交数: {len(working_items)} / 原始总数: {len(original_items)}")
+        print(tabulate(rows, headers=["idx", "commit", "title", "merged_in_target", "has_conflict"], tablefmt="github"))
+        cmd = _interactive_input("merged_in_target> ").strip()
         if not cmd or cmd.lower() in {"l", "list", "ls"}:
             continue
+        if cmd.lower() in {"c", "continue"}:
+            commit_items[:] = working_items
+            config["commits"] = working_items
+            if _interactive_items_changed(original_items, working_items):
+                filtered_path = _save_filtered_report_config(config_path, config, working_items)
+                if filtered_path:
+                    config["_interactive_output_report_path"] = filtered_path
+                    print(f"已保存筛选配置: {filtered_path}（commits={len(working_items)}）")
+            else:
+                print("未检测到筛选变更，继续使用原配置。")
+            return "continue"
+        if cmd.lower() in {"save", "w"}:
+            commit_items[:] = working_items
+            config["commits"] = working_items
+            if _interactive_items_changed(original_items, working_items):
+                filtered_path = _save_filtered_report_config(config_path, config, working_items)
+                if filtered_path:
+                    config["_interactive_output_report_path"] = filtered_path
+                    print(f"已保存筛选配置: {filtered_path}（commits={len(working_items)}）")
+            else:
+                print("未检测到筛选变更，未生成新配置文件。")
+            return "save"
         if cmd.lower() in {"q", "quit", "exit"}:
-            break
+            return "quit"
+        if cmd.lower() in {"search", "s"}:
+            query = _interactive_input("search> ").strip()
+            filtered_items, search_error = _filter_commit_items(working_items, query)
+            if search_error:
+                print(f"搜索条件错误：{search_error}")
+                continue
+            working_items = filtered_items
+            print(f"筛选完成：命中 {len(working_items)} 条")
+            continue
+        if cmd.lower() in {"delete", "d"}:
+            delete_expr = _interactive_input("delete> ").strip()
+            delete_indexes, delete_error = _parse_index_ranges(delete_expr, len(working_items))
+            if delete_error:
+                print(f"删除参数错误：{delete_error}")
+                continue
+            delete_set = set(delete_indexes)
+            working_items = [item for idx, item in enumerate(working_items) if idx not in delete_set]
+            print(f"删除完成：已删除 {len(delete_set)} 条，剩余 {len(working_items)} 条")
+            continue
+        if cmd.lower() in {"reset", "r"}:
+            working_items = list(original_items)
+            print(f"已恢复原始列表，共 {len(working_items)} 条")
+            continue
         parts = cmd.split(None, 1)
         if len(parts) != 2:
-            print("输入格式错误：请使用 <索引> <值>（true/false/none）")
+            print("输入格式错误：请使用 <索引> <值>（true/false/none），或输入 search/delete/reset/save/c/q")
             continue
         try:
             idx = int(parts[0])
         except ValueError:
             print("索引必须是数字")
             continue
-        if idx < 0 or idx >= len(commit_items):
+        if idx < 0 or idx >= len(working_items):
             print("索引超出范围")
             continue
         merged_value = _parse_merged_in_target_value(parts[1])
         if merged_value == "invalid":
             print("值无效：可用 true/false/none")
             continue
-        item = commit_items[idx]
+        item = working_items[idx]
         if not isinstance(item, dict):
             item = {"commit": item}
-            commit_items[idx] = item
+            working_items[idx] = item
+        if item.get("is_merge_commit") or item.get("merged_in_target") == "skipped":
+            print(f"idx={idx} 是 merge commit，状态为 skipped，不允许修改 merged_in_target")
+            continue
         item["merged_in_target"] = merged_value
         item["merged_check_error"] = None
         print(f"已更新 idx={idx} merged_in_target={merged_value}")
@@ -384,15 +1045,24 @@ def _sort_commit_items_by_time(commit_items, project_dir, preferred_ref: str = "
 def _write_commit_patch_file(commit_id: str, project_dir: str):
     repo = git.Repo(project_dir)
     full_sha = repo.git.rev_parse(commit_id)
+    commit_obj = repo.commit(full_sha)
+    if len(commit_obj.parents) > 1:
+        logger.info(
+            "[backport-batch] merge commit 跳过生成原始补丁: commit=%s",
+            full_sha,
+        )
+        return full_sha, ""
     clone_dir = os.path.dirname(project_dir.rstrip("/"))
     patch_path = os.path.join(clone_dir, f"commit_patch_{full_sha}.patch")
     try:
-        commit_obj = repo.commit(full_sha)
-        if len(commit_obj.parents) > 1:
-            parent_sha = commit_obj.parents[0].hexsha
-            patch_content = repo.git.diff(parent_sha, full_sha, "--patch", "--no-color")
-        else:
-            patch_content = repo.git.show(full_sha, "--patch", "--no-color")
+        # 使用 format-patch 生成标准 mbox 格式，便于复用统一的 commit message 解析逻辑
+        # 输出形态示例：From/From:/Date:/Subject: ... --- diff --git ...
+        patch_content = repo.git.format_patch(
+            "-1",
+            "--stdout",
+            "--no-signature",
+            full_sha,
+        )
         if patch_content and not patch_content.endswith("\n"):
             # Ensure the patch ends with a newline to avoid "corrupt patch" errors.
             patch_content += "\n"
@@ -477,14 +1147,15 @@ def _check_conflict_with_apply_or_cherrypick(
     upstream_repo = git.Repo(project_dir)
     commit_obj = upstream_repo.commit(commit_sha)
     is_merge_commit = len(commit_obj.parents) > 1
+    if is_merge_commit:
+        return False, "merge-commit-skipped", None
     apply_error = None
-    if not is_merge_commit:
-        # 优先用 git apply --check（merge commit 不适用）
-        try:
-            target_repo.git.apply("--check", patch_path)
-            return False, "apply", None
-        except git.exc.GitCommandError as e:
-            apply_error = str(e)
+    # 优先用 git apply --check
+    try:
+        target_repo.git.apply("--check", patch_path)
+        return False, "apply", None
+    except git.exc.GitCommandError as e:
+        apply_error = str(e)
 
     # 再尝试 cherry-pick
     original_head = target_repo.head.commit.hexsha
@@ -496,10 +1167,7 @@ def _check_conflict_with_apply_or_cherrypick(
                 target_repo.create_remote(remote_name, upstream_url)
             target_repo.remotes[remote_name].fetch()
 
-        if is_merge_commit:
-            target_repo.git.cherry_pick("-m", "1", commit_sha)
-        else:
-            target_repo.git.cherry_pick(commit_sha)
+        target_repo.git.cherry_pick(commit_sha)
         _reset_hard_and_clean(target_repo, original_head)
         return False, "cherry-pick", None
     except git.exc.GitCommandError as e:
@@ -528,16 +1196,15 @@ def _apply_patch_to_target_repo(
         upstream_repo = git.Repo(project_dir)
         commit_obj = upstream_repo.commit(commit_sha)
         is_merge_commit = len(commit_obj.parents) > 1
+        if is_merge_commit:
+            return {"status": "skipped", "error": "merge commit 已跳过"}
         if os.path.abspath(target_repo.working_dir.rstrip("/")) != os.path.abspath(project_dir.rstrip("/")):
             upstream_url = os.path.abspath(project_dir.rstrip("/"))
             remote_name = "upstream"
             if remote_name not in [r.name for r in target_repo.remotes]:
                 target_repo.create_remote(remote_name, upstream_url)
             target_repo.remotes[remote_name].fetch()
-        if is_merge_commit:
-            target_repo.git.cherry_pick("-m", "1", commit_sha)
-        else:
-            target_repo.git.cherry_pick(commit_sha)
+        target_repo.git.cherry_pick(commit_sha)
         return {"status": "success"}
     except Exception as e:
         _abort_cherry_pick(target_repo)
@@ -621,19 +1288,28 @@ def _append_remaining_pending_items(
             or remaining_item_config.get("patch_path")
             or ""
         )
+        # report 重跑场景下，尽量保留历史检测状态，避免被 pending 覆盖为 null
+        remaining_merged_in_target = remaining_item_config.get("merged_in_target")
+        remaining_merged_check_error = remaining_item_config.get("merged_check_error")
+        remaining_has_conflict = remaining_item_config.get("has_conflict")
+        remaining_conflict_check_method = remaining_item_config.get("conflict_check_method")
+        remaining_conflict_check_error = remaining_item_config.get("conflict_check_error")
+        remaining_status = "pending"
+        if is_report_config and remaining_item_config.get("status"):
+            remaining_status = remaining_item_config.get("status")
         report_items.append({
             "commit": remaining_commit_id,
             "input_commit": remaining_input_commit,
             "commit_title": remaining_commit_title,
             "committed_datetime": remaining_committed_datetime,
             "target_branch": remaining_target_branch,
-            "status": "pending",
-            "merged_in_target": None,
-            "merged_check_error": None,
+            "status": remaining_status,
+            "merged_in_target": remaining_merged_in_target,
+            "merged_check_error": remaining_merged_check_error,
             "is_merge_commit": remaining_item_config.get("is_merge_commit"),
-            "has_conflict": None,
-            "conflict_check_method": None,
-            "conflict_check_error": None,
+            "has_conflict": remaining_has_conflict,
+            "conflict_check_method": remaining_conflict_check_method,
+            "conflict_check_error": remaining_conflict_check_error,
             "original_patch_path": remaining_original_patch_path,
             "backported_patch_path": None,
             "patch_path": remaining_original_patch_path,
@@ -653,13 +1329,29 @@ def _build_batch_summary_result(
     conflict_check_error,
     backport_result,
 ):
+    empty_patch = bool(backport_result.get("empty_patch"))
+    equivalent_exists = bool(backport_result.get("equivalent_exists"))
+    empty_and_equivalent = empty_patch and equivalent_exists
+    short_note = (
+        i18n("补丁实际上已应用（或等效存在），无需继续执行后续步骤")
+        if empty_and_equivalent and backport_result.get("status") == "success"
+        else ""
+    )
+    display_status = (
+        i18n("无需执行（补丁已存在）")
+        if empty_and_equivalent and backport_result.get("status") == "success"
+        else (i18n("成功") if backport_result.get("status") == "success" else i18n("需要调整"))
+    )
     result = {
         i18n("补丁ID"): tag or commit_id,
         i18n("目标分支"): target_branch,
-        i18n("适配状态"): i18n("成功") if backport_result.get("status") == "success" else i18n("需要调整"),
-        i18n("冲突点"): backport_result.get("backported_patch_path", backport_result.get("original_patch_path", "")),
+        i18n("适配状态"): display_status,
+        i18n("冲突点"): "" if empty_and_equivalent else (backport_result.get("backported_patch_path") or backport_result.get("original_patch_path", "")),
         i18n("建议调整文件"): "N/A" if backport_result.get("status") == "success" else "",
     }
+    if short_note:
+        # 兼容仅展示 error 字段的消费方，给出同样清晰的结论
+        result["error"] = short_note
     result["details"] = {
         "action": "backport-batch",
         "tag": tag or commit_id,
@@ -668,13 +1360,16 @@ def _build_batch_summary_result(
         "merged_in_target": merged_in_target,
         "merged_check_error": merged_check_error,
         "conflict_check": {
-            "has_conflict": has_conflict,
+            "has_conflict": False if empty_and_equivalent else has_conflict,
             "method": conflict_check_method,
             "error": conflict_check_error,
         },
         "original_patch_path": backport_result.get("original_patch_path"),
         "backported_patch_path": backport_result.get("backported_patch_path"),
         "diff_path": backport_result.get("diff_path"),
+        "empty_patch": empty_patch,
+        "equivalent_exists": equivalent_exists,
+        "error": short_note if short_note else backport_result.get("error"),
         "logfile": backport_result.get("logfile"),
         "time_cost": backport_result.get("time_cost"),
         "status": backport_result.get("status"),
@@ -683,7 +1378,7 @@ def _build_batch_summary_result(
         result["details"]["cost"] = backport_result["cost"]
     if "tokens" in backport_result:
         result["details"]["tokens"] = backport_result["tokens"]
-    if "error" in backport_result:
+    if "error" in backport_result and not short_note:
         result["details"]["error"] = backport_result["error"]
     return result
 
@@ -749,6 +1444,7 @@ def _resolve_merge_and_conflict_status(
     fixed_commit,
     patch_path,
     base_project_dir,
+    is_merge_commit,
     tag,
     commit_id,
     merged_in_target,
@@ -764,6 +1460,21 @@ def _resolve_merge_and_conflict_status(
             has_conflict,
             conflict_check_method,
             conflict_check_error,
+        )
+
+    if is_merge_commit:
+        logger.info(
+            "[backport-batch] merge commit 跳过合入/冲突检测: tag=%s, commit=%s, branch=%s",
+            tag or commit_id,
+            fixed_commit,
+            target_branch,
+        )
+        return (
+            "skipped",
+            "merge commit skipped",
+            False,
+            "merge-commit-skipped",
+            None,
         )
 
     use_config_merged = is_report_config and merged_in_target is not None
@@ -825,7 +1536,7 @@ def _resolve_merge_and_conflict_status(
                 merged_check_error,
             )
 
-    if not is_report_config:
+    if (not is_report_config) and (not merged_in_target):
         has_conflict, conflict_check_method, conflict_check_error = _check_conflict_with_apply_or_cherrypick(
             base_target_path,
             target_branch,
@@ -839,6 +1550,13 @@ def _resolve_merge_and_conflict_status(
             has_conflict,
             conflict_check_method,
             conflict_check_error,
+        )
+    elif not is_report_config:
+        logger.info(
+            "[backport-batch] 已判定目标分支包含补丁，跳过二次冲突检测: tag=%s, commit=%s, branch=%s",
+            tag or commit_id,
+            fixed_commit,
+            target_branch,
         )
 
     return (
@@ -902,8 +1620,11 @@ def _build_backport_runtime_config(
 def _execute_backport_batch_action(
     *,
     is_report_config,
+    is_merge_commit,
     merged_in_target,
     has_conflict,
+    conflict_check_method,
+    conflict_check_error,
     item_config,
     tag,
     commit_id,
@@ -916,6 +1637,24 @@ def _execute_backport_batch_action(
     args,
 ):
     did_backport = False
+    refreshed_status = None
+    if is_merge_commit:
+        logger.info(
+            "[backport-batch] merge commit 跳过处理: tag=%s, commit=%s, branch=%s",
+            tag or commit_id,
+            fixed_commit,
+            target_branch,
+        )
+        return {
+            "status": "skipped",
+            "original_patch_path": item_config.get("original_patch_path", "") or patch_path,
+            "backported_patch_path": item_config.get("backported_patch_path", ""),
+            "diff_path": item_config.get("diff_path", ""),
+            "logfile": item_config.get("logfile", ""),
+            "time_cost": 0,
+            "error": "merge commit 已跳过",
+        }, did_backport, refreshed_status
+
     if is_report_config:
         if merged_in_target:
             logger.info(
@@ -931,9 +1670,111 @@ def _execute_backport_batch_action(
                 "logfile": item_config.get("logfile", ""),
                 "time_cost": 0,
                 "error": "目标分支已包含该提交",
-            }, did_backport
+            }, did_backport, refreshed_status
 
         if has_conflict:
+            # report 场景下，冲突可能因前置补丁已应用而发生变化，进入回移植前先实时复检一次
+            latest_merged_in_target, latest_merged_check_error = _is_commit_merged_in_target(
+                base_target_path, target_branch, fixed_commit
+            )
+            latest_has_conflict = has_conflict
+            latest_conflict_check_method = conflict_check_method
+            latest_conflict_check_error = conflict_check_error
+
+            if latest_merged_in_target:
+                latest_has_conflict = False
+                latest_conflict_check_method = "merged"
+                latest_conflict_check_error = None
+            else:
+                patch_applied = False
+                patch_check_error = None
+                if patch_path:
+                    patch_applied, patch_check_error = _is_patch_applied_in_target(
+                        base_target_path, target_branch, patch_path
+                    )
+                if patch_applied:
+                    latest_merged_in_target = True
+                    latest_merged_check_error = None
+                    latest_has_conflict = False
+                    latest_conflict_check_method = "patch-reverse"
+                    latest_conflict_check_error = None
+                else:
+                    if patch_check_error:
+                        if latest_merged_check_error:
+                            latest_merged_check_error = (
+                                f"{latest_merged_check_error}; patch-reverse-check: {patch_check_error}"
+                            )
+                        else:
+                            latest_merged_check_error = f"patch-reverse-check: {patch_check_error}"
+                    (
+                        latest_has_conflict,
+                        latest_conflict_check_method,
+                        latest_conflict_check_error,
+                    ) = _check_conflict_with_apply_or_cherrypick(
+                        base_target_path,
+                        target_branch,
+                        fixed_commit,
+                        patch_path,
+                        base_project_dir,
+                    )
+
+            refreshed_status = {
+                "merged_in_target": latest_merged_in_target,
+                "merged_check_error": latest_merged_check_error,
+                "has_conflict": latest_has_conflict,
+                "conflict_check_method": latest_conflict_check_method,
+                "conflict_check_error": latest_conflict_check_error,
+            }
+            logger.info(
+                "[backport-batch] 冲突复检结果: tag=%s, merged_in_target=%s, has_conflict=%s, method=%s, error=%s",
+                tag or commit_id,
+                latest_merged_in_target,
+                latest_has_conflict,
+                latest_conflict_check_method,
+                latest_conflict_check_error,
+            )
+
+            if not latest_has_conflict:
+                if latest_merged_in_target:
+                    logger.info(
+                        "[backport-batch] 冲突复检后发现补丁已生效，跳过回移植: tag=%s, branch=%s",
+                        tag or commit_id,
+                        target_branch,
+                    )
+                    return {
+                        "status": "skipped",
+                        "original_patch_path": item_config.get("original_patch_path", "") or patch_path,
+                        "backported_patch_path": "",
+                        "diff_path": "",
+                        "logfile": "",
+                        "time_cost": 0,
+                        "error": "冲突复检后发现目标分支已包含该补丁",
+                    }, did_backport, refreshed_status
+
+                logger.info(
+                    "[backport-batch] 冲突复检后已无冲突，直接应用补丁: tag=%s, commit=%s, target_branch=%s",
+                    tag or commit_id,
+                    fixed_commit,
+                    target_branch,
+                )
+                apply_result = _apply_patch_to_target_repo(
+                    base_target_path,
+                    target_branch,
+                    fixed_commit,
+                    base_project_dir,
+                )
+                result = {
+                    "status": apply_result.get("status"),
+                    "original_patch_path": item_config.get("original_patch_path", "") or patch_path,
+                    "backported_patch_path": "",
+                    "diff_path": "",
+                    "logfile": "",
+                    "time_cost": 0,
+                }
+                if apply_result.get("error"):
+                    result["error"] = apply_result["error"]
+                return result, did_backport, refreshed_status
+
             logger.info(
                 "[backport-batch] 冲突存在，执行回移植：tag=%s, commit=%s, target_branch=%s",
                 tag or commit_id,
@@ -942,7 +1783,7 @@ def _execute_backport_batch_action(
             )
             logger.info("[backport-batch] 回移植配置: %s", config_dict)
             did_backport = True
-            return run_backport_from_config(config_dict, debug_mode=args.debug), did_backport
+            return run_backport_from_config(config_dict, debug_mode=args.debug), did_backport, refreshed_status
 
         logger.info(
             "[backport-batch] 无冲突，直接应用补丁: tag=%s, commit=%s, target_branch=%s",
@@ -960,7 +1801,7 @@ def _execute_backport_batch_action(
                 "logfile": item_config.get("logfile", ""),
                 "time_cost": 0,
                 "error": "缺少 patch_path，无法应用补丁",
-            }, did_backport
+            }, did_backport, refreshed_status
         apply_result = _apply_patch_to_target_repo(
             base_target_path,
             target_branch,
@@ -970,14 +1811,15 @@ def _execute_backport_batch_action(
         result = {
             "status": apply_result.get("status"),
             "original_patch_path": item_config.get("original_patch_path", "") or patch_path,
-            "backported_patch_path": item_config.get("backported_patch_path", ""),
-            "diff_path": item_config.get("diff_path", ""),
-            "logfile": item_config.get("logfile", ""),
+            # 无冲突直接应用场景不应继承历史回移植产物路径
+            "backported_patch_path": "",
+            "diff_path": "",
+            "logfile": "",
             "time_cost": 0,
         }
         if apply_result.get("error"):
             result["error"] = apply_result["error"]
-        return result, did_backport
+        return result, did_backport, refreshed_status
 
     logger.info(
         "[backport-batch] 原始配置仅记录结果，不应用补丁: tag=%s, branch=%s",
@@ -991,7 +1833,7 @@ def _execute_backport_batch_action(
         "diff_path": "",
         "logfile": "",
         "time_cost": 0,
-    }, did_backport
+    }, did_backport, refreshed_status
 
 
 def _build_backport_batch_report_item(
@@ -1011,10 +1853,24 @@ def _build_backport_batch_report_item(
     conflict_check_method,
     conflict_check_error,
 ):
+    empty_patch = bool(backport_result.get("empty_patch"))
+    equivalent_exists = bool(backport_result.get("equivalent_exists"))
+    empty_and_equivalent = empty_patch and equivalent_exists
+    short_note = (
+        "patch already applied (or equivalent), skip remaining steps"
+        if empty_and_equivalent and backport_result.get("status") == "success"
+        else ""
+    )
     resolved_original_patch = (
         backport_result.get("original_patch_path") or item_config.get("original_patch_path") or patch_path
     )
     resolved_backported_patch = backport_result.get("backported_patch_path")
+    effective_has_conflict = False if empty_and_equivalent else has_conflict
+    effective_patch_path = (
+        ""
+        if empty_and_equivalent
+        else (resolved_backported_patch if effective_has_conflict else resolved_original_patch)
+    )
     return {
         "commit": commit_id,
         "input_commit": input_commit,
@@ -1025,12 +1881,15 @@ def _build_backport_batch_report_item(
         "merged_in_target": merged_in_target,
         "merged_check_error": merged_check_error,
         "is_merge_commit": is_merge_commit,
-        "has_conflict": has_conflict,
+        "has_conflict": effective_has_conflict,
         "conflict_check_method": conflict_check_method,
         "conflict_check_error": conflict_check_error,
+        "empty_patch": empty_patch,
+        "equivalent_exists": equivalent_exists,
+        "error": short_note if short_note else backport_result.get("error"),
         "original_patch_path": resolved_original_patch,
         "backported_patch_path": resolved_backported_patch,
-        "patch_path": resolved_backported_patch if has_conflict else resolved_original_patch,
+        "patch_path": effective_patch_path,
     }
 
 
@@ -1131,6 +1990,7 @@ def _process_backport_batch_item(
         fixed_commit=fixed_commit,
         patch_path=patch_path,
         base_project_dir=base_project_dir,
+        is_merge_commit=is_merge_commit,
         tag=tag,
         commit_id=commit_id,
         merged_in_target=merged_in_target,
@@ -1155,10 +2015,13 @@ def _process_backport_batch_item(
     did_backport = False
     try:
         patch_path = item_config.get("patch_path") or item_config.get("original_patch_path") or patch_path
-        backport_result, did_backport = _execute_backport_batch_action(
+        backport_result, did_backport, refreshed_status = _execute_backport_batch_action(
             is_report_config=is_report_config,
+            is_merge_commit=is_merge_commit,
             merged_in_target=merged_in_target,
             has_conflict=has_conflict,
+            conflict_check_method=conflict_check_method,
+            conflict_check_error=conflict_check_error,
             item_config=item_config,
             tag=tag,
             commit_id=commit_id,
@@ -1170,6 +2033,20 @@ def _process_backport_batch_item(
             base_project_dir=base_project_dir,
             args=args,
         )
+        if refreshed_status:
+            merged_in_target = refreshed_status.get("merged_in_target")
+            merged_check_error = refreshed_status.get("merged_check_error")
+            has_conflict = refreshed_status.get("has_conflict")
+            conflict_check_method = refreshed_status.get("conflict_check_method")
+            conflict_check_error = refreshed_status.get("conflict_check_error")
+        # report 配置下，直接应用成功代表该提交已在目标分支生效，状态应及时回写
+        if is_report_config and backport_result.get("status") == "success" and not did_backport:
+            merged_in_target = True
+            merged_check_error = None
+            has_conflict = False
+            if not conflict_check_method:
+                conflict_check_method = "apply"
+            conflict_check_error = None
 
         result = None
         if did_backport:
@@ -1278,13 +2155,24 @@ def _write_backport_batch_report(config_path, is_report_config, report):
 def _prepare_backport_batch_context(args):
     config, commit_items = _load_backport_batch_config(args.backport_config)
     is_report_config = _is_report_config(args.backport_config, commit_items)
+    report_output_path = args.backport_config
     logger.info("[backport-batch] 配置类型: %s", "report" if is_report_config else "raw")
 
     if args.interactive:
         if not is_report_config:
             logger.info("[backport-batch] 交互模式仅支持 report 配置，已跳过")
         else:
-            _interactive_adjust_merged_in_target(args.backport_config, config, commit_items)
+            interactive_action = _interactive_adjust_merged_in_target(
+                args.backport_config, config, commit_items
+            )
+            maybe_output_path = config.pop("_interactive_output_report_path", "")
+            if maybe_output_path:
+                report_output_path = maybe_output_path
+            if interactive_action == "quit":
+                return None
+            if interactive_action == "save":
+                logger.info("[backport-batch] 已保存筛选配置，按用户指令退出，不继续执行")
+                return None
 
     base_config = {k: v for k, v in config.items() if k != "commits"}
     base_project_dir = base_config.get("project_dir")
@@ -1303,6 +2191,7 @@ def _prepare_backport_batch_context(args):
     return BackportBatchContext(
         config=config,
         is_report_config=is_report_config,
+        report_output_path=report_output_path,
         base_config=base_config,
         base_project_dir=base_project_dir,
         base_target_path=base_target_path,
