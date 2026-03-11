@@ -58,10 +58,8 @@ mcp设置为英文
 
 ## 功能简介
 
-1. 激活虚拟环境，配置环境变量
+1. 配置环境变量
 ```bash
-# 安装mcp-servers-cvekit后，激活虚拟python环境
-source /opt/mcp-servers/servers/cvekit_mcp/.venv/bin/activate
 # 配置仓库地址
 export REPO_URL=${REPO_URL} 
 # 配置fork仓库地址
@@ -123,9 +121,18 @@ cvekit --action backport --cve-id ${CVE_ID} --branch ${BRANCH_NAME} --api-key ${
 
 9. 批量回移植（backport-batch）
 
-`backport-batch` 通过一个 YAML/JSON 配置文件批量检查/回移植提交，并输出 `*.report.yml` 报告文件用于复跑与人工确认。
+`backport-batch` 通过一个 YAML/JSON 配置文件批量检查/回移植提交，并输出 `*.report.yml` 报告文件用于复跑与人工确认。支持从 Excel 文件生成配置文件，以及直接应用补丁并签名。
 
-- **依赖说明**：该功能依赖 `GitPython`（提供 `import git`）与 `PyYAML`；若启用交互模式（`-i/--interactive`）建议安装 `tabulate` 用于表格展示（已在 `requirements.txt` 中包含）。
+- **依赖说明**：该功能依赖 `GitPython`（提供 `import git`）与 `PyYAML`；若启用交互模式（`-i/--interactive`）建议安装 `tabulate` 用于表格展示；若使用 Excel 输入功能，需要安装 `openpyxl`（已在 `requirements.txt` 中包含）。
+
+### 从 Excel 文件生成配置
+
+可以通过 `--backport-excel` 选项从 Excel 文件生成配置文件，适用于批量处理大量提交。
+
+```bash
+# 从 Excel 文件生成配置文件
+cvekit --action backport-batch --backport-excel ./950_commit.xlsx -o ./test.yml --backport-config ./demo.yml
+```
 
 ### 配置文件（raw 模式）
 
@@ -175,6 +182,43 @@ report 配置用于“按报告执行”：
 cvekit --action backport-batch --backport-config /path/to/backport-batch.yml.report.yml -i --debug --json
 ```
 
+### 应用特定补丁并签名
+
+可以使用 `--apply` 选项指定特定的 commit 进行应用，并使用 `--signer-name` 和 `--signer-email` 选项为提交添加签名。
+
+```bash
+# 应用特定补丁并签名
+cvekit --action backport-batch --backport-config test.yml.filtered.report.yml --json --debug --apply 71544d0b1de3 --signer-name "dev" --signer-email "dev@xx.com" -i
+```
+
+### 完整工作流程
+
+1. **从 Excel 生成配置**
+   ```bash
+   cvekit --action backport-batch --backport-excel ./950_commit.xlsx -o ./test.yml --backport-config ./demo.yml
+   ```
+
+2. **生成报告**
+   ```bash
+   cvekit --action backport-batch --backport-config ./test.yml --debug
+   ```
+
+3. **查看生成的报告**
+   ```bash
+   cat test.yml.report.yml
+   ```
+
+4. **交互式执行回移植**
+   ```bash
+   cvekit --action backport-batch --backport-config test.yml.report.yml --debug -i
+   ```
+
+5. **应用特定补丁并签名**
+   ```bash
+   cvekit --action backport-batch --backport-config test.yml.filtered.report.yml --json --debug --apply 71544d0b1de3 --signer-name "dev" --signer-email "dev@xx.com" -i
+   ```
+
 注意：
 - 建议用环境变量传入敏感信息：`GITEE_TOKEN`、`API_KEY`，或通过命令行 `--gitee-token/--api-key` 传入。
 - `backport-batch` 会写出报告文件，请关注同目录下生成的 `*.report.yml` 并以它作为下一轮输入。
+- 使用 Excel 输入功能时，确保安装了 `openpyxl` 依赖：`pip install openpyxl`。
