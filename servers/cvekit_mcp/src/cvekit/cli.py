@@ -4,7 +4,10 @@ import logging
 import os
 import json
 import multiprocessing
+import asyncio
+import git
 
+from typing import Optional, Tuple, List, Dict
 from tabulate import tabulate
 from .utils.gitee import parse_gitee_issue_url, setup_repository, get_issue_url_from_cve_id
 from .utils.commits import get_vulnerability_commits, branch_commit_from_upstream
@@ -17,6 +20,10 @@ from .utils.backport_batch import (
     handle_backport_batch,
     generate_backport_batch_config_from_excel,
 )
+from .utils.package.patch_crawler import PackagePatchCrawler
+from .utils.package.patch_download import download_package_patch
+from .utils.env_loader import get_rpmbuild_path
+from .utils.package.source_repo import get_spec_version_from_branch, sync_rpmbuild_to_repo, cleanup_package
 
 logger = logging.getLogger(__name__)
 apply_patch_lock = multiprocessing.Lock()
@@ -38,7 +45,21 @@ def main():
 
     # 操作模式参数
     parser.add_argument('--action', type=str,
-                      choices=['parse-issue', 'get-commits', 'analyze-branches', 'setup-env', 'apply-patch', 'create-pr', 'backport', 'backport-batch'],
+                      choices=[
+                          'parse-issue',
+                          'get-commits',
+                          'analyze-branches',
+                          'setup-env',
+                          'apply-patch',
+                          'create-pr',
+                          'backport',
+                          'backport-batch',
+                          'get-commits-package',
+                          'download-patch-package',
+                          'playwright',
+                          'apply-patch-package',
+                          'analyze-branch-package',
+                      ],
                       default='analyze-branches',
                       help='''执行模式: 
                       parse-issue(解析issue),
@@ -48,7 +69,12 @@ def main():
                       apply-patch(应用patch),
                       create-pr(创建PR),
                       backport(补丁回移植),
-                      backport-batch(批量补丁回移植)''')
+                      backport-batch(批量补丁回移植),
+                      get-commits-package(获取软件包提交),
+                      download-patch-package(下载软件包补丁),
+                      playwright(运行playwright agent),
+                      apply-patch-package(应用软件包补丁),
+                      analyze-branch-package(分析软件包分支)''')
 
 
     # 输入源参数组（互斥组：必须提供CVE ID或Issue URL）
@@ -137,7 +163,20 @@ def main():
         type=str,
         help='仅在 backport-batch 下使用：直接应用补丁（可传 backported patch 路径或 commit id）'
     )
-
+    
+    # package相关参数
+    package_group = parser.add_argument_group('软件包CVE适配参数')
+    package_group.add_argument('--package-name', type=str, default=None,
+                               help='软件包名称 (可选)')
+    package_group.add_argument('--commit', type=str,
+                               help='commit url (可选)')
+    package_group.add_argument('--patch-dir', type=str,
+                               help='软件包补丁目录 (可选)')
+    package_group.add_argument('--sup-url', type=str,
+                               help='补充链接 (可选)')
+    package_group.add_argument('--rpmbuild-path', type=str,
+                               help='rpmbuild根目录 (可选)',
+                               default=os.path.expanduser("~/rpmbuild"))
     args = parser.parse_args()
 
     # 从环境变量获取参数默认值
@@ -151,7 +190,7 @@ def main():
     # 统一使用 api_key 命名，同时兼容历史的 OPENAI_KEY 环境变量
     args.api_key = args.api_key or os.environ.get('API_KEY') or os.environ.get('OPENAI_KEY', "")
     args.patch_dataset_dir = args.patch_dataset_dir or os.environ.get('PATCH_DATASET_DIR', os.path.join(os.path.expanduser("~"), "backports/patch_dataset"))
-
+    args.rpmbuild_path = args.rpmbuild_path or get_rpmbuild_path()
     # 当执行 backport 且使用非 local LLM 时，必须配置 api_key
     if args.action == 'backport':
         provider_lower = str(args.llm_provider or 'openai').strip().lower()
@@ -162,7 +201,16 @@ def main():
             )
 
     # 检查必要的 gitee-token
-    if not args.gitee_token and args.action not in ['setup-env', 'backport', 'backport-batch']:
+    if not args.gitee_token and args.action not in [
+        'setup-env',
+        'backport',
+        'backport-batch',
+        'get-commits-package',
+        'download-patch-package',
+        'playwright',
+        'apply-patch-package',
+        'analyze-branch-package',
+    ]:
         parser.error("必须提供Gitee访问令牌(通过--gitee-token参数或GITEE_TOKEN环境变量)")
 
     # 检查必要的cve-id或issue-url（setup-env模式不需要）
@@ -249,7 +297,7 @@ def handle_action(args):
         return handle_backport_batch(args)
 
     if args.cve_id and not args.issue_url:
-        args.issue_url = get_issue_url_from_cve_id(args.cve_id, args.gitee_token)
+        args.issue_url = get_issue_url_from_cve_id(args.cve_id, args.gitee_token, package_name = args.package_name)
 
     cve_id = args.cve_id if args.cve_id else fetch_cve_id(args.issue_url, args.gitee_token, not args.no_cache)
 
@@ -266,6 +314,17 @@ def handle_action(args):
         return handle_create_pr(cve_id, args)
     elif args.action == 'backport':
         return handle_backport(cve_id, args)
+    elif args.action == 'get-commits-package':
+        return handle_get_commits_package(args)
+    elif args.action == 'download-patch-package':
+        return handle_download_patch_package(args)
+    elif args.action == 'playwright':
+        return handle_plawright(args)
+    elif args.action == 'apply-patch-package':
+        return handle_apply_patch_to_package(args)
+    elif args.action == 'analyze-branch-package':
+        return handle_analyze_branch_package(args)
+    
     else:
         raise RuntimeError("action not supported: %s", args.action)
 
@@ -305,6 +364,9 @@ def handle_create_pr(cve_id, args):
         )
     finally:
         create_pr_lock.release()
+        
+    if args.package_name:
+        cleanup_package(args.clone_dir, args.rpmbuild_path, args.package_name)
     return result
 
 def handle_backport(cve_id, args):
@@ -472,6 +534,85 @@ def handle_analyze_branches(args):
                 use_cache=not args.no_cache
             )
 
+def handle_get_commits_package(args) -> Tuple[List[Dict], List[Dict]]:
+    """获取指定软件包CVE的提交列表与补丁详情。"""
+    ensure_cve_tracking_reuse_path()
+    crawler = PackagePatchCrawler()
+    # 获取commit链接
+    commits_tuple, patch_details = asyncio.run(crawler.get_package_commits(args.cve_id, args.package_name))
+    commits = [ct["url"] for ct in commits_tuple if ct.get("url")]
+    # 获取没有对应commit url的issue或者pr链接作为补充链接
+    supplement_urls = set()
+    for item in patch_details or []:
+        for detail in item.get("details") or []:
+            issue = detail.get("issue") or {}
+            issue_url = issue.get("url")
+            prs = issue.get("prs") or []
+            if issue_url and not prs:
+                supplement_urls.add(issue_url)
+            if not issue_url and prs:
+                for pr in prs:
+                    if not pr.get("commits") and pr.get("url"):
+                        supplement_urls.add(pr.get("url"))
+
+        for url in sorted(supplement_urls):
+            logger.info("issue/pr 待检查: %s", url)
+    return commits, sorted(supplement_urls)
+
+def handle_download_patch_package(args):
+    """下载指定commit的补丁"""
+    ensure_cve_tracking_reuse_path()
+    commit_out_files, commit_failed = download_package_patch(
+        commit_url=args.commit,
+        patch_dir=args.patch_dir,
+        cve_id=args.cve_id,
+        clone_dir=args.clone_dir,
+        rpm_name=args.package_name,
+        branch=args.branch,
+        )
+    return commit_out_files
+
+def handle_plawright(args):
+    """用playwright mcp测试cve"""
+    from .utils.package.playwright_for_patch import run_agent
+    agent_result = asyncio.run(run_agent(args.sup_url, args.package_name, args.cve_id))
+    return agent_result
+
+def handle_apply_patch_to_package(args):
+    """通过 cve_tracking 复用模块的 PathApply 应用补丁。"""
+    ensure_cve_tracking_reuse_path()
+    from core.verification.apply import PathApply
+
+    patch_apply = PathApply(
+        rpm_name=args.package_name,
+        branch_rpm=args.branch,
+        patch_path=args.patch_dir,
+        source_path=args.clone_dir,
+        cve_num=args.cve_id,
+        rpmbuild_path=args.rpmbuild_path
+    )
+    result = patch_apply.packing_source()
+    if result=="完全适配":
+        sync_rpmbuild_to_repo(
+            rpmbuild_path=args.rpmbuild_path,
+            repo_path=os.path.join(args.clone_dir, args.package_name) if args.clone_dir and args.package_name else None,
+            rpm_name=args.package_name
+        )
+    return result
+
+
+def handle_analyze_branch_package(args) -> List[Dict]:
+    repo_path = os.path.join(args.clone_dir, args.package_name)
+    if not os.path.exists(repo_path):
+        return {
+            "action": "analyze-branch-package",
+            "error": "未找到指定软件包仓库"
+        }
+    repo = git.Repo(repo_path)
+    version = get_spec_version_from_branch(repo, branch_name=args.branch, repo_name=args.package_name)
+    return {"action": "analyze-branch-package",
+            "version": version}
+
 def format_output(result, args):
     """格式化输出结果"""
     if args.json:
@@ -504,6 +645,16 @@ def _display_branch_table(branches):
     print(tabulate(table_data,
                   headers=headers,
                   tablefmt='grid'))
+
+def ensure_cve_tracking_reuse_path() -> str:
+    """Ensure cve_tracking_reuse is on sys.path and return its path."""
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    cve_tracking_path = os.path.join(current_dir, "utils", "cve_tracking_reuse")
+    if not os.path.exists(cve_tracking_path):
+        raise FileNotFoundError(f"cve_tracking_reuse目录不存在: {cve_tracking_path}")
+    if cve_tracking_path not in sys.path:
+        sys.path.insert(0, cve_tracking_path)
+    return cve_tracking_path
 
 if __name__ == "__main__":
     main()

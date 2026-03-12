@@ -122,3 +122,34 @@ def _get_patch_names(spec_path: str) -> list:
     except Exception as exc:
         logger.info("Failed to parse spec patches: %s, error: %s", spec_path, exc)
     return patch_names
+
+def cleanup_package(
+    clone_dir: str,
+    rpmbuild_path: str,
+    package_name: str
+) -> str:
+    """清理软件包仓库克隆目录和rpmbuild目录"""
+    import shutil
+    import os
+    results = []
+    total = 0
+    
+    if clone_dir and os.path.exists(clone_dir):
+        target = os.path.join(clone_dir, package_name)
+        if os.path.exists(target):
+            size = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fs in os.walk(target) for f in fs)
+            shutil.rmtree(target)
+            results.append(f"已删除{package_name}源代码: {target} ({size >> 20}MB)")
+            total += size
+    
+    rpm = os.path.expanduser(rpmbuild_path)
+    if os.path.exists(rpm):
+        for d in ['BUILD', 'SPECS', 'SOURCES']:
+            p = os.path.join(rpm, d)
+            if os.path.exists(p):
+                size = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fs in os.walk(p) for f in fs)
+                shutil.rmtree(p)
+                os.makedirs(p)
+                results.append(f"已清理: rpmbuild/{d} ({size >> 20}MB)")
+                total += size      
+    return f"清理完成！"

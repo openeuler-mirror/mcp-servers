@@ -191,14 +191,15 @@ def setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name=None, fo
     parts = fork_repo_url.strip().rstrip('/').split('/')
     fork_org = parts[-2]
     repo_name = parts[-1].replace('.git', '')
-    repo_path = os.path.join(clone_dir, "kernel")
+    repo_is_kernel = repo_name == "kernel"
+    repo_path = os.path.join(clone_dir, "kernel" if repo_is_kernel else repo_name)
     official_org = "openeuler"
     
     # 确保主仓库（官方仓库）已克隆
     if not os.path.exists(repo_path) or not os.path.exists(os.path.join(repo_path, '.git')):
         _clone_repository(
-            org_name=official_org,
-            repo_name="kernel",
+            org_name=official_org if repo_is_kernel else fork_org,
+            repo_name="kernel" if repo_is_kernel else repo_name,
             clone_dir=clone_dir,
             fork_repo_url=fork_repo_url,
             gitee_token=gitee_token
@@ -259,30 +260,51 @@ def get_issue_url_by_search(search_url, cve_id):
         logger.error(f"搜索issues失败: {str(e)}")
         return html_url
     if not issue_data:
-        return html_url
-    for data in issue_data:
-        title = data.get('title', '').strip()
-        if cve_id == title:
-            html_url = data.get('html_url')
-            break
+        return html_url 
+    for data in issue_data: 
+        title = data.get('title', '').strip() 
+        if cve_id == title: 
+            html_url = data.get('html_url') 
+            break 
     return html_url
 
 
 @cached(
     ISSUE_CACHE,
-    key_builder=lambda cve_id, get_issue_url_from_cve_id=None, use_cache=True: _get_cache_key(
-        f"search_{cve_id}"
+    key_builder=lambda cve_id, get_issue_url_from_cve_id=None, use_cache=True, package_name=None: _get_cache_key(
+        f"search_{cve_id}" if not package_name else f"search_{cve_id}_{package_name}"
     ),
     use_cache_kw="use_cache",
 )
-def get_issue_url_from_cve_id(cve_id: str, gitee_token: str = None, use_cache: bool = True) -> str:
-    if gitee_token:
-        request_url = f"https://api.atomgit.com/api/v5/repos/src-openeuler/kernel/issues?access_token={gitee_token}&search={cve_id}"
-        issue_url = get_issue_url_by_search(request_url, cve_id)
+def get_issue_url_from_cve_id(cve_id: str, gitee_token: str = None, use_cache: bool = True, package_name: str = None) -> str:
+    """
+    通过CVE ID获取对应的issue URL
+    
+    Args:
+        cve_id: CVE ID
+        gitee_token: Gitee访问令牌（也用于gitcode.com）
+        use_cache: 是否使用缓存
+        package_name: 软件包名称（可选），如果提供则搜索该软件包仓库
+    """
+    issue_url = None
+    
+    if package_name:
+        token_param = f"&access_token={gitee_token}" if gitee_token else ""
+        request_url = f"https://api.gitcode.com/api/v5/repos/src-openeuler/{package_name}/issues?state=all&q={cve_id}{token_param}"            
+        issue_url = get_issue_url_by_search(search_url=request_url, cve_id=cve_id)
+    else:
+        if gitee_token:
+            request_url = f"https://api.atomgit.com/api/v5/repos/src-openeuler/kernel/issues?access_token={gitee_token}&search={cve_id}"
+            issue_url = get_issue_url_by_search(request_url, cve_id)
+        
+        if not issue_url:
+            logger.info(f"get_issue_url_from_cve_id: gitee_token not found, use gitee.com")
+            request_url = f"https://gitee.com/api/v5/search/issues?q={cve_id}&page=1&per_page=20&repo=src-openeuler%2Fkernel&order=desc"
+            issue_url = get_issue_url_by_search(request_url, cve_id)
+    
     if not issue_url:
-        logger.info(f"get_issue_url_from_cve_id: gitee_token not found, use gitee.com")
-        request_url = f"https://gitee.com/api/v5/search/issues?q={cve_id}&page=1&per_page=20&repo=src-openeuler%2Fkernel&order=desc"
-        issue_url = get_issue_url_by_search(request_url, cve_id)
-    if not issue_url:
-        raise RuntimeError(i18n("获取html_url失败， cve id: %s") % cve_id)
+        target = f"软件包 {package_name}" if package_name else "内核仓库"
+        raise RuntimeError(i18n("获取html_url失败， cve id: %s (目标: %s)") % (cve_id, target))
+    
+    logger.info(f"找到CVE {cve_id} 的issue URL: {issue_url}")
     return issue_url
