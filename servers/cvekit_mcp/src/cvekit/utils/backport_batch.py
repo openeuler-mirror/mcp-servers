@@ -956,45 +956,63 @@ def _try_get_commit(repo: git.Repo, commit_id: str):
         return repo.commit(commit_id), None
     except Exception as e:
         return None, str(e)
+def _sort_commit_items_by_gitlog(commit_items, project_dir, preferred_ref: str = ""):
+    """
+    根据 commit 在 git log 中的位置进行排序（两阶段优化版本）
 
-def _sort_commit_items_by_time(commit_items, project_dir, preferred_ref: str = ""):
+    排序策略（按优先级）：
+      1. git log 中的拓扑位置（主键）：反映 commit 在分支上的真实先后顺序
+      2. committed_datetime（次键）：时间戳不同时的排序依据
+      3. 原始输入顺序（三键）：保证排序稳定性
+
+    性能优化：
+      - 阶段一：按 committed_datetime 预排序，无冲突时直接返回（零 git 调用）
+      - 阶段二：仅对时间戳冲突的组执行 git rev-list 拓扑排序
+
+    Args:
+        commit_items: 待排序的 commit 配置列表
+        project_dir:  源代码仓路径
+        preferred_ref: 优先使用的分支/引用名
+
+    Returns:
+        (sorted_items, errors): 排序后的列表和解析失败的错误列表
+    """
     if not project_dir or not os.path.isdir(project_dir):
-        raise ValueError("backport-batch 需要提供有效的 project_dir 以按时间排序")
+        raise ValueError("backport-batch 需要提供有效的 project_dir 以按 git log 排序")
     repo = git.Repo(project_dir)
     commit_index, index_error = _build_commit_subject_index(repo)
     if index_error:
         raise ValueError(index_error)
 
-    sortable = []
+    # 阶段一：解析所有 commit，按 committed_datetime 预排序
+    logger.info("[backport-batch] 开始两阶段排序：先按时间预排序，检查是否需要拓扑排序")
+
+    # parsed_items: (idx, commit_id, input_commit, title, config, commit_obj)
+    parsed_items = []
     errors = []
+
     for idx, item in enumerate(commit_items):
         commit_id, commit_title, item_config = _extract_commit_item(item)
         normalized_title = _normalize_commit_title(commit_title)
         input_commit = commit_id
-        logger.info(
-            "[backport-batch] 解析提交项: index=%d, commit_id=%s, commit_title=%s",
-            idx,
-            commit_id,
-            normalized_title,
-        )
+
         if commit_id and not normalized_title and not _looks_like_commit_sha(commit_id):
             normalized_title = _normalize_commit_title(commit_id)
             if normalized_title:
                 commit_id = None
+
         if not commit_id and not normalized_title:
             errors.append((idx, item, "commits 列表中的元素必须是字符串、二元组或包含 commit/commit_id/commit_title"))
             continue
+
         try:
             commit_obj, commit_error = _try_get_commit(repo, commit_id)
             if commit_obj:
                 actual_title = commit_obj.summary.strip()
                 if normalized_title and actual_title != normalized_title:
-                    logger.info(
-                        "[backport-batch] commit 与 title 不匹配，使用 commit 实际标题: index=%d, commit=%s, input_title=%s, actual_title=%s",
-                        idx,
-                        commit_id,
-                        normalized_title,
-                        actual_title,
+                    logger.debug(
+                        "[backport-batch] commit 与 title 不匹配: index=%d, commit=%s, input=%s, actual=%s",
+                        idx, commit_id, normalized_title, actual_title,
                     )
                 normalized_title = actual_title
             elif not commit_obj and normalized_title:
@@ -1003,9 +1021,8 @@ def _sort_commit_items_by_time(commit_items, project_dir, preferred_ref: str = "
                 )
                 if resolved_sha:
                     logger.info(
-                        "[backport-batch] commit 无法解析，已由 title 修正: index=%d, new_commit=%s",
-                        idx,
-                        resolved_sha,
+                        "[backport-batch] commit 已由 title 修正: index=%d, new_commit=%s",
+                        idx, resolved_sha,
                     )
                     commit_id = resolved_sha
                     commit_obj = repo.commit(commit_id)
@@ -1013,33 +1030,110 @@ def _sort_commit_items_by_time(commit_items, project_dir, preferred_ref: str = "
                     errors.append((idx, item, f"无法根据 commit title 找到提交: {resolve_error}"))
                     continue
             elif not commit_obj and commit_id:
-                errors.append((idx, item, f"无法在源代码仓中解析 commit: {commit_id}, error={commit_error}"))
+                errors.append((idx, item, f"无法解析 commit: {commit_id}, error={commit_error}"))
                 continue
 
             if commit_obj and not normalized_title:
                 normalized_title = commit_obj.summary.strip()
 
-            commit_time = commit_obj.committed_datetime
-            logger.info(
-                "[backport-batch] 提交解析成功: index=%d, commit=%s, time=%s",
-                idx,
-                commit_id,
-                commit_time.isoformat(),
-            )
-            sortable.append((commit_time, idx, commit_id, input_commit, normalized_title, item_config))
+            parsed_items.append((idx, commit_id, input_commit, normalized_title, item_config, commit_obj))
         except Exception as e:
-            errors.append((idx, item, f"无法在源代码仓中解析 commit: {commit_id}, error={e}"))
+            errors.append((idx, item, f"无法解析 commit: {commit_id}, error={e}"))
 
-    sortable.sort(key=lambda x: (x[0], x[1]))
-    sorted_items = []
-    for commit_time, _, commit_id, input_commit, commit_title, item_config in sortable:
-        sorted_items.append({
-            "commit": commit_id,
-            "input_commit": input_commit,
-            "commit_title": commit_title,
-            "item_config": item_config,
-            "committed_datetime": commit_time.isoformat()
-        })
+    if not parsed_items:
+        return [], errors
+
+    # 按 committed_datetime 预排序
+    parsed_items.sort(key=lambda x: (x[5].committed_datetime, x[0]))
+
+    # 按时间戳（秒级）分组，检测时间冲突
+    from collections import defaultdict
+    time_groups = defaultdict(list)
+    for item in parsed_items:
+        time_key = int(item[5].committed_date)
+        time_groups[time_key].append(item)
+
+    # 提取时间戳冲突的组
+    conflict_groups = [group for group in time_groups.values() if len(group) > 1]
+
+    if not conflict_groups:
+        logger.info("[backport-batch] 所有提交时间戳不同，直接按时间排序返回")
+        sorted_items = [
+            {
+                "commit": item[5].hexsha,
+                "input_commit": item[2],
+                "commit_title": item[3],
+                "item_config": item[4],
+                "committed_datetime": item[5].committed_datetime.isoformat(),
+                "git_log_position": None,
+            }
+            for item in parsed_items
+        ]
+        return sorted_items, errors
+
+    # 阶段二：为每个时间冲突组构建组内拓扑顺序
+    logger.info("[backport-batch] 发现 %d 组时间戳冲突，执行组内拓扑排序", len(conflict_groups))
+
+    commit_position = {}  # sha -> 组内拓扑位置（0=最旧）
+
+    for group in conflict_groups:
+        group_shas = [item[5].hexsha for item in group]
+        if len(group_shas) < 2:
+            continue
+
+        try:
+            # 获取组内公共祖先作为下界
+            try:
+                merge_base = repo.git.merge_base("--octopus", *group_shas).strip()
+            except Exception:
+                merge_base = None
+
+            # 构建 rev-list 参数：所有 commit 作为 tips
+            if merge_base:
+                rev_list_args = [f"{merge_base}..{group_shas[0]}"] + group_shas[1:]
+            else:
+                rev_list_args = group_shas
+
+            # --topo-order 输出严格拓扑顺序（从新到旧）
+            rev_list = repo.git.rev_list("--topo-order", *rev_list_args).splitlines()
+
+            # 记录组内拓扑位置
+            group_shas_set = set(group_shas)
+            for i, sha in enumerate(rev_list):
+                if sha in group_shas_set:
+                    commit_position[sha] = len(rev_list) - 1 - i
+
+            # merge_base 本身也是组内 commit 时，它是最旧的（位置 0）
+            if merge_base and merge_base in group_shas_set and merge_base not in commit_position:
+                commit_position[merge_base] = 0
+
+        except Exception as e:
+            logger.warning("[backport-batch] 拓扑排序失败，使用原始顺序兜底: %s", e)
+
+    # 最终排序：时间（主键）+ 拓扑位置（次键）+ 原始索引（三键）
+    sortable = [
+        (
+            int(item[5].committed_date),  # 主键：时间戳
+            commit_position.get(item[5].hexsha, item[0]),  # 次键：拓扑位置
+            item[0],  # 三键：原始索引
+            item,
+        )
+        for item in parsed_items
+    ]
+    sortable.sort(key=lambda x: (x[0], x[1], x[2]))
+
+    sorted_items = [
+        {
+            "commit": item[5].hexsha,
+            "input_commit": item[2],
+            "commit_title": item[3],
+            "item_config": item[4],
+            "committed_datetime": item[5].committed_datetime.isoformat(),
+            "git_log_position": commit_position.get(item[5].hexsha),
+        }
+        for _, _, _, item in sortable
+    ]
+
     return sorted_items, errors
 
 def _write_commit_patch_file(commit_id: str, project_dir: str):
@@ -1217,11 +1311,11 @@ def _resolve_sorted_backport_items(commit_items, is_report_config, base_project_
         return commit_items, []
 
     try:
-        logger.info("[backport-batch] 开始按时间排序: project_dir=%s", base_project_dir)
+        logger.info("[backport-batch] 开始按 git log 顺序排序: project_dir=%s", base_project_dir)
         preferred_ref = base_config.get("source_branch") or base_config.get("source_ref") or ""
         if preferred_ref:
             logger.info("[backport-batch] 使用源仓优先分支: %s", preferred_ref)
-        sorted_items, sort_errors = _sort_commit_items_by_time(
+        sorted_items, sort_errors = _sort_commit_items_by_gitlog(
             commit_items, base_project_dir, preferred_ref
         )
         logger.info(
