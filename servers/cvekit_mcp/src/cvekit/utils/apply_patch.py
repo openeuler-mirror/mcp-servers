@@ -207,13 +207,15 @@ def generate_patch_header(commit_id, cve_id, bugzilla_url, repo_path):
         )
 
     logger.info("generate_patch_header: final subject=%r", subject)
+    # 处理 bugzilla_url 为 None 的情况，显示为空字符串
+    bugzilla_value = bugzilla_url if bugzilla_url else ""
     header = f"""{subject}
 
 {inclusion_type}
 {from_line}
 commit {commit_id}
 category: bugfix
-bugzilla: {bugzilla_url}
+bugzilla: {bugzilla_value}
 CVE: {cve_id}
 
 Reference: {patch_url}
@@ -633,28 +635,28 @@ def get_conflict_file_message(cve_id, repo, clone_dir, branch_commit, adjusted_p
 
 
 def apply_patch(
-        fork_repo_url: str,
-        gitee_token: str,
-        branch: str,
-        clone_dir: str,
-        patch_path: str,
-        signer_name: str,
-        signer_email: str,
-        cve_id: str,
-        issue_url: str,
+        fork_repo_url: str = None,
+        gitee_token: str = None,
+        branch: str = None,
+        clone_dir: str = None,
+        patch_path: str = None,
+        signer_name: str = None,
+        signer_email: str = None,
+        cve_id: str = None,
+        issue_url: str = None,
 ):
     """合并分支并且提交
 
     Args:
-        fork_repo_url: git仓库地址
-        gitee_token: Gitee访问令牌(必须有仓库写入权限)
+        fork_repo_url: git仓库地址（可选，如果不提供则只做本地补丁应用，不推送）
+        gitee_token: Gitee访问令牌（可选，用于私有仓库认证）
         branch: 处理的分支
         clone_dir: 本地克隆目录
         patch_path: patch文件路径
         signer_name: 签名者名称
         signer_email: 签名者邮箱
         cve_id: cve id
-        issue_url: issue链接
+        issue_url: issue链接（可选）
 
     Returns:
         patch应用信息字典
@@ -700,10 +702,13 @@ def apply_patch(
                 "status": "error",
                 "error": i18n("生成commit信息失败: %s") % (str(e))
             }
-    # 解析fork URL获取组织名和仓库名
-    parts = fork_repo_url.strip().rstrip('/').split('/')
-    org_name = parts[-2]
-    repo_name = parts[-1].replace('.git', '')
+    # 解析fork URL获取组织名和仓库名（可选，仅用于推送）
+    org_name = ""
+    repo_name = ""
+    if fork_repo_url:
+        parts = fork_repo_url.strip().rstrip('/').split('/')
+        org_name = parts[-2]
+        repo_name = parts[-1].replace('.git', '')
 
     logger.info("apply_patch: 准备/更新本地仓库（setup_repository）...")
     repo, repo_path = setup_repository(fork_repo_url, gitee_token, clone_dir)
@@ -732,7 +737,7 @@ def apply_patch(
     
     logger.info("apply_patch: 准备分支信息并创建修复分支...")
     branches = repo.git.branch().split()
-    issue_num = os.path.basename(issue_url)
+    issue_num = os.path.basename(issue_url) if issue_url else cve_id
     fix_branch = f"fix-{branch}-{issue_num}"
     try:
         if branch in branches:
@@ -755,6 +760,11 @@ def apply_patch(
                 "error": i18n("切换分支失败: %s") % (str(e))
             }
     logger.info("apply_patch: 预检查补丁冲突文件（git apply --check）...")
+    # 如果没有提供 patch_path，则自动获取
+    if not patch_path:
+        patch_path = get_patch(branch_commit, clone_dir)
+        logger.info(f"apply_patch: 未提供 patch_path，自动获取: {patch_path}")
+    
     try:
         conflict_message = get_conflict_file_message(
             cve_id,
@@ -806,31 +816,35 @@ def apply_patch(
     logger.info("apply_patch: 提交变更到本地仓库...")
     # 添加所有变更并提交
 
-    remote = f"fork-{org_name}"
-    # 推送变更到远程仓库
-    repo_remote = None
-    for repo_remote in repo.remotes:
-        if repo_remote.name == remote:
-            break
-    if not repo_remote:
-        logger.info(f"apply_patch: 未找到远程 {remote}，创建新的远程指向 {fork_repo_url}")
-        repo_remote = repo.create_remote(remote, fork_repo_url)
-    try:
-        logger.info(f"开始推送变更到远程仓库: {repo_remote.url}")
-        repo.git.push(remote, fix_branch)
-        logger.info("变更推送成功")
-    except Exception as e:
+    # 推送变更到远程仓库（仅当提供了 fork_repo_url 时）
+    remote = None
+    if fork_repo_url and org_name:
+        remote = f"fork-{org_name}"
+        repo_remote = None
+        for repo_remote in repo.remotes:
+            if repo_remote.name == remote:
+                break
+        if not repo_remote:
+            logger.info(f"apply_patch: 未找到远程 {remote}，创建新的远程指向 {fork_repo_url}")
+            repo_remote = repo.create_remote(remote, fork_repo_url)
         try:
-            repo.git.push(f"{remote} --set-upstream", fix_branch)
+            logger.info(f"开始推送变更到远程仓库: {repo_remote.url}")
+            repo.git.push(remote, fix_branch)
+            logger.info("变更推送成功")
         except Exception as e:
             try:
-                repo.git.push(remote, fix_branch, "--force")
+                repo.git.push(f"{remote} --set-upstream", fix_branch)
             except Exception as e:
-                logger.error(f"推送变更失败: {str(e)}")
-                return {
-                    "status": "error",
-                    "error": i18n("无法推送变更: %s") % (str(e))
-                }
+                try:
+                    repo.git.push(remote, fix_branch, "--force")
+                except Exception as e:
+                    logger.error(f"推送变更失败: {str(e)}")
+                    return {
+                        "status": "error",
+                        "error": i18n("无法推送变更: %s") % (str(e))
+                    }
+    else:
+        logger.info("未提供 fork_repo_url，跳过推送步骤，补丁仅应用在本地仓库")
 
     return {
         "status": "success",
@@ -838,4 +852,5 @@ def apply_patch(
         "branch": branch,
         "fix_branch": fix_branch,
         "repo_path": repo_path,
+        "pushed": bool(fork_repo_url),
     }
