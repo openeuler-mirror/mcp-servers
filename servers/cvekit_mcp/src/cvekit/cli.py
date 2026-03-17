@@ -191,6 +191,7 @@ def main():
     args.api_key = args.api_key or os.environ.get('API_KEY') or os.environ.get('OPENAI_KEY', "")
     args.patch_dataset_dir = args.patch_dataset_dir or os.environ.get('PATCH_DATASET_DIR', os.path.join(os.path.expanduser("~"), "backports/patch_dataset"))
     args.rpmbuild_path = args.rpmbuild_path or get_rpmbuild_path()
+    
     # 当执行 backport 且使用非 local LLM 时，必须配置 api_key
     if args.action == 'backport':
         provider_lower = str(args.llm_provider or 'openai').strip().lower()
@@ -200,25 +201,20 @@ def main():
                 "(通过 --api-key 参数或 API_KEY/OPENAI_KEY 环境变量)。"
             )
 
-    # 检查必要的 gitee-token
-    if not args.gitee_token and args.action not in [
-        'setup-env',
-        'backport',
-        'backport-batch',
-        'get-commits-package',
-        'download-patch-package',
-        'playwright',
-        'apply-patch-package',
-        'analyze-branch-package',
-    ]:
+    # 检查必要的 gitee-token（仅 parse-issue 和 create-pr 需要）
+    if not args.gitee_token and args.action in ['parse-issue', 'create-pr']:
         parser.error("必须提供Gitee访问令牌(通过--gitee-token参数或GITEE_TOKEN环境变量)")
 
-    # 检查必要的cve-id或issue-url（setup-env模式不需要）
+    # 检查必要的cve-id或issue-url（setup-env和backport-batch模式不需要）
     if args.action not in ['setup-env', 'backport-batch'] and not (args.cve_id or args.issue_url):
         parser.error("非setup-env模式需提供--cve-id或--issue-url参数")
     
-    # 检查必要的fork-repo-url（某些action需要）
-    if not args.fork_repo_url and args.action in ['setup-env', 'analyze-branches', 'apply-patch', 'create-pr']:
+    # 检查必要的clone-dir（某些action需要）
+    if not args.clone_dir and args.action in ['setup-env', 'analyze-branches', 'apply-patch', 'create-pr', 'backport', 'get-commits']:
+        parser.error("必须提供克隆目录(通过--clone-dir参数或CLONE_DIR环境变量)")
+    
+    # 检查必要的fork-repo-url（仅create-pr需要，其他action有默认值或可选）
+    if not args.fork_repo_url and args.action in ['create-pr']:
         parser.error("必须提供Fork仓库URL(通过--fork-repo-url参数或FORK_REPO_URL环境变量)")
     
     # 检查必要的signer-name和signer-email（apply-patch需要）
@@ -296,6 +292,30 @@ def handle_action(args):
             )
         return handle_backport_batch(args)
 
+    if args.action == 'analyze-branches':
+        return handle_analyze_branches(args)
+
+    if args.action == 'get-commits':
+        if not args.cve_id:
+            raise ValueError("get-commits 模式需要提供 --cve-id 参数")
+        return handle_get_commits(args.cve_id, not args.no_cache, args.clone_dir)
+
+    if args.action == 'backport':
+        if not args.cve_id:
+            raise ValueError("backport 模式需要提供 --cve-id 参数")
+        return handle_backport(args.cve_id, args)
+
+    if args.action == 'apply-patch':
+        if not args.cve_id:
+            raise ValueError("apply-patch 模式需要提供 --cve-id 参数")
+        # 尝试获取 issue_url（但不强制要求成功）
+        if args.cve_id and not args.issue_url:
+            try:
+                args.issue_url = get_issue_url_from_cve_id(args.cve_id, args.gitee_token, package_name = args.package_name)
+            except Exception as e:
+                logger.warning(f"获取 issue_url 失败: {str(e)}，将使用 cve_id 作为标识")
+        return handle_apply_patch(args.cve_id, args)
+
     if args.cve_id and not args.issue_url:
         args.issue_url = get_issue_url_from_cve_id(args.cve_id, args.gitee_token, package_name = args.package_name)
 
@@ -304,16 +324,8 @@ def handle_action(args):
     if args.action == 'parse-issue':
         logger.info(f"handle_action: parse_issue, issue_url={args.issue_url}")
         return handle_parse_issue(args)
-    elif args.action == 'get-commits':
-        return handle_get_commits(cve_id, not args.no_cache, args.clone_dir)
-    elif args.action == 'analyze-branches':
-        return handle_analyze_branches(args)
-    elif args.action == 'apply-patch':
-        return handle_apply_patch(cve_id, args)
     elif args.action == 'create-pr':
         return handle_create_pr(cve_id, args)
-    elif args.action == 'backport':
-        return handle_backport(cve_id, args)
     elif args.action == 'get-commits-package':
         return handle_get_commits_package(args)
     elif args.action == 'download-patch-package':
@@ -330,7 +342,7 @@ def handle_action(args):
 
 
 def handle_apply_patch(cve_id, args):
-    """应用patch并把branch提交到fork分支"""
+    """应用patch到本地仓库（可选推送到fork分支）"""
     apply_patch_lock.acquire()
     try:
         result = apply_patch(
@@ -492,24 +504,34 @@ def fetch_cve_id(issue_url, gitee_token, use_cache):
     return issue_data['cve_id']
 
 def handle_analyze_branches(args):
-    """处理分支分析逻辑"""
+    """处理分支分析逻辑
+    
+    支持两种模式：
+    1. 提供 issue_url：从 issue 获取详细信息并分析分支
+    2. 只提供 cve_id：直接使用 cve_id 获取 commit 信息并分析分支
+    """
     issue_data = {}
+    cve_id = args.cve_id
+    
     if args.issue_url:
         issue_data = parse_gitee_issue_url(args.issue_url, args.gitee_token, not args.no_cache)
+        if not cve_id:
+            cve_id = issue_data.get('cve_id')
+    
+    if not cve_id:
+        raise ValueError(i18n("必须提供 --cve-id 或 --issue-url 参数"))
 
-    # 准备issue_info对象
     issue_info = IssueInfo(
         issue_id=issue_data.get('issue_id', 'N/A'),
-        cve_id=issue_data.get('cve_id'),
+        cve_id=cve_id,
         org_name=issue_data.get('org_name', ''),
         repo_name=issue_data.get('repo_name', ''),
         affected_versions=issue_data.get('affected_versions', ''),
         issue_url=args.issue_url
     )
 
-    # 获取提交信息（自动使用缓存）
     commits = get_vulnerability_commits(
-        issue_data.get('cve_id'),
+        cve_id,
         not args.no_cache,
         clone_dir=args.clone_dir,
     )
@@ -520,7 +542,6 @@ def handle_analyze_branches(args):
         issue_info.introduced_commit = None
         issue_info.fixed_commit = None
 
-    # 分析分支
     repo, repo_path = setup_repository(args.fork_repo_url, args.gitee_token, args.clone_dir)
 
     branch_list = [b.strip() for b in args.branches.split(',')]

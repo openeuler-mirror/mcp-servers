@@ -157,13 +157,13 @@ def _clone_repository(
         raise RuntimeError(i18n("无法克隆仓库: %s") % (str(e)))
 
 
-def setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name=None, force_refresh=False):
+def setup_repository(fork_repo_url=None, gitee_token=None, clone_dir=None, branch_name=None, force_refresh=False):
     """
-    设置仓库环境，克隆官方仓库，添加fork远程，如果明确说明要检出某个分支的情况下，检出分支
+    设置仓库环境，克隆官方仓库，添加fork远程（可选），如果明确说明要检出某个分支的情况下，检出分支
     
     Args:
-        fork_repo_url: fork仓库URL
-        gitee_token: Gitee访问令牌
+        fork_repo_url: fork仓库URL（可选，如果不提供则只克隆官方仓库）
+        gitee_token: Gitee访问令牌（可选，用于私有仓库认证）
         clone_dir: 本地克隆目录
         branch_name: 要检出的分支名,默认可以不执行检出分支
         force_refresh: 是否强制刷新（忽略缓存）
@@ -172,6 +172,11 @@ def setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name=None, fo
         repo: git.Repo对象
         repo_path: 仓库本地路径
     """
+    # 默认使用 openEuler kernel 仓库
+    if not fork_repo_url:
+        fork_repo_url = "https://gitee.com/openeuler/kernel"
+        logger.info(f"未提供 fork_repo_url，使用默认值: {fork_repo_url}")
+    
     # 使用缓存 key: (fork_repo_url, clone_dir, branch_name)
     cache_key = (fork_repo_url, clone_dir, branch_name)
     
@@ -207,14 +212,17 @@ def setup_repository(fork_repo_url, gitee_token, clone_dir, branch_name=None, fo
     
     repo = git.Repo(repo_path)
     
-    # 只在第一次设置时执行 fetch，或者如果强制刷新
+    # 添加 fork 远程仓库（仅当提供了 fork_repo_url 时）
     fork_remote_name = f"fork-{fork_org}"
     if fork_remote_name not in [remote.name for remote in repo.remotes]:
         logger.debug(f"添加远程仓库: {fork_remote_name}")
-        if fork_repo_url.startswith("https://gitee.com"):
-            auth_url = f"https://oauth2:{gitee_token}@gitee.com/{fork_org}/{repo_name}.git"
+        if gitee_token:
+            if fork_repo_url.startswith("https://gitee.com"):
+                auth_url = f"https://oauth2:{gitee_token}@gitee.com/{fork_org}/{repo_name}.git"
+            else:
+                auth_url = f"https://oauth2:{gitee_token}@gitcode.com/{fork_org}/{repo_name}.git"
         else:
-            auth_url = f"https://oauth2:{gitee_token}@gitcode.com/{fork_org}/{repo_name}.git"
+            auth_url = fork_repo_url
         repo.create_remote(fork_remote_name, auth_url)
         repo.git.fetch('origin')
         repo.remote(fork_remote_name).fetch()

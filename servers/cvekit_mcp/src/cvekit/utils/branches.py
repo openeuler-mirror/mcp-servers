@@ -233,8 +233,8 @@ def get_branches_containing_commit(repo, commit_hash, target_branches, linux_rep
 def git_apply_check_patch(
         fork_repo_url: str,
         commit_hash: str,
-        gitee_token: str,
-        branch_name: str,
+        gitee_token: str = None,
+        branch_name: str = "",
         clone_dir: str = os.path.join(os.path.expanduser("~"), "Image"),
         patch_path: str = "",
         repo: git.Repo = None,
@@ -279,8 +279,8 @@ def git_apply_check_patch(
 def check_cve_patch_apply_status(
         fork_repo_url: str,
         cve_id: str,
-        gitee_token: str,
-        branch_name: str,
+        gitee_token: str = None,
+        branch_name: str = "",
         fixed_commit: str = "",
         clone_dir: str = os.path.join(os.path.expanduser("~"), "Image"),
         repo: git.Repo = None,
@@ -349,14 +349,14 @@ def check_cve_patch_apply_status(
     ),
     use_cache_kw="use_cache",
 )
-def process_branches(repo, issue_info, fork_repo_url, gitee_token, clone_dir, branchList, use_cache=True):
+def process_branches(repo, issue_info, fork_repo_url, gitee_token=None, clone_dir=None, branchList=None, use_cache=True):
     """处理所有需要补丁的分支
     
     Args:
         repo: Git仓库对象
         issue_info: 问题信息对象
         fork_repo_url: Fork仓库URL
-        gitee_token: Gitee访问令牌
+        gitee_token: Gitee访问令牌（可选，用于私有仓库认证）
         clone_dir: 克隆目录
         branchList: 分支列表
         use_cache: 是否使用缓存
