@@ -41,6 +41,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import datetime
 import json
 import logging
@@ -338,6 +339,21 @@ def _extract_between_markers(text: str, start: str, end: str) -> str:
     # 去掉首尾多余的换行和空白
     return text[start_idx:end_idx].strip("\r\n ")
 
+def _check_python_syntax(text: str) -> tuple[bool, str]:
+    """
+    语法检查：只做 Python 语法解析，不执行代码。
+    """
+    try:
+        ast.parse(text, filename="server.py")
+        return True, ""
+    except SyntaxError as e:
+        location = ""
+        if e.lineno is not None and e.offset is not None:
+            location = f" (line {e.lineno}, col {e.offset})"
+        return False, f"SyntaxError: {e.msg}{location}"
+    except Exception as e:  # noqa: BLE001
+        return False, f"{type(e).__name__}: {e}"
+
 def run_generate_mcp_from_config(config: Dict[str, object], debug_mode: bool = False) -> Dict[str, object]:
     """
     主入口：从配置字典运行“手册 → MCP server”生成流程。
@@ -500,6 +516,58 @@ def run_generate_mcp_from_config(config: Dict[str, object], debug_mode: bool = F
             }
 
         logger.info("已通过标记块成功解析出 server.py / mcp_config.json / mcp-rpm.yaml。")
+
+        # 3.5 语法检查（仅针对 server.py），失败则重试生成 server.py（最多 2 次）
+        max_retry = 2
+        retry_count = 0
+        ok, err = _check_python_syntax(server_py_text)
+        while not ok and retry_count < max_retry:
+            retry_count += 1
+            logger.warning(
+                "server.py 语法检查失败：%s，开始第 %d/%d 次重试生成 server.py",
+                err,
+                retry_count,
+                max_retry,
+            )
+            retry_prompt = (
+                user_prompt
+                + "\n\n上一次生成的 server.py 语法错误如下：\n"
+                + err
+                + "\n请仅修复 server.py 的语法问题，其他输出可保持不变。"
+            )
+            retry_response = llm.invoke(
+                [
+                    ("system", system_prompt),
+                    ("user", retry_prompt),
+                ]
+            )
+            retry_content = (
+                retry_response.content
+                if hasattr(retry_response, "content")
+                else str(retry_response)
+            )
+            retry_server_py = _extract_between_markers(
+                retry_content, "<<<SERVER_PY_START>>>", "<<<SERVER_PY_END>>>"
+            )
+            if not retry_server_py:
+                err = "未找到 <<<SERVER_PY_START>>> / <<<SERVER_PY_END>>> 标记"
+                logger.error(
+                    "重试输出未包含 server.py 标记，无法更新 server.py：%s",
+                    err,
+                )
+                ok = False
+                continue
+            server_py_text = retry_server_py
+            ok, err = _check_python_syntax(server_py_text)
+
+        if not ok:
+            msg = f"server.py 语法检查失败，已重试 {max_retry} 次：{err}"
+            logger.error(msg)
+            return {
+                "status": "failed",
+                "message": msg,
+                "logfile": logfile,
+            }
 
         # 4. 写入文件
         server_name = f"{software_name}_mcp"
