@@ -1,0 +1,17 @@
+label: patchflow agent用户指南
+isManual: true
+sections:
+  - label: 介绍
+    href: ./description.md
+  - label: 软件编译
+    href: ./build.md
+  - label: 安装patchflow agent
+    href: ./install.md
+  - label: 使用patchflow agent
+    href: ./usage.md
+  - label: 故障排除
+    href: ./troubleshooting.md
+  - label: FAQ
+    href: ./faq.md
+  - label: 参考信息
+    href: ./reference.md
