@@ -119,6 +119,21 @@ cvekit --action create-pr --cve-id ${CVE_ID} --branch ${BRANCH_NAME}
 cvekit --action backport --cve-id ${CVE_ID} --branch ${BRANCH_NAME} --api-key ${API_KEY} --llm-provider ${LLM_PROVIDER}
 ```
 
+使用完全自定义 LLM（任意 OpenAI 兼容服务）：
+```bash
+# --llm-provider 支持任意值，配合 --llm-base-url 和 --llm-model-name 使用
+cvekit --action backport --cve-id ${CVE_ID} --branch ${BRANCH_NAME} \
+  --llm-provider my-provider \
+  --llm-base-url https://api.example.com/v1 \
+  --llm-model-name gpt-4o-mini \
+  --api-key ${API_KEY}
+```
+
+**LLM 配置优先级**（从高到低）：
+1. 命令行参数：`--llm-provider`, `--llm-base-url`, `--llm-model-name`
+2. 环境变量：`LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_MODEL_NAME`（或 `MODEL_NAME`）
+3. 内置预设：`openai`（默认）
+
 9. 批量回移植（backport-batch）
 
 `backport-batch` 通过一个 YAML/JSON 配置文件批量检查/回移植提交，并输出 `*.report.yml` 报告文件用于复跑与人工确认。支持从 Excel 文件生成配置文件，以及直接应用补丁并签名。

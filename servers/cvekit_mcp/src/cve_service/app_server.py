@@ -14,6 +14,8 @@ from cvekit.utils.env_loader import (
     get_gitee_token,
     get_api_key,
     get_llm_provider,
+    get_llm_base_url,
+    get_llm_model_name,
     get_rpmbuild_path,
 )
 from camel.models import ModelFactory
@@ -92,6 +94,8 @@ def build_config_from_request(data: Dict) -> Dict:
     # - 当 LLM_PROVIDER == local 时，允许不提供 api_key（支持本地免鉴权模型）。
     api_key = data.get("api_key") or data.get("openai_key") or get_api_key()
     llm_provider = data.get("llm_provider") or get_llm_provider() or "openai"
+    llm_base_url = data.get("llm_base_url") or get_llm_base_url()
+    llm_model_name = data.get("llm_model_name") or get_llm_model_name()
     provider_lower = str(llm_provider).strip().lower()
 
     if not api_key and provider_lower != "local":
@@ -133,6 +137,8 @@ def build_config_from_request(data: Dict) -> Dict:
         "branches": data.get("branches"),
         "api_key": api_key,
         "llm_provider": llm_provider,
+        "llm_base_url": llm_base_url,
+        "llm_model_name": llm_model_name,
         "rpmbuild_path": rpmbuild_path,
     }
 
@@ -147,6 +153,8 @@ def build_agent_message(action: str, data: Dict, config: Dict) -> str:
             "clone_dir": config["clone_dir"],
             "gitee_token": config["gitee_token"],
             "llm_provider": config["llm_provider"],
+            "llm_base_url": config.get("llm_base_url"),
+            "llm_model_name": config.get("llm_model_name"),
             "api_key": config["api_key"],
             "signer": {
                 "name": data.get("signer_name"),
@@ -200,6 +208,8 @@ async def create_mcp_agent(
     task_updater: Optional[TaskUpdater] = None,
     api_key: Optional[str] = None,
     llm_provider: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
+    llm_model_name: Optional[str] = None,
 ) -> CallbackMCPAgent:
     """创建 MCP Agent（封装 Camel 的 SiliconFlowModel）
 
@@ -220,16 +230,17 @@ async def create_mcp_agent(
         )
 
         provider_lower = (
-            (llm_provider or get_llm_provider() or "siliconflow").strip().lower()
+            (llm_provider or get_llm_provider() or "openai").strip().lower()
         )
 
         # 统一模型名称：
-        # - 优先使用调用方显式传入的 model_type；
-        # - 其次使用环境变量 DEFAULT_MODEL_TYPE；
+        # - 优先使用调用方显式传入的 llm_model_name 或 model_type；
+        # - 其次使用环境变量 LLM_MODEL_NAME / DEFAULT_MODEL_TYPE；
         # - 最后根据 provider 回退到合理默认值。
         effective_model_type = (
-            model_type
-            or os.getenv("DEFAULT_MODEL_TYPE")
+            llm_model_name
+            or model_type
+            or get_llm_model_name()
             or (
                 "deepseek-ai/DeepSeek-V3"
                 if provider_lower == "siliconflow"
@@ -251,6 +262,7 @@ async def create_mcp_agent(
             )
 
         # 根据 LLM_PROVIDER 选择模型平台与配置
+        # 优先使用调用方传入的 llm_base_url，其次使用环境变量
         model_url = None
         if provider_lower == "siliconflow":
             model_platform = ModelPlatformType.SILICONFLOW
@@ -264,7 +276,8 @@ async def create_mcp_agent(
                 )
             model_platform = ModelPlatformType.OPENAI
             base_url = (
-                os.getenv("BASE_URL")
+                llm_base_url
+                or get_llm_base_url()
                 or os.getenv("OPENAI_API_BASE_URL")
                 or os.getenv("OPENAI_BASE_URL")
             )
@@ -350,7 +363,7 @@ class CVEAgentExecutor(AgentExecutor):
             agent_message = build_agent_message(action, task_params, config)
             print(f"【任务 {task.id}】Agent Message:{agent_message}")
 
-            # 将当前请求解析出的 llm_provider / api_key 透传给 MCP Agent，
+            # 将当前请求解析出的 llm_provider / api_key / llm_base_url / llm_model_name 透传给 MCP Agent，
             # 避免 Camel 内部仍然强依赖 SILICONFLOW_API_KEY 环境变量导致初始化失败。
             local_agent = await create_mcp_agent(
                 model_type=os.getenv("DEFAULT_MODEL_TYPE"),
@@ -358,6 +371,8 @@ class CVEAgentExecutor(AgentExecutor):
                 task_updater=updater,
                 api_key=config.get("api_key"),
                 llm_provider=config.get("llm_provider"),
+                llm_base_url=config.get("llm_base_url"),
+                llm_model_name=config.get("llm_model_name"),
             )
 
             async def agent_run():

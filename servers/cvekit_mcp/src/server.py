@@ -25,8 +25,10 @@ default_gitee_token = None
 # 配置参数解析
 parser = argparse.ArgumentParser()
 parser.add_argument('--gitee-token', help=i18n('Gitee访问令牌'))
-parser.add_argument('--llm-provider', help=i18n('LLM提供商(可选，默认openai)'))
+parser.add_argument('--llm-provider', default=None, help=i18n('LLM提供商(可选，优先级: 命令行参数 > 环境变量LLM_PROVIDER > 默认openai)'))
 parser.add_argument('--api-key', help=i18n('LLM API密钥(可选，用于自动调整补丁)'))
+parser.add_argument('--llm-base-url', help=i18n('LLM API基础地址(可选，覆盖默认配置)'))
+parser.add_argument('--llm-model-name', help=i18n('LLM模型名称(可选，覆盖默认配置)'))
 parser.add_argument('--branches-to-analyze', default="OLK-6.6,OLK-5.10,openEuler-1.0-LTS", help=i18n('用于分析的分支列表，逗号分隔'))
 parser.add_argument('--test-analyze-branches', help=i18n('测试模式：直接调用analyze_branches函数，传入JSON文件路径'))
 parser.add_argument('--test-apply-patch',help=i18n("""测试模式：直接调用apply_patch函数，传入JSON文件路径"""))
@@ -80,6 +82,10 @@ def run_cvekit(action: str, params: dict) -> dict:
                 cmd.append(f'--api-key={params["api_key"]}')
             if 'llm_provider' in params:
                 cmd.append(f'--llm-provider={params["llm_provider"]}')
+            if 'llm_base_url' in params:
+                cmd.append(f'--llm-base-url={params["llm_base_url"]}')
+            if 'llm_model_name' in params:
+                cmd.append(f'--llm-model-name={params["llm_model_name"]}')
             if 'fork_repo_url' in params:
                 cmd.append(f'--fork-repo-url={params["fork_repo_url"]}')
         
@@ -333,7 +339,9 @@ def analyze_branches(
     clone_dir: Optional[str] = Field(None, description=i18n("克隆目录(可选)")),
     fork_repo_url: Optional[str] = Field(None, description=i18n("Fork仓库URL(可选)")),
     api_key: Optional[str] = Field(None, description=i18n("LLM API密钥(可选，用于自动调整补丁)")),
-    llm_provider: Optional[str] = Field(None, description=i18n("LLM提供商(可选，默认openai)"))
+    llm_provider: Optional[str] = Field(None, description=i18n("LLM提供商(可选，默认openai)")),
+    llm_base_url: Optional[str] = Field(None, description=i18n("LLM API基础地址(可选，覆盖默认配置)")),
+    llm_model_name: Optional[str] = Field(None, description=i18n("LLM模型名称(可选，覆盖默认配置)"))
 ) -> str:
     # 使用全局变量作为默认值
     if not gitee_token:
@@ -397,6 +405,8 @@ def analyze_branches(
                         # 再由 CLI 映射为内部 openai_key 配置字段。
                         'api_key': api_key,
                         'llm_provider': llm_provider,
+                        'llm_base_url': llm_base_url,
+                        'llm_model_name': llm_model_name,
                         'fork_repo_url': fork_repo_url,
                         'gitee_token': gitee_token,
                     },
@@ -694,8 +704,13 @@ def _init_defaults_from_args() -> None:
 
     if args.gitee_token:
         default_gitee_token = args.gitee_token
+    # 优先级：命令行参数 > 环境变量 > 默认值
     if args.llm_provider:
         default_llm_provider = args.llm_provider
+    elif os.environ.get('LLM_PROVIDER'):
+        default_llm_provider = os.environ.get('LLM_PROVIDER')
+    else:
+        default_llm_provider = 'openai'
     if args.api_key:
         default_api_key = args.api_key
 
@@ -722,6 +737,8 @@ def _run_test_analyze_branches(config_path: str) -> int:
             # 兼容旧字段 openai_key，同时支持新的 api_key
             api_key=test_data.get("api_key") or test_data.get("openai_key") or default_api_key,
             llm_provider=test_data.get("llm_provider") or default_llm_provider,
+            llm_base_url=test_data.get("llm_base_url"),
+            llm_model_name=test_data.get("llm_model_name"),
         )
 
         logger.info("=" * 60)

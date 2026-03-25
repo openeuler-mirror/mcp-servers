@@ -213,6 +213,8 @@ def load_yml(file_path: str):
     data.openai_key = config.get("openai_key")
     data.tag = config.get("tag")
     data.llm_provider = config.get("llm_provider", "openai")
+    data.llm_base_url = config.get("llm_base_url")
+    data.llm_model_name = config.get("llm_model_name")
     data.target_path = config.get("target_path", "")
     
     logger.debug(f"[load_yml] 基本配置项加载完成:")
@@ -386,6 +388,8 @@ def load_config_from_dict(config_dict: dict):
     data.openai_key = config_dict.get("openai_key", "")
     data.tag = config_dict.get("tag", "unknown")
     data.llm_provider = config_dict.get("llm_provider", "openai")
+    data.llm_base_url = config_dict.get("llm_base_url")
+    data.llm_model_name = config_dict.get("llm_model_name")
     data.target_path = config_dict.get("target_path", "")
     
     # 加载并验证新补丁 commit
@@ -544,7 +548,11 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
     
     before_usage = get_usage(data.openai_key, data.llm_provider)
     
-    agent_executor, llm = initial_agent(project, data.openai_key, debug_mode, data.llm_provider)
+    agent_executor, llm = initial_agent(
+        project, data.openai_key, debug_mode, data.llm_provider,
+        custom_base_url=getattr(data, 'llm_base_url', None),
+        custom_model_name=getattr(data, 'llm_model_name', None)
+    )
     
     # 获取原始补丁文件路径（在 try 之前，确保即使失败也能保存）
     # 优化：优先从本地 clone_dir 目录读取，避免网络请求
