@@ -186,6 +186,12 @@ def main():
         help='交互式编辑 backport-batch 报告配置（如 merged_in_target）'
     )
     backport_group.add_argument(
+        '-e',
+        '--execute',
+        action='store_true',
+        help='仅在 backport-batch 下使用：显式执行 .report.yml 中的回移植流程（推荐）'
+    )
+    backport_group.add_argument(
         '--apply',
         type=str,
         help='仅在 backport-batch 下使用：直接应用补丁（可传 backported patch 路径或 commit id）'

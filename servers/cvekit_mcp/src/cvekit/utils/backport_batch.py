@@ -156,11 +156,28 @@ def handle_backport_batch(args):
     if getattr(args, "apply", None):
         return _handle_direct_apply_backported_patch(args)
     logger.info("[backport-batch] 开始处理: config=%s", args.backport_config)
+    execute_requested = bool(getattr(args, "execute", False))
+    config_path = str(getattr(args, "backport_config", "") or "")
+    if execute_requested and not config_path.endswith(".report.yml"):
+        raise ValueError(
+            "检测到 --execute/-e 但当前配置不是 .report.yml。"
+            "请先使用 raw 配置生成 report，再对 .report.yml 执行回移植。"
+        )
     context = _prepare_backport_batch_context(args)
     if context is None:
         logger.info("[backport-batch] 用户在交互模式中选择退出，停止执行")
         return []
     is_report_config = context.is_report_config
+    if execute_requested and not is_report_config:
+        raise ValueError(
+            "检测到 --execute/-e 但当前配置不是 .report.yml。"
+            "请先使用 raw 配置生成 report，再对 .report.yml 执行回移植。"
+        )
+    if is_report_config and not execute_requested:
+        logger.warning(
+            "[backport-batch] 检测到 .report.yml 但未显式指定 --execute/-e，"
+            "沿用兼容模式继续执行。建议显式加 -e。"
+        )
     base_config = context.base_config
     base_project_dir = context.base_project_dir
     base_target_path = context.base_target_path
