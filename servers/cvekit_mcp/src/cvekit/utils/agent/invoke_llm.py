@@ -32,24 +32,28 @@ from ..tools.project import Project, safe_git_reset_hard
 from ..tools.utils import split_patch
 
 
-def _get_llm_config(provider: str = "openai"):
+def _get_llm_config(provider: str = "openai", custom_base_url: str = None, custom_model_name: str = None):
     """
     获取不同 LLM 提供商的配置信息
     
     Args:
-        provider: 模型提供商，可选值: "openai", "deepseek", "siliconflow", "minimax", "local"
+        provider: 模型提供商，可选值: "openai", "deepseek", "siliconflow", "minimax", "local" 或任意自定义值
                   - openai      : 使用 OpenAI 官方接口，或兼容 OpenAI 的云服务
                   - deepseek    : 使用 DeepSeek 官方接口
                   - siliconflow : 使用 SiliconFlow 托管的 DeepSeek 模型
                   - minimax     : 使用 MiniMax OpenAI 兼容接口
                   - local       : 使用本地 / 自建的 OpenAI 兼容模型服务
+                  - 任意其他值  : 使用 custom_base_url 和 custom_model_name 配置
+        custom_base_url: 自定义 API 基础地址（可选，覆盖默认配置）
+        custom_model_name: 自定义模型名称（可选，覆盖默认配置）
     
     Returns:
         tuple: (base_url, model_name) 配置元组。
-        对于使用者而言，只需要配置两个环境变量：
-          - LLM_PROVIDER : "openai" / "deepseek" / "siliconflow" / "local"
-          - MODEL_NAME   : 模型名称（例如 "gpt-4.1"、"deepseek-ai/DeepSeek-V3" 等）
-        其他环境变量不再推荐使用，仅作为向下兼容保留。
+        对于使用者而言，可以通过以下方式配置：
+          - 环境变量 LLM_PROVIDER : "openai" / "deepseek" / "siliconflow" / "local" 或任意值
+          - 环境变量 MODEL_NAME   : 模型名称（例如 "gpt-4.1"、"deepseek-ai/DeepSeek-V3" 等）
+          - 环境变量 LLM_BASE_URL : API 基础地址（例如 "https://api.example.com/v1"）
+          - 或通过参数 custom_base_url / custom_model_name 直接传入
     """
     # 允许通过环境变量 LLM_PROVIDER 覆盖 provider 参数
     env_provider = os.getenv("LLM_PROVIDER")
@@ -100,30 +104,67 @@ def _get_llm_config(provider: str = "openai"):
     logger.debug(f"[_get_llm_config] 完整配置信息: {configs}")
     
     original_provider = provider
-    if provider not in configs:
-        logger.warning(f"[_get_llm_config] 未知的提供商 '{provider}'，使用 'openai' 作为默认值")
-        provider = "openai"
-    
-    base_url_raw = configs[provider]["base_url"]
-    model_name_default = configs[provider]["model"]
 
-    # 统一模型名：优先使用 MODEL_NAME，其次兼容旧的 DEFAULT_MODEL_TYPE。
-    model_name = os.getenv("MODEL_NAME") or os.getenv("DEFAULT_MODEL_TYPE") or model_name_default
+    # 优先使用自定义配置（参数或环境变量）
+    env_base_url = os.getenv("LLM_BASE_URL")
+    env_model_name = os.getenv("MODEL_NAME") or os.getenv("DEFAULT_MODEL_TYPE")
 
-    # 规范化 base_url：
-    # - 如果是 /v1/completions 或 /v1/chat/completions，则转换为根 /v1 以兼容 ChatOpenAI。
-    raw_base = base_url_raw.strip()
-    if "/v1/completions" in raw_base:
-        prefix = raw_base.split("/v1/completions", 1)[0]
-        raw_base = prefix.rstrip("/") + "/v1"
-    elif "/v1/chat/completions" in raw_base:
-        prefix = raw_base.split("/v1/chat/completions", 1)[0]
-        raw_base = prefix.rstrip("/") + "/v1"
-    base_url = raw_base.rstrip("/")
+    # 确定是否使用自定义配置
+    use_custom = custom_base_url or custom_model_name or env_base_url or env_model_name or provider not in configs
+
+    if use_custom and (custom_base_url or env_base_url or custom_model_name or env_model_name):
+        # 使用自定义配置：优先级 参数 > 环境变量
+        if custom_base_url:
+            base_url = custom_base_url
+        elif env_base_url:
+            base_url = env_base_url
+        else:
+            # 如果没有自定义 base_url，使用 openai 的默认值
+            base_url = configs.get("openai", {}).get("base_url", "https://api.openai.com/v1")
+
+        if custom_model_name:
+            model_name = custom_model_name
+        elif env_model_name:
+            model_name = env_model_name
+        else:
+            # 如果没有自定义 model_name，使用 openai 的默认值
+            model_name = configs.get("openai", {}).get("model", "gpt-4-turbo")
+
+
+        logger.debug(f"[_get_llm_config] 使用自定义配置:")
+        logger.debug(f"  - provider={provider} (自定义)")
+        logger.debug(f"  - base_url={base_url}")
+        logger.debug(f"  - model_name={model_name}")
+    else:
+        # 使用预设配置
+        if provider not in configs:
+            logger.warning(f"[_get_llm_config] 未知的提供商 '{provider}'，使用 'openai' 作为默认值")
+            provider = "openai"
+
+        base_url_raw = configs[provider]["base_url"]
+        model_name_default = configs[provider]["model"]
+
+        # 统一模型名：优先使用 MODEL_NAME，其次兼容旧的 DEFAULT_MODEL_TYPE。
+        model_name = env_model_name or model_name_default
+
+        # 规范化 base_url：
+        # - 如果是 /v1/completions 或 /v1/chat/completions，则转换为根 /v1 以兼容 ChatOpenAI。
+        raw_base = base_url_raw.strip()
+        if "/v1/completions" in raw_base:
+            prefix = raw_base.split("/v1/completions", 1)[0]
+            raw_base = prefix.rstrip("/") + "/v1"
+        elif "/v1/chat/completions" in raw_base:
+            prefix = raw_base.split("/v1/chat/completions", 1)[0]
+            raw_base = prefix.rstrip("/") + "/v1"
+        base_url = raw_base.rstrip("/")
+
+        logger.debug(f"[_get_llm_config] 使用预设配置:")
+        logger.debug(f"  - provider={provider}")
+        logger.debug(f"  - base_url={base_url}")
+        logger.debug(f"  - model_name={model_name}")
 
     logger.debug(f"[_get_llm_config] 最终配置:")
     logger.debug(f"  - 原始 provider={original_provider}")
-    logger.debug(f"  - 使用的 provider={provider}")
     logger.debug(f"  - base_url={base_url}")
     logger.debug(f"  - model_name={model_name}")
     logger.debug(f"[_get_llm_config] 返回配置: ({base_url}, {model_name})")
@@ -136,6 +177,8 @@ def initial_agent(
     api_key: Optional[str],
     debug_mode: bool,
     provider: str = "openai",
+    custom_base_url: str = None,
+    custom_model_name: str = None,
 ) -> tuple[Agent, ChatOpenAI]:
     """
     初始化 LangChain Agent 和 LLM 模型
@@ -152,7 +195,9 @@ def initial_agent(
         project: 项目对象
         api_key: API 密钥（用于脱敏显示）
         debug_mode: 是否启用调试模式
-        provider: 模型提供商，可选值: "openai", "deepseek"，默认为 "openai"
+        provider: 模型提供商，可选值: "openai", "deepseek" 等，或任意自定义值
+        custom_base_url: 自定义 API 基础地址（可选，覆盖默认配置）
+        custom_model_name: 自定义模型名称（可选，覆盖默认配置）
     
     Returns:
         tuple: (agent_executor, llm) 元组
@@ -166,29 +211,32 @@ def initial_agent(
     logger.debug(f"  - api_key={'***' + api_key[-4:] if api_key else 'None'} (已脱敏)")
     logger.debug(f"  - debug_mode={debug_mode}")
     logger.debug(f"  - provider={provider}")
+    logger.debug(f"  - custom_base_url={custom_base_url}")
+    logger.debug(f"  - custom_model_name={custom_model_name}")
 
     provider_lower = (provider or "openai").lower()
 
     # 对于非 local 提供商，如果没有显式提供 api_key，则提前给出清晰错误，避免底层报错不直观。
-    if not api_key and provider_lower != "local":
+    # 但如果有自定义 base_url，则可能不需要 api_key（本地服务等情况）
+    if not api_key and provider_lower != "local" and not custom_base_url:
         raise ValueError(
             "[initial_agent] 未提供 API Key，但当前 LLM provider 不为 'local'。"
             " 请通过配置 api_key 或环境变量 API_KEY/OPENAI_KEY 提供有效密钥，"
             "或者将 LLM_PROVIDER 设置为 'local' 以使用免鉴权本地模型。"
         )
 
-    # local 场景下允许省略 api_key，为避免底层客户端因 None 报错，这里使用占位或环境变量。
-    if not api_key and provider_lower == "local":
+    # local 场景或自定义 base_url 场景下允许省略 api_key，为避免底层客户端因 None 报错，这里使用占位或环境变量。
+    if not api_key and (provider_lower == "local" or custom_base_url):
         api_key_env = os.getenv("API_KEY") or os.getenv("OPENAI_KEY")
         api_key = api_key_env or "EMPTY_KEY"
         logger.debug(
-            "[initial_agent] provider=local 且未显式提供 api_key，"
+            "[initial_agent] provider=local 或自定义 base_url 且未显式提供 api_key，"
             "将使用占位符密钥（或环境变量）以满足客户端要求。"
         )
 
     # 获取 LLM 配置
     logger.debug("[initial_agent] 获取 LLM 配置...")
-    base_url, model_name = _get_llm_config(provider_lower)
+    base_url, model_name = _get_llm_config(provider_lower, custom_base_url, custom_model_name)
     logger.info(f"Using LLM provider: {provider_lower}, model: {model_name}, base_url: {base_url}")
     logger.debug(f"[initial_agent] LLM 配置获取完成: base_url={base_url}, model_name={model_name}")
 

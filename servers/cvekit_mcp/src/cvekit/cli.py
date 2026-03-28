@@ -124,9 +124,18 @@ def main():
     backport_group.add_argument(
         '--llm-provider',
         type=str,
-        default='openai',
-        choices=['openai', 'deepseek', 'siliconflow', 'minimax', 'minimaxi', 'local'],
-        help='LLM提供商 (默认: openai；当为 local 时可不提供 --api-key，用于本地免鉴权模型)',
+        default=None,  # 改为 None，让环境变量和实际逻辑决定默认值
+        help='LLM提供商 (优先级: 命令行参数 > 环境变量LLM_PROVIDER > 默认openai；可传入任意值配合 --llm-base-url 和 --llm-model-name 使用)',
+    )
+    backport_group.add_argument(
+        '--llm-base-url',
+        type=str,
+        help='LLM API 基础地址 (例如: https://api.example.com/v1)，可覆盖默认配置',
+    )
+    backport_group.add_argument(
+        '--llm-model-name',
+        type=str,
+        help='LLM 模型名称 (例如: gpt-4o-mini)，可覆盖默认配置',
     )
     backport_group.add_argument('--patch-dataset-dir', type=str,
                                help='补丁数据集目录 (也可通过PATCH_DATASET_DIR环境变量设置)')
@@ -191,6 +200,11 @@ def main():
     args.api_key = args.api_key or os.environ.get('API_KEY') or os.environ.get('OPENAI_KEY', "")
     args.patch_dataset_dir = args.patch_dataset_dir or os.environ.get('PATCH_DATASET_DIR', os.path.join(os.path.expanduser("~"), "backports/patch_dataset"))
     args.rpmbuild_path = args.rpmbuild_path or get_rpmbuild_path()
+    # LLM 自定义配置：从环境变量获取 provider、base_url 和 model_name
+    # 优先级：命令行参数 > 环境变量 > 默认值
+    args.llm_provider = args.llm_provider or os.environ.get('LLM_PROVIDER') or 'openai'
+    args.llm_base_url = args.llm_base_url or os.environ.get('LLM_BASE_URL')
+    args.llm_model_name = args.llm_model_name or os.environ.get('LLM_MODEL_NAME') or os.environ.get('MODEL_NAME')
     
     # 当执行 backport 且使用非 local LLM 时，必须配置 api_key
     if args.action == 'backport':
@@ -417,6 +431,8 @@ def handle_backport(cve_id, args):
         # 内部配置字段仍使用 openai_key 以兼容 backporting 逻辑，这里用统一的 api_key 映射过去
         "openai_key": args.api_key,
         "llm_provider": args.llm_provider,
+        "llm_base_url": args.llm_base_url,
+        "llm_model_name": args.llm_model_name,
         "tag": cve_id,
         "patch_dataset_dir": os.path.join(args.patch_dataset_dir, cve_id) if args.patch_dataset_dir else os.path.join(os.path.expanduser("~"), "backports/patch_dataset", cve_id),
     }

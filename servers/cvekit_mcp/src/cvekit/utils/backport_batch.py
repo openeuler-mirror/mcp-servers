@@ -186,6 +186,8 @@ def handle_backport_batch(args):
         base_target_path=base_target_path,
         default_target_branch=default_target_branch,
         llm_provider=args.llm_provider,
+        llm_base_url=getattr(args, 'llm_base_url', None),
+        llm_model_name=getattr(args, 'llm_model_name', None),
         report_items=report_items,
     )
     _write_backport_batch_report(report_output_path, is_report_config, report)
@@ -1698,6 +1700,8 @@ def _build_backport_runtime_config(
             or args.api_key
         ),
         "llm_provider": item_config.get("llm_provider") or base_config.get("llm_provider") or args.llm_provider,
+        "llm_base_url": item_config.get("llm_base_url") or base_config.get("llm_base_url") or getattr(args, 'llm_base_url', None),
+        "llm_model_name": item_config.get("llm_model_name") or base_config.get("llm_model_name") or getattr(args, 'llm_model_name', None),
         "tag": tag or commit_id,
         "patch_dataset_dir": dataset_dir,
         "skip_cherry_pick": True,
@@ -2222,9 +2226,16 @@ def _build_backport_batch_report(
     base_target_path,
     default_target_branch,
     llm_provider,
+    llm_base_url,
+    llm_model_name,
     report_items,
 ):
-    return {
+    # 计算有效值
+    effective_provider = base_config.get("llm_provider") or llm_provider
+    effective_base_url = base_config.get("llm_base_url") or llm_base_url
+    effective_model_name = base_config.get("llm_model_name") or llm_model_name
+
+    report = {
         "project": base_config.get("project", "linux"),
         "project_url": base_config.get("project_url", ""),
         "project_dir": base_project_dir,
@@ -2235,9 +2246,18 @@ def _build_backport_batch_report(
             or default_target_branch
         ),
         "patch_dataset_dir": base_config.get("patch_dataset_dir"),
-        "llm_provider": base_config.get("llm_provider") or llm_provider,
-        "commits": report_items,
+        "llm_provider": effective_provider,
     }
+
+    # 在 llm_provider 之后添加 llm_base_url 和 llm_model_name（如果有值）
+    if effective_base_url:
+        report["llm_base_url"] = effective_base_url
+    if effective_model_name:
+        report["llm_model_name"] = effective_model_name
+
+    # commits 放在最后
+    report["commits"] = report_items
+    return report
 
 
 def _write_backport_batch_report(config_path, is_report_config, report):

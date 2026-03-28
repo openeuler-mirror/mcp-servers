@@ -93,6 +93,8 @@ GITEE_TOKEN=<gitee_token>
 #   - openai      使用 OpenAI 官方接口（默认）
 #   - deepseek    使用 DeepSeek 官方接口
 #   - siliconflow 使用 SiliconFlow 托管的 DeepSeek 模型（推荐国内环境）
+#   - local       使用本地/自建 OpenAI 兼容模型服务（免鉴权）
+#   - <任意值>    使用任意自定义 OpenAI 兼容服务（需配合 LLM_BASE_URL）
 LLM_PROVIDER=openai
 
 # 统一的大模型 API Key（无论使用哪个 LLM_PROVIDER，都通过它传递）
@@ -100,6 +102,11 @@ API_KEY=<llm_api_key>
 
 # 默认模型类型（仅在部分 Provider 下会用到，一般保持默认即可）
 DEFAULT_MODEL_TYPE="deepseek-ai/DeepSeek-V3"
+
+# （可选）使用完全自定义的 LLM 服务（任意 OpenAI 兼容接口）
+# 当需要使用非预设的 LLM 服务时，配置以下变量：
+# LLM_BASE_URL=https://api.example.com/v1  # 自定义 LLM API 基础 URL
+# LLM_MODEL_NAME=gpt-4o-mini               # 自定义模型名称
 
 # 本地配置文件（一般不需要修改）
 DEFAULT_LOCAL_CONFIG="mcp_settings.json"
@@ -138,6 +145,25 @@ MODEL_NAME="codellama-32b-instruct"
 - `MODEL_NAME` 要与你本地服务实际提供的模型名称一致；
 - 当 `LLM_PROVIDER=local` 且未配置 `API_KEY` 时，系统会使用占位密钥，后端请求中仍会带上一个 Authorization 头，
   本地服务可以选择忽略或校验该头部。
+
+### 使用完全自定义的 LLM 服务（任意 provider 值）
+
+如果你需要使用任意的第三方 LLM 服务（如内部部署的模型或小众云服务商），
+可以通过设置任意 `LLM_PROVIDER` 值（如 `custom`、`internal`、`my-llm` 等），
+配合 `LLM_BASE_URL` 和 `LLM_MODEL_NAME` 来使用：
+
+```bash
+# 使用自定义 LLM 服务
+LLM_PROVIDER=my-provider
+LLM_BASE_URL=https://api.example.com/v1
+LLM_MODEL_NAME=gpt-4o-mini
+API_KEY=<your_api_key>
+```
+
+**配置优先级**（从高到低）：
+1. 命令行参数：`--llm-provider`, `--llm-base-url`, `--llm-model-name`
+2. 环境变量：`LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_MODEL_NAME`（或 `MODEL_NAME`）
+3. 内置预设：根据 `LLM_PROVIDER` 自动选择
 接着配置mcp配置文件mcp_settings.json
 ```
 {

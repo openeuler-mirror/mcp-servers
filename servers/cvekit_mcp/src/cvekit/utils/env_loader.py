@@ -36,8 +36,18 @@ def get_api_key() -> str:
 
 
 def get_llm_provider() -> str:
-    """获取 LLM Provider"""
-    return os.getenv('LLM_PROVIDER', 'siliconflow')
+    """获取 LLM Provider，默认 openai"""
+    return os.getenv('LLM_PROVIDER', 'openai')
+
+
+def get_llm_base_url() -> str:
+    """获取 LLM Base URL"""
+    return os.getenv('LLM_BASE_URL', '') or os.getenv('BASE_URL', '')
+
+
+def get_llm_model_name() -> str:
+    """获取 LLM Model Name"""
+    return os.getenv('LLM_MODEL_NAME') or os.getenv('MODEL_NAME', '')
 
 
 def get_default_clone_dir() -> str:
