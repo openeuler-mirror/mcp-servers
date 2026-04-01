@@ -238,6 +238,10 @@ def main():
     if not args.signer_email and args.action == 'apply-patch':
         parser.error("必须提供提交者邮箱(通过--signer-email参数或SIGNER_EMAIL环境变量)")
 
+    # 检查必要的branch（apply-patch、create-pr、backport需要）
+    if not args.branch and args.action in ['apply-patch', 'create-pr', 'backport']:
+        parser.error(f"{args.action} 模式需要指定目标分支，请使用 --branch 参数")
+
     # 配置根logger
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
