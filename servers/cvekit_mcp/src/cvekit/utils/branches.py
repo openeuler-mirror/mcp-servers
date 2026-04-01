@@ -454,8 +454,12 @@ def process_branches(repo, issue_info, fork_repo_url, gitee_token=None, clone_di
                            if branch in branchList and branch not in fixed_branches]
     logger.info(f"需要补丁的分支: {needs_patch_branches}")
     
-    logger.info(f"执行 git fetch --all（repo: {repo.working_dir}）")
-    repo.git.fetch('--all')
+    # 只 fetch origin（后续只用到 origin/{branch}），失败时继续使用本地缓存
+    try:
+        logger.info(f"执行 git fetch origin（repo: {repo.working_dir}）")
+        repo.git.fetch('origin')
+    except Exception as e:
+        logger.warning(f"git fetch origin 失败，继续使用本地缓存: {str(e)}")
     
     for branch in needs_patch_branches:
         remote_branch = f"origin/{branch}"

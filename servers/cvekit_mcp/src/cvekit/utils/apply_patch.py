@@ -743,11 +743,15 @@ def apply_patch(
         if branch in branches:
             logger.info(f"检出已存在分支: {branch}")
             repo.git.checkout(branch)
+            # 尝试同步远程分支，失败时继续使用本地分支
+            try:
+                logger.info(f"同步远程分支: origin/{branch} (--rebase)")
+                repo.git.pull("origin", branch, "--rebase")
+            except Exception as pull_error:
+                logger.warning(f"同步远程分支失败，继续使用本地分支: {str(pull_error)}")
         else:
             logger.info(f"本地不存在分支 {branch}，从 origin/{branch} 创建")
             repo.git.checkout('-b', branch, f'origin/{branch}')
-        logger.info(f"同步远程分支: origin/{branch} (--rebase)")
-        repo.git.pull("origin", branch, "--rebase")
         if fix_branch in branches:
             logger.info(f"删除已存在的修复分支: {fix_branch}")
             repo.git.branch('-D', fix_branch)
