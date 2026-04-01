@@ -1,0 +1,26 @@
+name: edge_computing_mcp
+version: 1.0.0
+release: 1
+summary: 边缘计算管理MCP服务
+description: 边缘计算管理MCP服务，提供边缘设备和应用的管理功能
+license: MIT
+buildarch: noarch
+
+requires:
+  - python3
+  - python3-pip
+
+build:
+  - name: build
+    script: |
+      mkdir -p %{buildroot}/usr/share/mcp/servers/edge_computing_mcp
+      cp -r src/* %{buildroot}/usr/share/mcp/servers/edge_computing_mcp/
+      cp mcp_config.json %{buildroot}/usr/share/mcp/servers/edge_computing_mcp/
+
+install:
+  - name: install
+    script: |
+      pip3 install -r %{buildroot}/usr/share/mcp/servers/edge_computing_mcp/requirements.txt
+
+files:
+  - /usr/share/mcp/servers/edge_computing_mcp/

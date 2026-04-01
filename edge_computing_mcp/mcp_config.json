@@ -1,0 +1,46 @@
+{
+  "name": "edge_computing_mcp",
+  "version": "1.0.0",
+  "description": "边缘计算管理MCP服务，提供边缘设备和应用的管理功能",
+  "author": "",
+  "url": "https://gitee.com/openeuler/mcp-servers/tree/master/servers/edge_computing_mcp",
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "list_edge_devices",
+      "description": "列出所有边缘设备"
+    },
+    {
+      "name": "add_edge_device",
+      "description": "添加新的边缘设备"
+    },
+    {
+      "name": "remove_edge_device",
+      "description": "移除边缘设备"
+    },
+    {
+      "name": "get_edge_device_info",
+      "description": "获取边缘设备信息"
+    },
+    {
+      "name": "update_edge_device_config",
+      "description": "更新边缘设备配置"
+    },
+    {
+      "name": "restart_edge_device",
+      "description": "重启边缘设备"
+    },
+    {
+      "name": "deploy_edge_application",
+      "description": "在边缘设备上部署应用"
+    },
+    {
+      "name": "list_edge_applications",
+      "description": "列出边缘设备上的应用"
+    },
+    {
+      "name": "get_edge_network_status",
+      "description": "获取边缘网络状态"
+    }
+  ]
+}
