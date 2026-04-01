@@ -113,6 +113,12 @@ def main():
     pr_group = parser.add_argument_group('提交pr')
     pr_group.add_argument('--patch-path', type=str, help='patch文件路径')
     pr_group.add_argument('--branch', type=str, help='pr提交分支')
+    pr_group.add_argument(
+        '--fix-branch',
+        type=str,
+        default=None,  # 改为 None，未指定时自动生成
+        help='修复分支名称 (也可通过 FIX_BRANCH 环境变量设置)，未指定时自动生成为 fix-{branch}-{issue_num}',
+    )
 
     # 补丁回移植参数
     backport_group = parser.add_argument_group('补丁回移植参数')
@@ -196,6 +202,7 @@ def main():
     args.branches = args.branches or os.environ.get('BRANCHES', "OLK-5.10,OLK-6.6,master")
     args.signer_name = args.signer_name or os.environ.get('SIGNER_NAME')
     args.signer_email = args.signer_email or os.environ.get('SIGNER_EMAIL')
+    args.fix_branch = args.fix_branch or os.environ.get('FIX_BRANCH')
     # 统一使用 api_key 命名，同时兼容历史的 OPENAI_KEY 环境变量
     args.api_key = args.api_key or os.environ.get('API_KEY') or os.environ.get('OPENAI_KEY', "")
     args.patch_dataset_dir = args.patch_dataset_dir or os.environ.get('PATCH_DATASET_DIR', os.path.join(os.path.expanduser("~"), "backports/patch_dataset"))
@@ -372,7 +379,8 @@ def handle_apply_patch(cve_id, args):
             signer_name=args.signer_name,
             signer_email=args.signer_email,
             cve_id=cve_id,
-            issue_url=args.issue_url
+            issue_url=args.issue_url,
+            fix_branch=args.fix_branch,
             )
     finally:
         apply_patch_lock.release()
