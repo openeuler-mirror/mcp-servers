@@ -1,5 +1,6 @@
 label: patchflow agent用户指南
 isManual: true
+description: CVE修复智能体，自动化漏洞修复
 sections:
   - label: 介绍
     href: ./description.md
