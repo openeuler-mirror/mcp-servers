@@ -644,6 +644,7 @@ def apply_patch(
         signer_email: str = None,
         cve_id: str = None,
         issue_url: str = None,
+        fix_branch: str = None,
 ):
     """合并分支并且提交
 
@@ -657,6 +658,7 @@ def apply_patch(
         signer_email: 签名者邮箱
         cve_id: cve id
         issue_url: issue链接（可选）
+        fix_branch: 修复分支名称（可选，未指定时自动生成）
 
     Returns:
         patch应用信息字典
@@ -737,8 +739,13 @@ def apply_patch(
     
     logger.info("apply_patch: 准备分支信息并创建修复分支...")
     branches = repo.git.branch().split()
-    issue_num = os.path.basename(issue_url) if issue_url else cve_id
-    fix_branch = f"fix-{branch}-{issue_num}"
+    # 标记是否用户明确指定了 fix_branch
+    fix_branch_specified = bool(fix_branch)
+    # 如果未指定 fix_branch，则自动生成
+    if not fix_branch:
+        issue_num = os.path.basename(issue_url) if issue_url else cve_id
+        fix_branch = f"fix-{branch}-{issue_num}"
+    logger.info(f"修复分支名称: {fix_branch}{'（用户指定）' if fix_branch_specified else '（自动生成）'}")
     try:
         if branch in branches:
             logger.info(f"检出已存在分支: {branch}")
@@ -752,11 +759,23 @@ def apply_patch(
         else:
             logger.info(f"本地不存在分支 {branch}，从 origin/{branch} 创建")
             repo.git.checkout('-b', branch, f'origin/{branch}')
+
+        # 处理修复分支
         if fix_branch in branches:
-            logger.info(f"删除已存在的修复分支: {fix_branch}")
-            repo.git.branch('-D', fix_branch)
-        logger.info(f"创建并切换到修复分支: {fix_branch}")
-        repo.git.checkout('-b', fix_branch)
+            if fix_branch_specified:
+                # 用户明确指定了 fix_branch，不删除，直接切换（累积提交模式）
+                logger.info(f"修复分支已存在，切换到: {fix_branch}（累积提交模式）")
+                repo.git.checkout(fix_branch)
+            else:
+                # 自动生成的 fix_branch，删除重建
+                logger.info(f"删除已存在的修复分支: {fix_branch}")
+                repo.git.branch('-D', fix_branch)
+                logger.info(f"创建并切换到修复分支: {fix_branch}")
+                repo.git.checkout('-b', fix_branch)
+        else:
+            # 分支不存在，创建新分支
+            logger.info(f"创建并切换到修复分支: {fix_branch}")
+            repo.git.checkout('-b', fix_branch)
     except Exception as e:
         logger.error(f"切换分支失败: {str(e)}")
         return {
