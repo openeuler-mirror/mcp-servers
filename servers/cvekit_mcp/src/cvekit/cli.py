@@ -119,6 +119,12 @@ def main():
         default=None,  # 改为 None，未指定时自动生成
         help='修复分支名称 (也可通过 FIX_BRANCH 环境变量设置)，未指定时自动生成为 fix-{branch}-{issue_num}',
     )
+    # LLM 冲突解决参数（复用 backport_group 的 --llm-provider 等参数）
+    pr_group.add_argument(
+        '--use-llm',
+        action='store_true',
+        help='启用 LLM 自动解决补丁冲突（当 git apply 失败时，复用 --llm-provider 等参数配置）',
+    )
 
     # 补丁回移植参数
     backport_group = parser.add_argument_group('补丁回移植参数')
@@ -381,6 +387,11 @@ def handle_apply_patch(cve_id, args):
             cve_id=cve_id,
             issue_url=args.issue_url,
             fix_branch=args.fix_branch,
+            use_llm=getattr(args, 'use_llm', False),
+            llm_provider=getattr(args, 'llm_provider', None),
+            llm_base_url=getattr(args, 'llm_base_url', None),
+            llm_model_name=getattr(args, 'llm_model_name', None),
+            api_key=getattr(args, 'api_key', None),
             )
     finally:
         apply_patch_lock.release()

@@ -645,6 +645,11 @@ def apply_patch(
         cve_id: str = None,
         issue_url: str = None,
         fix_branch: str = None,
+        use_llm: bool = False,
+        llm_provider: str = None,
+        llm_base_url: str = None,
+        llm_model_name: str = None,
+        api_key: str = None,
 ):
     """合并分支并且提交
 
@@ -659,6 +664,11 @@ def apply_patch(
         cve_id: cve id
         issue_url: issue链接（可选）
         fix_branch: 修复分支名称（可选，未指定时自动生成）
+        use_llm: 是否使用 LLM 自动解决冲突
+        llm_provider: LLM 提供商
+        llm_base_url: LLM API 基础地址
+        llm_model_name: LLM 模型名称
+        api_key: LLM API 密钥
 
     Returns:
         patch应用信息字典
@@ -825,10 +835,71 @@ def apply_patch(
         # 检查是否处于 am 过程中的冲突状态
         if "Applying" in str(e):
             repo.git.am("--abort")
-            return {
-                "status": "error",
-                "error": i18n("无法完成补丁应用，请检查冲突并重试: %s") % (str(e))
-            }
+
+        # 尝试使用 LLM 自动解决冲突
+        if use_llm and api_key:
+            logger.info("尝试使用 LLM 自动解决冲突...")
+            try:
+                from .agent.conflict_resolver import resolve_patch_conflict
+
+                # 读取补丁内容
+                with open(patch_path, 'r', encoding='utf-8') as f:
+                    patch_content = f.read()
+
+                # 调用 LLM 解决冲突
+                result = resolve_patch_conflict(
+                    repo_path=repo.working_dir,
+                    patch_content=patch_content,
+                    target_branch=branch,
+                    api_key=api_key,
+                    provider=llm_provider or 'openai',
+                    custom_base_url=llm_base_url,
+                    custom_model_name=llm_model_name,
+                    context={'cve_id': cve_id, 'issue_url': issue_url}
+                )
+
+                if result.success and result.patch_content:
+                    logger.info("LLM 成功解决冲突，应用修复后的补丁...")
+                    # 保存修复后的补丁到临时文件
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False) as f:
+                        f.write(result.patch_content)
+                        resolved_patch_path = f.name
+
+                    logger.debug(f"修复后的补丁已保存到: {resolved_patch_path}")
+                    logger.debug(f"补丁内容:\n{result.patch_content}")
+
+                    try:
+                        # 应用修复后的补丁
+                        repo.git.apply(resolved_patch_path)
+                        repo.git.add("--all")
+                        author = headers.get("From", f"{signer_name} <{signer_email}>")
+                        date = headers.get("Date")
+                        msg = f"{commit_msg}{conflict_message}" if conflict_message else commit_msg
+                        if date:
+                            repo.git.commit("-m", msg, f"--author={author}", f"--date={date}", "-s")
+                        else:
+                            repo.git.commit("-m", msg, f"--author={author}", "-s")
+                        logger.info("修复后的补丁成功应用")
+                        # 成功后删除临时文件
+                        os.unlink(resolved_patch_path)
+                    except Exception as apply_error:
+                        # 应用失败时保留临时文件以便调试
+                        logger.error(f"应用 LLM 修复的补丁失败: {apply_error}")
+                        logger.error(f"补丁文件已保留: {resolved_patch_path}")
+                        raise
+                else:
+                    logger.error(f"LLM 无法解决冲突: {result.error_message}")
+                    return {
+                        "status": "error",
+                        "error": i18n("无法应用补丁，LLM 冲突解决失败: %s") % (result.error_message or str(e))
+                    }
+            except Exception as llm_error:
+                logger.error(f"LLM 冲突解决过程出错: {str(llm_error)}")
+                return {
+                    "status": "error",
+                    "error": i18n("无法应用补丁，LLM 冲突解决失败: %s") % (str(llm_error))
+                }
         else:
             logger.info("已中止补丁应用过程")
             return {
