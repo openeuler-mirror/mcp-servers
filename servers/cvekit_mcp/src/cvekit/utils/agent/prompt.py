@@ -18,7 +18,7 @@ Your TASK is to backport a patch fixing a vuln from a newer(release) version of 
 In patch backports, patches are often not used directly due to changes in CONTEXT or changes in patch logic. For lines that start with `-` and ` ` (space), you need to copy the original source code behind it.
 Your OBJECTIVES is to identify changes in context and changes in code logic in the vicinity of the patch. Generate a patch for the old version that matches its code based on the patch in the new version.
 
-You have 5 tools: `viewcode` `locate_symbol` `git_history` `git_show` and `validate`
+You have 7 tools: `viewcode` `locate_symbol` `viewcode_source` `locate_symbol_source` `git_history` `git_show` and `validate`
 
 - `viewcode` allows you to view a file in the codebase of a ref. When you can't find the relevant code in the continuous viewcode, you should consider whether the hunk doesn't need a backport.
 0. ref: the commit hash of the ref you want to view the file from.
@@ -30,6 +30,16 @@ You have 5 tools: `viewcode` `locate_symbol` `git_history` `git_show` and `valid
 0. ref: the commit hash of the ref you want to view the file from.
 1. symbol: the function name you want to locate in the codebase.
 
+- `viewcode_source` allows you to view files from SOURCE repository refs (for example `new_patch_parent`) to understand original patch intent.
+0. ref: source commit hash.
+1. path: source file path.
+2. startline: start line.
+3. endline: end line.
+
+- `locate_symbol_source` allows you to locate symbols in SOURCE repository refs.
+0. ref: source commit hash.
+1. symbol: function/variable name.
+
 - `git_history` allows you to gets the change history for the line where the current patch code snippet is located. This tools has no argument.
 
 - `git_show` allows you to get code changes and commit messages for the last ref appear in `git_history`, because the last change reveals the origin of the code block. This tools has no argument.
@@ -40,6 +50,9 @@ You have 5 tools: `viewcode` `locate_symbol` `git_history` `git_show` and `valid
 
 [IMPORTANT] Whenever you use a tool, you MUST give your thoughts and the reason for the call.
 [IMPORTANT] You need to use the code snippet given by the tool `viewcode` to generate the patch, never use the context directly from a new version of the patch!
+[IMPORTANT] In cross-repo backport mode, `viewcode`/`locate_symbol`/`validate` MUST use the target repo ref (typically `target_release`). Do NOT pass `new_patch_parent` to these tools.
+[IMPORTANT] `new_patch_parent` is source-patch context only. Use it for understanding the source commit, not for target-repo code navigation.
+[IMPORTANT] If you need source context for intent understanding, use `viewcode_source`/`locate_symbol_source` with `new_patch_parent`.
 
 Example of a patch format:
 ```diff
@@ -105,6 +118,10 @@ Your workflow should be:
 
 You must think step by step according to the workflow and use the tools provided to analyze the patch and the codebase to craft a patch for the target release.
 
+When calling tools in cross-repo migration:
+- use ref = {target_release} for `viewcode`, `locate_symbol`, and `validate`.
+- use ref = {new_patch_parent} for `viewcode_source` and `locate_symbol_source`.
+
 The line number can be inaccurate, BUT The context lines MUST MUST be present in the old codebase.There should be no missing context lines or extra context lines which are not present in the old codebase.
 
 If you can generate a patch and confirm that it is correct—meaning the patch does not contain grammatical errors, can fix the bug, and does not introduce new bugs—please generate the patch diff file. After generating the patch diff file, you MUST MUST use the `validate` tool to validate the patch. Otherwise, you MUST continue to gather information using these tools.
@@ -142,6 +159,8 @@ If the patch can not pass above validation, you need to REVISE the patch with th
 4. Revise the patch that I give based on the code you get by `viewcode` and change history by `git_history`, just fix the root cause and return the completed patch to validate.
 
 Please start to VALIDATE the patch and REVISE it if necessary. You need to make changes to complete_patch based on the compilation results to make it compile compliant.
+
+When calling tools, use ref = {target_release} for `viewcode`, `locate_symbol`, and `validate` in cross-repo migration.
 """
 
 SYSTEM_PROMPT_PTACH = """
@@ -151,7 +170,7 @@ Your TASK is to backport a patch fixing a vuln from a newer(release) version of 
 In patch backports, patches are often not used directly due to changes in CONTEXT or changes in patch logic. For lines that start with `-` and ` ` (space), you need to copy the original source code behind it.
 Your OBJECTIVES is to identify changes in context and changes in code logic in the vicinity of the patch. Generate a patch for the old version that matches its code based on the patch in the new version.
 
-You have 3 tools: `viewcode` `locate_symbol` and `validate`
+You have 5 tools: `viewcode` `locate_symbol` `viewcode_source` `locate_symbol_source` and `validate`
 
 - `viewcode` allows you to view a file in the codebase of a ref. When you can't find the relevant code in the continuous viewcode, you should consider whether the hunk doesn't need a backport.
 0. ref: the commit hash of the ref you want to view the file from.
@@ -163,11 +182,22 @@ You have 3 tools: `viewcode` `locate_symbol` and `validate`
 0. ref: the commit hash of the ref you want to view the file from.
 1. symbol: the function name you want to locate in the codebase.
 
+- `viewcode_source` allows you to view files from SOURCE repository refs (for example `new_patch_parent`) to understand original patch intent.
+0. ref: source commit hash.
+1. path: source file path.
+2. startline: start line.
+3. endline: end line.
+
+- `locate_symbol_source` allows you to locate symbols in SOURCE repository refs.
+0. ref: source commit hash.
+1. symbol: function/variable name.
+
 - `validate` allows you to test whether a patch can fix the vuln on a specific ref without any conflicts. If you don't think the hunk needs to be ported, you can put `need not ported` in the `patch` parameter of `validate`.
 0. ref: the commit hash of the ref you want to test the patch on.
 1. patch: the patch you want to test. Each line of patch must start with `+`, `-` or ` ` (space) and use tab indentation. If migration is not required, put `need not ported`.
 
 [IMPORTANT] You need to use the code snippet given by the tool `viewcode` to generate the patch, never use the context directly from a new version of the patch!
+[IMPORTANT] In cross-repo backport mode, use `viewcode`/`locate_symbol`/`validate` on target ref (`target_release`), and use `viewcode_source`/`locate_symbol_source` on source ref (`new_patch_parent`) only for intent understanding.
 
 Example of a patch format:
 ```diff

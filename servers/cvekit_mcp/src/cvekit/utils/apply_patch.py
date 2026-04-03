@@ -9,7 +9,7 @@ from .gitee import setup_repository
 from .patch import getUrlText, ensure_patch_file
 from .commits import get_vulnerability_commits, branch_commit_from_upstream
 from .locales import i18n
-from .tools.project import safe_git_reset_hard
+from .tools.project import safe_git_reset_hard, cleanup_git_in_progress_state
 from .branches import check_analyse_cache_result
 
 logger = logging.getLogger(__name__)
@@ -726,8 +726,8 @@ def apply_patch(
     # 清理工作区，确保没有未提交的文件导致后续操作失败
     try:
         logger.info("清理工作区，重置所有更改...")
-        # 重置所有更改（使用安全函数处理锁文件问题）
-        safe_git_reset_hard(repo)
+        # 重置所有更改，并可选清理 git am/rebase 等中间状态
+        safe_git_reset_hard(repo, cleanup_in_progress=True)
         # 清理未跟踪的文件和目录
         repo.git.clean('-fdx')
         logger.info("工作区清理完成")
@@ -779,6 +779,8 @@ def apply_patch(
 
     logger.info(f"apply_patch: 应用补丁文件，patch_path={patch_path}")
     try:
+        # 应用补丁前再次做一次中间状态清理，防止上一步 pull/rebase 留下状态目录
+        cleanup_git_in_progress_state(repo)
         # 有冲突说明时用 git apply；无冲突时仅当补丁为 mbox 格式才用 git am，否则用 git apply
         use_apply = bool(conflict_message) or not _patch_is_mbox_format(patch_path)
         if use_apply:
@@ -798,10 +800,16 @@ def apply_patch(
         logger.info("补丁成功应用")
     except git.exc.GitCommandError as e:
         logger.error(f"应用补丁失败: {str(e)}")
+        if "rebase-apply still exists" in str(e):
+            logger.warning(
+                "检测到 git 中间状态残留（rebase-apply still exists），"
+                "已执行清理流程，建议重试当前补丁应用。"
+            )
+        # 失败后统一做 best-effort 清理，避免污染后续重试
+        cleanup_git_in_progress_state(repo)
 
         # 检查是否处于 am 过程中的冲突状态
         if "Applying" in str(e):
-            repo.git.am("--abort")
             return {
                 "status": "error",
                 "error": i18n("无法完成补丁应用，请检查冲突并重试: %s") % (str(e))

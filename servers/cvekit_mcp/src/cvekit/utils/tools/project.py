@@ -13,13 +13,14 @@ Modifications for CVEKit MCP backport workflow:
 
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
 import warnings
 from collections import OrderedDict
 from types import SimpleNamespace
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
 import Levenshtein
 from git import Repo
@@ -60,7 +61,53 @@ def _wait_for_index_lock_release(index_lock, max_wait=30):
     return True
 
 
-def safe_git_reset_hard(repo, max_retries=3, retry_delay=1):
+def cleanup_git_in_progress_state(repo):
+    """
+    清理仓库中可能残留的 in-progress 状态（am/rebase/merge/cherry-pick）。
+    该函数幂等：没有进行中操作时会跳过，不抛异常。
+    """
+    abort_steps = [
+        ("am", lambda: repo.git.am("--abort")),
+        ("rebase", lambda: repo.git.rebase("--abort")),
+        ("merge", lambda: repo.git.merge("--abort")),
+        ("cherry-pick", lambda: repo.git.cherry_pick("--abort")),
+    ]
+    for name, action in abort_steps:
+        try:
+            action()
+            logger.info("cleanup_git_in_progress_state: 已执行 %s --abort", name)
+        except Exception as e:
+            logger.debug(
+                "cleanup_git_in_progress_state: %s --abort 跳过/失败（通常可忽略）: %s",
+                name,
+                e,
+            )
+
+    # 兜底处理：若历史异常中断导致控制目录残留，尝试清理 rebase 目录
+    try:
+        git_dir = repo.git.rev_parse("--git-dir").strip()
+        if not os.path.isabs(git_dir):
+            git_dir = os.path.join(repo.working_tree_dir, git_dir)
+        for d in ("rebase-apply", "rebase-merge"):
+            stale_path = os.path.join(git_dir, d)
+            if os.path.isdir(stale_path):
+                logger.warning(
+                    "cleanup_git_in_progress_state: 检测到残留目录 %s，尝试删除",
+                    stale_path,
+                )
+                shutil.rmtree(stale_path, ignore_errors=False)
+                logger.info(
+                    "cleanup_git_in_progress_state: 已删除残留目录 %s",
+                    stale_path,
+                )
+    except Exception as e:
+        logger.warning(
+            "cleanup_git_in_progress_state: 兜底清理残留 rebase 目录失败: %s",
+            e,
+        )
+
+
+def safe_git_reset_hard(repo, max_retries=3, retry_delay=1, cleanup_in_progress=False):
     """
     安全地执行 git reset --hard，自动处理 index.lock 文件问题
     
@@ -68,12 +115,15 @@ def safe_git_reset_hard(repo, max_retries=3, retry_delay=1):
         repo: GitPython Repo 对象
         max_retries: 最大重试次数
         retry_delay: 重试延迟（秒）
+        cleanup_in_progress: 是否在 reset 前清理 am/rebase 等中间状态
     
     Raises:
         GitCommandError: 如果所有重试都失败
     """
     for attempt in range(max_retries):
         try:
+            if cleanup_in_progress:
+                cleanup_git_in_progress_state(repo)
             # 在执行 reset 前，检查并清理锁文件
             git_dir = repo.git_dir
             index_lock = os.path.join(git_dir, 'index.lock')
@@ -162,21 +212,29 @@ class Project:
         self.testcase_succeeded = False
         self.poc_succeeded = False
         self.symbol_map = {}
+        self.source_symbol_map = {}
         self.now_hunk = ""
         self.now_hunk_num = 0
         self.hunk_log_info = {}
         self.add_percent = 0
         self.last_context = []
         self.validated_patch = None
+        self.last_success_revised_patch = ""
         # Only allow "need not ported" when equivalence is explicitly proven.
         self.equivalent_exists = bool(getattr(data, "equivalent_exists", False))
 
     def _extract_hunk_identity(
         self, patch_chunk: str
-    ) -> tuple[str, int, int, int, int] | None:
+    ) -> tuple[str, int, int] | None:
         """
         Build a stable identity for a patch chunk:
-        (file_path, old_start, old_count, new_start, new_count).
+        (file_path, old_start, old_count).
+
+        Why not include new_start/new_count?
+        During iterative revision, the same logical hunk may be regenerated with
+        slightly different `+` line ranges while still targeting the same old
+        location. If we include new ranges in identity, stale and latest variants
+        can coexist and produce duplicate/conflicting hunks in exported patches.
 
         For new-file hunks (`--- /dev/null`), use the `+++ b/...` path as identity
         so multiple new files do not overwrite each other.
@@ -220,7 +278,7 @@ class Project:
             or new_count is None
         ):
             return None
-        return (file_path, old_start, old_count, new_start, new_count)
+        return (file_path, old_start, old_count)
 
     def _sync_succeeded_patches_from_map(self) -> None:
         self.succeeded_patches = list(self.succeeded_patch_map.values())
@@ -249,7 +307,15 @@ class Project:
         Build complete patch from deduplicated successful chunks.
         """
         if self.succeeded_patch_map:
-            return "\n".join(self.succeeded_patch_map.values())
+            # Secondary de-dup guard: if historical data contains mixed key shapes
+            # (from older runtime states), normalize again by current identity.
+            normalized = OrderedDict()
+            for chunk in self.succeeded_patch_map.values():
+                identity = self._extract_hunk_identity(chunk)
+                if identity is None:
+                    identity = (f"raw:{hash(chunk)}", 0, 0)
+                normalized[identity] = chunk
+            return "\n".join(normalized.values())
         return "\n".join(self.succeeded_patches)
 
     def _set_complete_patch_as_single_result(self, complete_patch: str) -> None:
@@ -312,6 +378,267 @@ class Project:
             return ""
         return f"{header_a}\n{header_b}\n" + "\n".join(hunk_bodies) + "\n"
 
+    def normalize_patch(self, patch_text: str) -> str:
+        """
+        Trim non-diff metadata and keep unified diff body from file headers.
+        """
+        if not patch_text:
+            return ""
+        lines = patch_text.splitlines()
+        start_idx = -1
+        for idx, line in enumerate(lines):
+            if line.startswith("--- a/") or line.startswith("--- /dev/null"):
+                start_idx = idx
+                break
+        if start_idx < 0:
+            return ""
+        normalized = "\n".join(lines[start_idx:])
+        if normalized and not normalized.endswith("\n"):
+            normalized += "\n"
+        return normalized
+
+    def extract_grouped_file_patches(self, patch_text: str) -> list[tuple[str, str]]:
+        """
+        Extract and group patch content by file path, then merge hunks per file.
+        """
+        normalized = self.normalize_patch(patch_text)
+        if not normalized:
+            return []
+
+        def _sanitize_block(raw_lines: list[str]) -> str:
+            """
+            Remove trailing next-file metadata accidentally attached to current block.
+            """
+            if not raw_lines:
+                return ""
+            cut = len(raw_lines)
+            for i, line in enumerate(raw_lines):
+                if line.startswith("diff --git "):
+                    cut = i
+                    break
+                # Fallback: some malformed outputs may only leak `index ...`.
+                if line.startswith("index "):
+                    cut = i
+                    break
+            block = "\n".join(raw_lines[:cut]).strip()
+            return (block + "\n") if block else ""
+
+        lines = normalized.splitlines()
+        file_blocks: list[str] = []
+        start = -1
+        for idx, line in enumerate(lines):
+            if line.startswith("diff --git "):
+                if start >= 0:
+                    block = _sanitize_block(lines[start:idx])
+                    if block:
+                        file_blocks.append(block)
+                start = -1
+                continue
+            if line.startswith("--- a/") or line.startswith("--- /dev/null"):
+                if start >= 0:
+                    block = _sanitize_block(lines[start:idx])
+                    if block:
+                        file_blocks.append(block)
+                start = idx
+        if start >= 0:
+            block = _sanitize_block(lines[start:])
+            if block:
+                file_blocks.append(block)
+
+        grouped_files: list[list[Any]] = []
+        grouped_index: dict[str, int] = {}
+        for raw_idx, block in enumerate(file_blocks):
+            key = self._extract_patch_target_path(block) or f"__raw_block_{raw_idx}__"
+            if key.startswith("__raw_block_"):
+                logger.warning(
+                    "[Project.extract_grouped_file_patches] 文件路径解析失败，使用占位 key 保留该块: %s",
+                    key,
+                )
+            if key not in grouped_index:
+                grouped_index[key] = len(grouped_files)
+                grouped_files.append([key, []])
+            grouped_files[grouped_index[key]][1].append(block)
+
+        file_patches: list[tuple[str, str]] = []
+        for key, blocks in grouped_files:
+            header_a = ""
+            header_b = ""
+            body_parts = []
+            header_written = False
+            for block in blocks:
+                b_lines = block.splitlines()
+                if len(b_lines) < 3:
+                    continue
+                if not header_written:
+                    header_a = b_lines[0]
+                    header_b = b_lines[1]
+                    header_written = True
+                hunk_start = -1
+                for idx, line in enumerate(b_lines):
+                    if line.startswith("@@"):
+                        hunk_start = idx
+                        break
+                if hunk_start >= 0:
+                    body_parts.append("\n".join(b_lines[hunk_start:]))
+            if header_written and body_parts:
+                file_patch = f"{header_a}\n{header_b}\n" + "\n".join(body_parts) + "\n"
+                file_patches.append((key, file_patch))
+        return file_patches
+
+    def check_patch_chunks_accumulate(
+        self, patch_chunks: list[str], target_release: str
+    ) -> tuple[bool, str]:
+        """
+        Apply patch chunks cumulatively in a temp worktree to catch combo conflicts.
+        """
+        if not patch_chunks:
+            return True, ""
+
+        try:
+            resolved_ref = self._resolve_target_ref(target_release)
+            wt_dir = tempfile.mkdtemp(prefix="cvekit-wt-")
+            try:
+                self.target_repo.git.worktree("add", "--detach", wt_dir, resolved_ref)
+                for idx, chunk in enumerate(patch_chunks):
+                    with tempfile.NamedTemporaryFile(mode="w", delete=False) as pf:
+                        pf.write(chunk if chunk.endswith("\n") else chunk + "\n")
+                        patch_file = pf.name
+                    try:
+                        self.target_repo.git.execute(
+                            ["git", "-C", wt_dir, "apply", "--check", patch_file]
+                        )
+                        self.target_repo.git.execute(
+                            ["git", "-C", wt_dir, "apply", patch_file]
+                        )
+                    except Exception as e:
+                        return False, f"accumulate_apply_failed_at_chunk={idx}, err={e}"
+                    finally:
+                        try:
+                            os.remove(patch_file)
+                        except Exception:
+                            pass
+                return True, ""
+            finally:
+                try:
+                    self.target_repo.git.worktree("remove", "--force", wt_dir)
+                except Exception:
+                    pass
+                try:
+                    self.target_repo.git.worktree("prune")
+                except Exception:
+                    pass
+                try:
+                    shutil.rmtree(wt_dir, ignore_errors=True)
+                except Exception:
+                    pass
+        except Exception as e:
+            return False, f"temp_worktree_check_failed: {e}"
+
+    def apply_file_patches_with_freeze(
+        self,
+        target_release: str,
+        project_url: str,
+        new_patch_parent: str,
+        file_patches: list[tuple[str, str]],
+        agent_executor: Any,
+        log_handler: Any,
+        patch_dataset_dir: str | None = None,
+    ) -> tuple[bool, str]:
+        """
+        Process file patches with freeze strategy and cumulative conflict checks.
+        """
+        logger.debug(
+            "[Project.apply_file_patches_with_freeze] 开始文件级冻结流程, 文件数=%s",
+            len(file_patches),
+        )
+        frozen_file_patches: list[str] = []
+        expected_file_keys = [k for k, _ in file_patches]
+        frozen_file_keys: list[str] = []
+
+        for file_idx, (file_key, file_patch) in enumerate(file_patches):
+            logger.debug(
+                "[Project.apply_file_patches_with_freeze] 处理文件补丁 %s/%s: %s",
+                file_idx,
+                max(len(file_patches) - 1, 0),
+                file_key,
+            )
+            self.round_succeeded = False
+            self.context_mismatch_times = 0
+            self.set_succeeded_patches(frozen_file_patches)
+
+            ret = self._apply_hunk(target_release, file_patch, False)
+            if not self.round_succeeded:
+                block_list = re.findall(r"older version.\n(.*?)\nBesides,", ret, re.DOTALL)
+                similar_block = "\n".join(block_list)
+                self.now_hunk = file_patch
+                self.now_hunk_num = file_idx
+                invoke_input = {
+                    "project_url": project_url,
+                    "new_patch_parent": new_patch_parent,
+                    "new_patch": file_patch,
+                    "target_release": target_release,
+                    "similar_block": similar_block,
+                }
+                agent_executor.invoke(invoke_input, {"callbacks": [log_handler]})
+
+            if not self.round_succeeded:
+                logger.error(
+                    "[Project.apply_file_patches_with_freeze] 文件补丁 %s 达到最大迭代次数",
+                    file_key,
+                )
+                return False, ""
+
+            # 优先冻结“本轮真正成功 apply 的 revised_patch”（包含可能的重命名路径修复结果）。
+            frozen_patch = self.last_success_revised_patch or self.build_succeeded_patch_for_file(file_key) or file_patch
+            # 关闭文件级“累积预检查”。
+            # 该检查在多场景下会误判失败，统一由末尾全量 _check_patch 作为唯一 gate。
+
+            frozen_file_patches.append(frozen_patch)
+            frozen_file_keys.append(file_key)
+            self.set_succeeded_patches(frozen_file_patches)
+
+        missing_keys = sorted(set(expected_file_keys) - set(frozen_file_keys))
+        if missing_keys:
+            logger.error(
+                "[Project.apply_file_patches_with_freeze] 文件级处理存在缺失文件，缺失 keys=%s",
+                missing_keys,
+            )
+            self.set_succeeded_patches([])
+            self.validated_patch = ""
+            return False, ""
+
+        complete_patch = ""
+        while frozen_file_patches:
+            candidate_patch = "\n".join(frozen_file_patches)
+            try:
+                self._check_patch(candidate_patch, target_release)
+                complete_patch = candidate_patch
+                break
+            except Exception as e:
+                removed = frozen_file_patches.pop()
+                logger.warning(
+                    "[Project.apply_file_patches_with_freeze] 全量 git apply --check 失败，回滚最后新增文件。"
+                    " 剩余冻结数=%s; error=%s",
+                    len(frozen_file_patches),
+                    e,
+                )
+                logger.debug(
+                    "[Project.apply_file_patches_with_freeze] 已回滚补丁长度: %s",
+                    len(removed),
+                )
+
+        if not frozen_file_patches:
+            self.set_succeeded_patches([])
+            self.validated_patch = ""
+            logger.error("[Project.apply_file_patches_with_freeze] 全量检查后无可用冻结补丁")
+            return False, ""
+
+        self.set_succeeded_patches(frozen_file_patches)
+        self.all_hunks_applied_succeeded = True
+        self.now_hunk = "completed"
+        logger.info("[Project.apply_file_patches_with_freeze] 文件级冻结流程完成")
+        return True, complete_patch
+
     def _is_unified_diff_patch(self, patch: str) -> bool:
         """
         Check whether text looks like a unified diff patch.
@@ -336,13 +663,18 @@ class Project:
             return new_paths[0]
         return ""
 
-    def _resolve_target_ref(self, ref: str) -> str:
+    def _resolve_target_ref(self, ref: str, strict: bool = False) -> str:
         """
         Resolve a ref to a valid commit in the target repository.
 
         In cross-repo scenarios, the provided ref may belong to the source repo
         (e.g., new_patch_parent). If the ref does not exist in target repo,
         fallback to target_release, then HEAD.
+
+        Args:
+            ref (str): ref to resolve.
+            strict (bool): if True, do not fallback when ref is unknown in
+                target repo; raise ValueError with guidance instead.
         """
         if not ref:
             return self.target_repo.head.commit.hexsha
@@ -350,6 +682,26 @@ class Project:
             self.target_repo.commit(ref)
             return ref
         except Exception:
+            in_source_repo = False
+            if hasattr(self, "repo") and self.repo is not self.target_repo:
+                try:
+                    self.repo.commit(ref)
+                    in_source_repo = True
+                except Exception:
+                    in_source_repo = False
+
+            if strict:
+                if in_source_repo:
+                    raise ValueError(
+                        f"ref {ref} exists in source repo but not in target repo; "
+                        f"use target_release {getattr(self, 'target_release', 'HEAD')} "
+                        "for viewcode/locate_symbol/validate in cross-repo backport."
+                    )
+                raise ValueError(
+                    f"ref {ref} not found in target repo; "
+                    f"use target_release {getattr(self, 'target_release', 'HEAD')}."
+                )
+
             # Fallback to target_release if it exists in target repo
             if getattr(self, "target_release", None):
                 try:
@@ -365,6 +717,25 @@ class Project:
             head_ref = self.target_repo.head.commit.hexsha
             logger.debug(
                 f"[_resolve_target_ref] ref {ref} not in target repo, "
+                f"fallback to HEAD {head_ref[:8]}"
+            )
+            return head_ref
+
+    def _resolve_source_ref(self, ref: str, strict: bool = False) -> str:
+        """
+        Resolve a ref to a valid commit in the source repository.
+        """
+        if not ref:
+            return self.repo.head.commit.hexsha
+        try:
+            self.repo.commit(ref)
+            return ref
+        except Exception:
+            if strict:
+                raise ValueError(f"ref {ref} not found in source repo.")
+            head_ref = self.repo.head.commit.hexsha
+            logger.debug(
+                f"[_resolve_source_ref] ref {ref} not in source repo, "
                 f"fallback to HEAD {head_ref[:8]}"
             )
             return head_ref
@@ -387,7 +758,7 @@ class Project:
         except:
             return "Error commit id, please check if the commit id is correct."
 
-    def _prepare(self, ref: str) -> None:
+    def _prepare(self, ref: str, use_target_repo: bool = True) -> None:
         """
         Prepares the project by generating a symbol map using ctags.
         
@@ -396,6 +767,9 @@ class Project:
         Raises:
             subprocess.CalledProcessError: If the ctags command fails.
         """
+        symbol_map = self.symbol_map if use_target_repo else self.source_symbol_map
+        repo_dir = self.target_dir if use_target_repo else self.dir
+
         # 优化：只扫描 C/C++ 源文件，避免扫描文档、配置文件等
         # 对于 Linux 内核等大型项目，这可以节省大量时间
         with tempfile.NamedTemporaryFile(prefix="ctags-", suffix=".tags", delete=False) as f:
@@ -415,7 +789,7 @@ class Project:
                     ".",
                 ],
                 stdout=subprocess.PIPE,
-                cwd=self.target_dir,  # 在目标仓库中生成 ctags
+                cwd=repo_dir,
                 stdin=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -435,7 +809,7 @@ class Project:
                     ctags.returncode, ctags.args, output=ctags.stdout, stderr=ctags.stderr
                 )
 
-            self.symbol_map[ref] = {}
+            symbol_map[ref] = {}
             with open(tags_path, "rb") as f:
                 for line in f.readlines():
                     if text := line.decode("utf-8", errors="ignore"):
@@ -444,9 +818,9 @@ class Project:
                         try:
                             symbol, file, lineno = text.strip().split(';"')[0].split("\t")
                             lineno = int(lineno)
-                            if symbol not in self.symbol_map[ref]:
-                                self.symbol_map[ref][symbol] = []
-                            self.symbol_map[ref][symbol].append((file, lineno))
+                            if symbol not in symbol_map[ref]:
+                                symbol_map[ref][symbol] = []
+                            symbol_map[ref][symbol].append((file, lineno))
                         except:
                             continue
         finally:
@@ -456,7 +830,9 @@ class Project:
             except Exception:
                 pass
 
-    def _viewcode(self, ref: str, path: str, startline: int, endline: int) -> str:
+    def _viewcode(
+        self, ref: str, path: str, startline: int, endline: int, strict_ref: bool = False
+    ) -> str:
         """
         View a file from a specific ref of the target repository. Lines between startline and endline are shown.
 
@@ -470,7 +846,7 @@ class Project:
             str: The content of the file between the specified startline and endline.
                  If the file doesn't exist in the commit, a message indicating that is returned.
         """
-        ref = self._resolve_target_ref(ref)
+        ref = self._resolve_target_ref(ref, strict=strict_ref)
         content = self._read_target_file_content(ref, path)
         if content is None:
             return "This file doesn't exist in this commit or target source directory."
@@ -510,7 +886,26 @@ class Project:
             pass
         return None
 
-    def _locate_symbol(self, ref: str, symbol: str) -> List[Tuple[str, int]] | None:
+    def _read_source_file_content(self, ref: str, path: str) -> str | None:
+        """
+        Read file content strictly from the source git tree at the given ref.
+        """
+        try:
+            file_obj = self.repo.tree(ref) / path
+            if hasattr(file_obj, "type") and file_obj.type != "blob":
+                return None
+            return file_obj.data_stream.read().decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+        return None
+
+    def _locate_symbol(
+        self,
+        ref: str,
+        symbol: str,
+        strict_ref: bool = False,
+        use_target_repo: bool = True,
+    ) -> List[Tuple[str, int]] | None:
         """
         Locate a symbol in a specific ref of the target repository.
 
@@ -522,15 +917,52 @@ class Project:
             List[Tuple[str, int]] | None: File path and code lines.
         """
         # XXX: Analyzing ctags file everytime locate symbol is time-consuming.
-        ref = self._resolve_target_ref(ref)
-        if ref not in self.symbol_map:
-            self._checkout(ref, use_target_repo=True)  # 在目标仓库中 checkout
-            self._prepare(ref)
+        if use_target_repo:
+            ref = self._resolve_target_ref(ref, strict=strict_ref)
+            symbol_map = self.symbol_map
+        else:
+            ref = self._resolve_source_ref(ref, strict=strict_ref)
+            symbol_map = self.source_symbol_map
 
-        if symbol in self.symbol_map[ref]:
-            return self.symbol_map[ref][symbol]
+        if ref not in symbol_map:
+            self._checkout(ref, use_target_repo=use_target_repo)
+            self._prepare(ref, use_target_repo=use_target_repo)
+
+        if symbol in symbol_map[ref]:
+            return symbol_map[ref][symbol]
         else:
             return None
+
+    def _viewcode_source(
+        self, ref: str, path: str, startline: int, endline: int, strict_ref: bool = False
+    ) -> str:
+        """
+        View a file from a specific ref of the source repository.
+        """
+        ref = self._resolve_source_ref(ref, strict=strict_ref)
+        content = self._read_source_file_content(ref, path)
+        if content is None:
+            return "This file doesn't exist in this commit or source directory."
+        lines = content.split("\n")
+        if not lines:
+            return "This file is empty in this commit."
+        total = len(lines)
+        startline = max(1, min(startline, total))
+        endline = max(startline, min(endline, total))
+        ret = []
+        if endline > total:
+            ret.append(
+                f"This file only has {total} lines. Here are lines {startline} through {endline}.\n"
+            )
+        else:
+            ret.append(f"Here are lines {startline} through {endline}.\n")
+        for i in range(startline - 1, endline):
+            ret.append(lines[i])
+        return (
+            "\n".join(ret)
+            + "\nThis is source-repo context for understanding original patch intent; "
+              "generate/apply patch based on target-repo code context.\n"
+        )
 
     def _locate_similar_symbol(
         self, ref: str, symbol: str
@@ -614,6 +1046,35 @@ class Project:
 
             start_line = old_start
             end_line = old_start + old_count - 1
+
+            # Keep history lookup bounded by default to avoid flooding model context
+            # with distant/weakly related commits. Deep mode is only used as fallback.
+            history_max_count = int(os.getenv("CVEKIT_GIT_HISTORY_MAX_COUNT", "12"))
+            history_since = os.getenv("CVEKIT_GIT_HISTORY_SINCE", "5 years ago")
+            deep_max_count = int(os.getenv("CVEKIT_GIT_HISTORY_DEEP_MAX_COUNT", "80"))
+
+            def _build_log_args(limited: bool = True) -> list[str]:
+                args = ["--oneline", "--no-merges", f"-L {start_line},{end_line}:{filepath}"]
+                if limited:
+                    if history_max_count > 0:
+                        args.append(f"--max-count={history_max_count}")
+                    if history_since:
+                        args.append(f"--since={history_since}")
+                else:
+                    if deep_max_count > 0:
+                        args.append(f"--max-count={deep_max_count}")
+                return args
+
+            def _looks_usable_history(log_text: str) -> bool:
+                if not log_text:
+                    return False
+                if "diff --git" not in log_text:
+                    return False
+                try:
+                    chunks = list(utils.split_patch(log_text, False))
+                except Exception:
+                    return False
+                return len(chunks) > 0
             
             # 判断是否跨仓库（target_path 和 project_dir 是不同的仓库）
             is_cross_repo = (hasattr(self, 'target_dir') and 
@@ -624,25 +1085,83 @@ class Project:
                 # 它们没有共同祖先，不能使用 merge_base
                 # 只查询源仓库中从 new_patch_parent 往前的历史
                 logger.debug(f"[_git_history] 跨仓库场景，只查询源仓库历史: {self.dir}")
-                log_message = self.repo.git.log(
-                    "--oneline",
-                    f"-L {start_line},{end_line}:{filepath}",
-                    f"..{self.new_patch_parent}",
-                )
+                # NOTE:
+                # `git log ..<rev>` is invalid when left side is empty and can
+                # trigger "fatal: No commit specified?".
+                # For cross-repo history lookup, use a single tip rev.
+                try:
+                    log_message = self.repo.git.log(
+                        *_build_log_args(limited=True),
+                        self.new_patch_parent,
+                    )
+                except Exception as e:
+                    logger.debug(f"[_git_history] 跨仓库 git log -L 失败: {e}")
+                    return (
+                        "git_history failed to query source-repo line history. "
+                        "Please continue with `viewcode_source`/`locate_symbol_source` "
+                        "and use `viewcode` on target for patch crafting.\n"
+                    )
             else:
                 # 同一仓库场景：可以使用 merge_base 找到共同祖先
                 merge_base = self.repo.merge_base(
                     self.target_release, self.new_patch_parent
                 )
                 start_commit = merge_base[0].hexsha if merge_base else None
-                log_message = self.repo.git.log(
-                    "--oneline",
-                    f"-L {start_line},{end_line}:{filepath}",
-                    f"{start_commit}..{self.new_patch_parent}",
+                range_spec = (
+                    f"{start_commit}..{self.new_patch_parent}"
+                    if start_commit
+                    else self.new_patch_parent
                 )
+                log_message = self.repo.git.log(
+                    *_build_log_args(limited=True),
+                    range_spec,
+                )
+
+            # Fallback to deep history only when current hunk can not be located.
+            used_deep_history = False
+            if not _looks_usable_history(log_message):
+                logger.debug(
+                    "[_git_history] 受限历史无法定位当前 hunk，升级为深历史检索: file=%s, range=%s-%s",
+                    filepath,
+                    start_line,
+                    end_line,
+                )
+                used_deep_history = True
+                try:
+                    if is_cross_repo:
+                        log_message = self.repo.git.log(
+                            *_build_log_args(limited=False),
+                            self.new_patch_parent,
+                        )
+                    else:
+                        merge_base = self.repo.merge_base(
+                            self.target_release, self.new_patch_parent
+                        )
+                        start_commit = merge_base[0].hexsha if merge_base else None
+                        range_spec = (
+                            f"{start_commit}..{self.new_patch_parent}"
+                            if start_commit
+                            else self.new_patch_parent
+                        )
+                        log_message = self.repo.git.log(
+                            *_build_log_args(limited=False),
+                            range_spec,
+                        )
+                except Exception as e:
+                    logger.debug(f"[_git_history] 深历史检索失败: {e}")
+                    return (
+                        "git_history failed to query line history with bounded and deep modes. "
+                        "Please continue with `viewcode`/`viewcode_source` for direct context.\n"
+                    )
             # save each hunk related refs
             if self.now_hunk_num not in self.hunk_log_info and log_message:
-                last_context = list(utils.split_patch(log_message, False))[-1]
+                patch_chunks = list(utils.split_patch(log_message, False))
+                if not patch_chunks:
+                    return (
+                        "git_history found no parseable patch chunks for current hunk. "
+                        "Please continue with `viewcode`/`locate_symbol`.\n"
+                    )
+                last_context = patch_chunks[-1]
                 (
                     _,
                     context_line_num,
@@ -653,16 +1172,49 @@ class Project:
 
                 self.hunk_log_info[self.now_hunk_num] = []
                 patch_list = log_message.split("\n")
+                current_sha = None
                 for idx, line in enumerate(patch_list):
+                    commit_match = re.match(r"^([0-9a-f]{7,40})\s+", line)
+                    if commit_match:
+                        current_sha = commit_match.group(1)
                     if line.startswith("diff --git"):
-                        sha_num = patch_list[idx - 2].split(" ")[0]
-                        self.hunk_log_info[self.now_hunk_num].append(sha_num)
+                        if current_sha:
+                            self.hunk_log_info[self.now_hunk_num].append(current_sha)
 
-            ret = log_message[len(log_message) - 5001 : -1]
-            ret += "\nYou need to do the following analysis based on the information in the last commit:\n"
-            ret += "Analyze the code logic of the context of the patch to be ported in this commit step by step.\n"
-            ret += "If code logic already existed before this commit, the patch context can be assumed to remain in a similar location. Use `locate` and `viewcode` to check your results.\n"
-            ret += "If code logic were added in this commit, then you need to `git_show` for further details.\n"
+            # Return structured summary instead of raw long history text.
+            commit_lines = []
+            for line in log_message.splitlines():
+                if re.match(r"^[0-9a-f]{7,40}\s+", line):
+                    commit_lines.append(line.strip())
+            summary_top_n = int(os.getenv("CVEKIT_GIT_HISTORY_SUMMARY_TOP_N", "8"))
+            top_commit_lines = commit_lines[: max(summary_top_n, 1)]
+
+            mode = "deep" if used_deep_history else "limited"
+            ret = (
+                "git_history summary\n"
+                f"- file: {filepath}\n"
+                f"- old_range: {start_line}-{end_line}\n"
+                f"- mode: {mode}\n"
+                f"- commits_found: {len(commit_lines)}\n"
+            )
+            if top_commit_lines:
+                ret += "- top_commits:\n"
+                for item in top_commit_lines:
+                    ret += f"  - {item}\n"
+            else:
+                ret += "- top_commits: none\n"
+
+            related_refs = self.hunk_log_info.get(self.now_hunk_num, [])
+            if related_refs:
+                ret += f"- related_refs_for_git_show: {', '.join(related_refs[:5])}\n"
+            else:
+                ret += "- related_refs_for_git_show: none\n"
+
+            ret += (
+                "\nUse this summary to reason about lineage. "
+                "If needed, call `git_show` for the last related ref, "
+                "then use `viewcode`/`locate_symbol` to verify exact target context.\n"
+            )
             return ret
 
         else:
@@ -1009,9 +1561,14 @@ class Project:
         logger.debug(f"  - ref={ref}")
         logger.debug(f"  - patch 长度: {len(patch)} 字符")
         logger.debug(f"  - revise_context={revise_context}")
-        logger.debug(f"  - patch 内容预览: {patch[:300]}..." if len(patch) > 300 else f"  - patch 内容: {patch}")
+        logger.debug(
+            "  - patch 结构: has_diff=%s, has_hunk=%s",
+            "diff --git " in patch or "\n--- " in patch,
+            "@@" in patch,
+        )
         
         ret = ""
+        self.last_success_revised_patch = ""
         
         # 切换到目标引用（在目标仓库中）
         logger.debug(f"[_apply_hunk] 切换到目标引用: ref={ref}")
@@ -1039,8 +1596,7 @@ class Project:
         
         # 修正补丁（使用目标仓库的路径）
         if revise_context:
-            logger.debug("[_apply_hunk] revise_context=True，输出原始补丁:")
-            logger.debug("original patch:\n" + patch)
+            logger.debug("[_apply_hunk] revise_context=True")
         
         logger.debug("[_apply_hunk] 开始修正补丁...")
         logger.debug(f"  参数: patch 长度={len(patch)}, target_dir={self.target_dir}, revise_context={revise_context}")
@@ -1048,12 +1604,28 @@ class Project:
         logger.debug(f"[_apply_hunk] 补丁修正完成:")
         logger.debug(f"  - fixed={fixed} (是否进行了修正)")
         logger.debug(f"  - revised_patch 长度: {len(revised_patch)} 字符")
-        logger.debug("revised patch:\n" + revised_patch)
         
         if fixed:
             logger.debug("[_apply_hunk] 补丁已修正（行号、格式等）")
         else:
             logger.debug("[_apply_hunk] 补丁无需修正")
+
+        # 二次结构校验：避免 revise_patch 产出“可读但非合法 unified diff”的漂移补丁
+        valid_revised, revised_invalid_reason, normalized_revised_patch = (
+            utils.validate_unified_diff_patch(revised_patch)
+        )
+        if not valid_revised:
+            self.round_succeeded = False
+            ret = (
+                "Rejected revised patch before apply: "
+                f"{revised_invalid_reason}. Please regenerate patch with strict unified diff format.\n"
+            )
+            logger.debug(
+                f"[_apply_hunk] revised patch unified diff 预检失败: {revised_invalid_reason}"
+            )
+            logger.debug(f"[_apply_hunk] 返回结果: {ret}")
+            return ret
+        revised_patch = normalized_revised_patch
         
         # 将修正后的补丁写入临时文件
         logger.debug("[_apply_hunk] 创建临时文件保存补丁...")
@@ -1072,6 +1644,7 @@ class Project:
             logger.debug("[_apply_hunk] 补丁应用成功！")
             ret += "Patch applied successfully\n"
             logger.debug(f"[_apply_hunk] 返回结果: {ret}")
+            self.last_success_revised_patch = revised_patch
             
             # 记录成功的补丁（同文件同区域用替换而非累积）
             self._upsert_succeeded_patch(revised_patch)
@@ -1090,7 +1663,10 @@ class Project:
             error_stderr = ""
             if hasattr(e, 'stderr'):
                 error_stderr = e.stderr
-                logger.debug(f"  - stderr: {error_stderr[:500]}..." if len(error_stderr) > 500 else f"  - stderr: {error_stderr}")
+                logger.debug(
+                    "  - stderr 摘要: %s",
+                    (error_stderr[:200] + "...") if len(error_stderr) > 200 else error_stderr,
+                )
             
             # 处理文件不存在错误
             if "No such file" in error_stderr:
@@ -1105,7 +1681,6 @@ class Project:
             # 处理补丁损坏错误
             elif "corrupt patch" in error_stderr:
                 logger.debug("[_apply_hunk] 错误类型: 补丁损坏（corrupt patch）")
-                logger.debug(f"  - 错误详情: {error_stderr}")
                 ret = "Unexpected corrupt patch, Please carefully check your answer, especially in your call tools arguments.\n"
                 logger.debug(f"[_apply_hunk] 返回补丁损坏错误信息")
                 logger.debug(f"[_apply_hunk] 返回结果: {ret}")
@@ -1114,8 +1689,7 @@ class Project:
             # 处理上下文不匹配错误（最常见的情况）
             else:
                 logger.debug("[_apply_hunk] 错误类型: 上下文不匹配（Context mismatch）")
-                logger.debug(f"Context mismatch")
-                logger.debug(f"  - 错误详情: {error_stderr[:500]}..." if len(error_stderr) > 500 else f"  - 错误详情: {error_stderr}")
+                logger.debug("  - context_mismatch=true")
                 
                 # 添加上下文不匹配的错误信息
                 context_error_msg = "This patch does not apply because of CONTEXT MISMATCH. Context are patch lines that already exist in the file, that is, lines starting with ` ` and `-`. You should modify the error patch according to the context of older version.\n"
@@ -1128,15 +1702,12 @@ class Project:
                 block, differ = self._apply_error_handling(ref, revised_patch)
                 logger.debug(f"[_apply_hunk] 错误处理信息获取完成:")
                 logger.debug(f"  - block 长度: {len(block)} 字符")
-                logger.debug(f"  - block 内容预览: {block[:200]}..." if len(block) > 200 else f"  - block 内容: {block}")
                 logger.debug(f"  - differ 长度: {len(differ)} 字符")
-                logger.debug(f"  - differ 内容预览: {differ[:200]}..." if len(differ) > 200 else f"  - differ 内容: {differ}")
                 
                 ret += block
                 ret += "Besides, here is detailed info about how the context differs between the patch and the old version.\n"
                 ret += differ
                 logger.debug(f"[_apply_hunk] 返回结果已更新，当前长度: {len(ret)} 字符")
-                logger.debug(f"[_apply_hunk] 返回结果预览: {ret[:500]}..." if len(ret) > 500 else f"[_apply_hunk] 返回结果: {ret}")
 
         # 重置工作区（清理应用失败的补丁）
         logger.debug("[_apply_hunk] 重置工作区（清理状态）...")
@@ -1437,7 +2008,7 @@ class Project:
             ret = ""
             if not self.compile_succeeded:
                 ret += self._compile_patch(
-                    ref, patch, True if self.context_mismatch_times >= 1 else False
+                    ref, patch, False
                 )
                 self.context_mismatch_times += 1
             if self.compile_succeeded and not self.testcase_succeeded:
@@ -1452,7 +2023,7 @@ class Project:
             return ret
         else:
             ret = self._apply_hunk(
-                ref, patch, True if self.context_mismatch_times >= 2 else False
+                ref, patch, False
             )
             if "CONTEXT MISMATCH" in ret:
                 self.context_mismatch_times += 1
@@ -1499,6 +2070,8 @@ class Project:
         return (
             creat_viewcode_tool(self),
             creat_locate_symbol_tool(self),
+            creat_viewcode_source_tool(self),
+            creat_locate_symbol_source_tool(self),
             create_validate_tool(self),
             create_git_history_tool(self),
             create_git_show_tool(self),
@@ -1511,7 +2084,56 @@ def creat_locate_symbol_tool(project: Project):
         """
         Locate a symbol in a specific ref of the target repository.
         """
-        res = project._locate_symbol(ref, symbol)
+        is_cross_repo = hasattr(project, "target_dir") and project.target_dir != project.dir
+        target_ref = getattr(project, "target_release", None)
+        source_ref = getattr(project, "new_patch_parent", None)
+        if is_cross_repo and target_ref and ref != target_ref:
+            # If caller passed a source ref (e.g., new_patch_parent), auto route
+            # to source repo symbol lookup for source-context understanding.
+            is_source_ref = False
+            if source_ref and ref == source_ref:
+                is_source_ref = True
+            else:
+                try:
+                    project.repo.commit(ref)
+                    project.target_repo.commit(ref)
+                    is_source_ref = False
+                except Exception:
+                    try:
+                        project.repo.commit(ref)
+                        is_source_ref = True
+                    except Exception:
+                        is_source_ref = False
+
+            if is_source_ref:
+                try:
+                    res = project._locate_symbol(
+                        ref, symbol, strict_ref=True, use_target_repo=False
+                    )
+                except ValueError as e:
+                    return f"{e}\nTip: use source refs (e.g., new_patch_parent) with source lookup."
+                if res is not None:
+                    return (
+                        "[AUTO-ROUTED to source repo]\n"
+                        + "\n".join([f"{file}:{line}" for file, line in res])
+                    )
+                return (
+                    "[AUTO-ROUTED to source repo]\n"
+                    f"The symbol {symbol} you are looking for does not exist in the current source ref.\n"
+                )
+
+            return (
+                f"Cross-repo mode detected. locate_symbol expects target ref {target_ref} "
+                f"for target context, or a valid source ref for source context, but got {ref}."
+            )
+        try:
+            res = project._locate_symbol(ref, symbol, strict_ref=True)
+        except ValueError as e:
+            return (
+                f"{e}\n"
+                "Tip: in cross-repo mode, pass target_release as ref for "
+                "locate_symbol/viewcode/validate."
+            )
         if res is not None:
             return "\n".join([f"{file}:{line}" for file, line in res])
         else:
@@ -1536,8 +2158,46 @@ def creat_viewcode_tool(project: Project):
         """
         View a file from a specific ref of the target repository. Lines between startline and endline are shown.
         """
+        is_cross_repo = hasattr(project, "target_dir") and project.target_dir != project.dir
+        target_ref = getattr(project, "target_release", None)
+        source_ref = getattr(project, "new_patch_parent", None)
+        if is_cross_repo and target_ref and ref != target_ref:
+            # If caller passed a source ref (e.g., new_patch_parent), auto route
+            # to source repo file view for source-context understanding.
+            is_source_ref = False
+            if source_ref and ref == source_ref:
+                is_source_ref = True
+            else:
+                try:
+                    project.repo.commit(ref)
+                    project.target_repo.commit(ref)
+                    is_source_ref = False
+                except Exception:
+                    try:
+                        project.repo.commit(ref)
+                        is_source_ref = True
+                    except Exception:
+                        is_source_ref = False
+
+            if is_source_ref:
+                source_text = project._viewcode_source(
+                    ref, path, startline, endline, strict_ref=True
+                )
+                return "[AUTO-ROUTED to source repo]\n" + source_text
+
+            return (
+                f"Cross-repo mode detected. viewcode expects target ref {target_ref} "
+                f"for target context, or a valid source ref for source context, but got {ref}."
+            )
         # Pre-check: if path is a directory in target repo, fail fast with guidance
-        resolved_ref = project._resolve_target_ref(ref)
+        try:
+            resolved_ref = project._resolve_target_ref(ref, strict=True)
+        except ValueError as e:
+            return (
+                f"{e}\n"
+                "Tip: in cross-repo mode, pass target_release as ref for "
+                "locate_symbol/viewcode/validate."
+            )
         try:
             entry = project.target_repo.tree(resolved_ref) / path
             if hasattr(entry, "type") and entry.type != "blob":
@@ -1549,9 +2209,53 @@ def creat_viewcode_tool(project: Project):
         except Exception:
             # Fall through to _viewcode for standard error handling
             pass
-        return project._viewcode(ref, path, startline, endline)
+        return project._viewcode(ref, path, startline, endline, strict_ref=True)
 
     return viewcode
+
+
+def creat_locate_symbol_source_tool(project: Project):
+    @tool
+    def locate_symbol_source(ref: str, symbol: str) -> str:
+        """
+        Locate a symbol in a specific ref of the source repository.
+        """
+        try:
+            res = project._locate_symbol(
+                ref, symbol, strict_ref=True, use_target_repo=False
+            )
+        except ValueError as e:
+            return f"{e}\nTip: use source refs (e.g., new_patch_parent) with locate_symbol_source."
+        if res is not None:
+            return "\n".join([f"{file}:{line}" for file, line in res])
+        return f"The symbol {symbol} you are looking for does not exist in the current source ref.\n"
+
+    return locate_symbol_source
+
+
+def creat_viewcode_source_tool(project: Project):
+    @tool
+    def viewcode_source(ref: str, path: str, startline: int, endline: int) -> str:
+        """
+        View a file from a specific ref of the source repository.
+        """
+        try:
+            resolved_ref = project._resolve_source_ref(ref, strict=True)
+        except ValueError as e:
+            return f"{e}\nTip: use source refs (e.g., new_patch_parent) with viewcode_source."
+        try:
+            entry = project.repo.tree(resolved_ref) / path
+            if hasattr(entry, "type") and entry.type != "blob":
+                return (
+                    "The given path is a directory, not a file. "
+                    "Please provide a file path (e.g., .../file.c) "
+                    "instead of a folder path."
+                )
+        except Exception:
+            pass
+        return project._viewcode_source(ref, path, startline, endline, strict_ref=True)
+
+    return viewcode_source
 
 
 def create_validate_tool(project: Project):
@@ -1560,6 +2264,16 @@ def create_validate_tool(project: Project):
         """
         validate a patch on a specific ref of the target repository.
         """
+        is_cross_repo = hasattr(project, "target_dir") and project.target_dir != project.dir
+        target_ref = getattr(project, "target_release", None)
+        if is_cross_repo and target_ref and ref != target_ref:
+            logger.warning(
+                "[validate] cross-repo mode: force ref from %s to target_release=%s",
+                ref,
+                target_ref,
+            )
+            ref = target_ref
+
         validated_ref = ref
         fallback_ref = getattr(project, "target_release", None)
 
