@@ -125,6 +125,12 @@ def main():
         action='store_true',
         help='启用 LLM 自动解决补丁冲突（当 git apply 失败时，复用 --llm-provider 等参数配置）',
     )
+    pr_group.add_argument(
+        '--no-confirm',
+        action='store_true',
+        default=False,
+        help='跳过 LLM 生成补丁后的人工确认步骤（默认需要确认，此参数用于自动化场景）',
+    )
 
     # 补丁回移植参数
     backport_group = parser.add_argument_group('补丁回移植参数')
@@ -373,9 +379,12 @@ def handle_action(args):
 
 
 def handle_apply_patch(cve_id, args):
-    """应用patch到本地仓库（可选推送到fork分支）"""
+    """应用 patch 到本地仓库（可选推送到 fork 分支）"""
     apply_patch_lock.acquire()
     try:
+        # 默认需要人工确认，除非使用 --no-confirm 参数
+        llm_confirm = not getattr(args, 'no_confirm', False)
+
         result = apply_patch(
             fork_repo_url=args.fork_repo_url,
             gitee_token=args.gitee_token,
@@ -392,6 +401,7 @@ def handle_apply_patch(cve_id, args):
             llm_base_url=getattr(args, 'llm_base_url', None),
             llm_model_name=getattr(args, 'llm_model_name', None),
             api_key=getattr(args, 'api_key', None),
+            llm_confirm=llm_confirm,
             )
     finally:
         apply_patch_lock.release()

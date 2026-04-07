@@ -650,28 +650,30 @@ def apply_patch(
         llm_base_url: str = None,
         llm_model_name: str = None,
         api_key: str = None,
+        llm_confirm: bool = False,  # 新增：LLM 解决后是否需要人工确认
 ):
     """合并分支并且提交
 
     Args:
-        fork_repo_url: git仓库地址（可选，如果不提供则只做本地补丁应用，不推送）
-        gitee_token: Gitee访问令牌（可选，用于私有仓库认证）
+        fork_repo_url: git 仓库地址（可选，如果不提供则只做本地补丁应用，不推送）
+        gitee_token: Gitee 访问令牌（可选，用于私有仓库认证）
         branch: 处理的分支
         clone_dir: 本地克隆目录
-        patch_path: patch文件路径
+        patch_path: patch 文件路径
         signer_name: 签名者名称
         signer_email: 签名者邮箱
         cve_id: cve id
-        issue_url: issue链接（可选）
+        issue_url: issue 链接（可选）
         fix_branch: 修复分支名称（可选，未指定时自动生成）
         use_llm: 是否使用 LLM 自动解决冲突
         llm_provider: LLM 提供商
         llm_base_url: LLM API 基础地址
         llm_model_name: LLM 模型名称
         api_key: LLM API 密钥
+        llm_confirm: 是否在 LLM 解决冲突后需要人工确认（默认 False）
 
     Returns:
-        patch应用信息字典
+        patch 应用信息字典
     """
     if check_analyse_cache_result(cve_id, branch):
         return {
@@ -859,14 +861,124 @@ def apply_patch(
                 )
 
                 if result.success and result.patch_content:
-                    logger.info("LLM 成功解决冲突，应用修复后的补丁...")
-                    # 保存修复后的补丁到临时文件
-                    import tempfile
-                    with tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False) as f:
-                        f.write(result.patch_content)
-                        resolved_patch_path = f.name
+                    logger.info("LLM 成功解决冲突，生成修复后的补丁...")
 
-                    logger.debug(f"修复后的补丁已保存到: {resolved_patch_path}")
+                    # 如果需要人工确认，则显示补丁并等待用户确认
+                    if llm_confirm:
+                        # 分析补丁差异
+                        try:
+                            from .patch_diff_analyzer import analyze_patch_differences, generate_difference_summary
+                            diff_analysis = analyze_patch_differences(patch_content, result.patch_content)
+                            diff_summary = generate_difference_summary(diff_analysis)
+                        except Exception as analysis_error:
+                            logger.warning(f"补丁差异分析失败：{analysis_error}")
+                            diff_summary = "无法分析补丁差异"
+
+                        logger.info("\n" + "="*80)
+                        logger.info("LLM 生成的补丁内容如下，请确认是否应用：")
+                        logger.info("="*80)
+
+                        # 显示补丁文件路径信息
+                        import pathlib
+                        original_patch_path_obj = pathlib.Path(patch_path)
+                        resolved_patch_path_preview = str(original_patch_path_obj.parent / f"{original_patch_path_obj.stem}_resolved{original_patch_path_obj.suffix}")
+
+                        logger.info(f"\n📁 原始补丁：{patch_path}")
+                        logger.info(f"📁 修复后补丁：{resolved_patch_path_preview}")
+                        logger.info(f"   （将在确认后保存到此路径）")
+
+                        # 显示差异摘要
+                        logger.info("\n【补丁变更摘要】")
+                        logger.info(diff_summary)
+                        logger.info("\n" + "-"*80)
+
+                        # 显示完整补丁
+                        print("\n" + result.patch_content)
+                        logger.info("="*80)
+
+                        while True:
+                            response = input("\n是否应用此补丁？(y/n/edit): ").strip().lower()
+                            if response in ['y', 'yes']:
+                                logger.info("用户确认应用补丁")
+                                break
+                            elif response in ['n', 'no']:
+                                logger.info("用户拒绝应用补丁")
+                                return {
+                                    "status": "cancelled",
+                                    "error": i18n("用户拒绝应用 LLM 生成的补丁")
+                                }
+                            elif response == 'edit':
+                                # 允许用户编辑补丁
+                                import pathlib
+                                edit_temp_file = None
+                                try:
+                                    # 在原始补丁同级目录创建临时编辑文件
+                                    original_patch_path = pathlib.Path(patch_path)
+                                    edit_filename = f"{original_patch_path.stem}_edit{original_patch_path.suffix}"
+                                    edit_temp_file = str(original_patch_path.parent / edit_filename)
+
+                                    with open(edit_temp_file, 'w', encoding='utf-8') as f:
+                                        f.write(result.patch_content)
+
+                                    logger.info(f"\n补丁编辑文件：{edit_temp_file}")
+
+                                    # 使用默认编辑器打开
+                                    editor = os.environ.get('EDITOR', 'vi')
+                                    logger.info(f"正在使用 {editor} 编辑器打开补丁...")
+                                    logger.info("提示：请保持 unified diff 格式（--- a/, +++ b/, @@ ... @@），不要修改文件头部")
+                                    subprocess.run([editor, edit_temp_file])
+
+                                    with open(edit_temp_file, 'r', encoding='utf-8') as f:
+                                        edited_patch = f.read()
+
+                                    # 验证编辑后的补丁是否包含必要的头部
+                                    if not edited_patch.strip().startswith('---'):
+                                        logger.error("错误：补丁缺少文件头部（--- a/...）")
+                                        logger.error("请确保补丁以正确的 unified diff 格式开头")
+                                        logger.warning("已放弃编辑，将重新显示补丁内容")
+                                        continue  # 回到确认循环
+
+                                    result.patch_content = edited_patch
+                                    logger.info("补丁已编辑")
+
+                                    # 在应用前先用 git apply --check 验证
+                                    try:
+                                        import tempfile
+                                        check_temp_file = None
+                                        with tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False) as f:
+                                            f.write(edited_patch)
+                                            check_temp_file = f.name
+
+                                        repo.git.apply('--check', check_temp_file)
+                                        os.unlink(check_temp_file)
+                                        logger.info("补丁验证通过，可以应用")
+                                        break
+                                    except Exception as check_error:
+                                        logger.error(f"补丁验证失败，无法应用：{str(check_error)}")
+                                        logger.warning("请重新编辑或选择其他选项")
+                                        if check_temp_file and os.path.exists(check_temp_file):
+                                            os.unlink(check_temp_file)
+                                        continue  # 回到确认循环
+                                except Exception as edit_error:
+                                    logger.error(f"编辑补丁失败：{edit_error}")
+                                    if edit_temp_file and os.path.exists(edit_temp_file):
+                                        os.unlink(edit_temp_file)
+                            else:
+                                logger.info("无效输入，请输入 y/n/edit")
+
+                    logger.info("应用修复后的补丁...")
+
+                    # 将修复后的补丁保存到原始补丁的同级目录
+                    import pathlib
+                    original_patch_path = pathlib.Path(patch_path)
+                    resolved_patch_filename = f"{original_patch_path.stem}_resolved{original_patch_path.suffix}"
+                    resolved_patch_path = str(original_patch_path.parent / resolved_patch_filename)
+
+                    # 保存修复后的补丁
+                    with open(resolved_patch_path, 'w', encoding='utf-8') as f:
+                        f.write(result.patch_content)
+
+                    logger.info(f"修复后的补丁已保存到: {resolved_patch_path}")
                     logger.debug(f"补丁内容:\n{result.patch_content}")
 
                     try:
@@ -881,10 +993,10 @@ def apply_patch(
                         else:
                             repo.git.commit("-m", msg, f"--author={author}", "-s")
                         logger.info("修复后的补丁成功应用")
-                        # 成功后删除临时文件
-                        os.unlink(resolved_patch_path)
+                        logger.info(f"原始补丁：{patch_path}")
+                        logger.info(f"修复后补丁：{resolved_patch_path}")
                     except Exception as apply_error:
-                        # 应用失败时保留临时文件以便调试
+                        # 应用失败时保留补丁文件以便调试
                         logger.error(f"应用 LLM 修复的补丁失败: {apply_error}")
                         logger.error(f"补丁文件已保留: {resolved_patch_path}")
                         raise
