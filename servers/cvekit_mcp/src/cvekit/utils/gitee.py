@@ -224,13 +224,20 @@ def setup_repository(fork_repo_url=None, gitee_token=None, clone_dir=None, branc
         else:
             auth_url = fork_repo_url
         repo.create_remote(fork_remote_name, auth_url)
-        repo.git.fetch('origin')
-        repo.remote(fork_remote_name).fetch()
+        # fetch 操作添加容错，失败时继续使用本地缓存
+        try:
+            repo.git.fetch('origin')
+            repo.remote(fork_remote_name).fetch()
+        except Exception as e:
+            logger.warning(f"fetch 远程分支失败，继续使用本地缓存: {str(e)}")
     elif force_refresh:
         # 强制刷新时才执行 fetch
         logger.debug(f"强制刷新，执行 fetch 操作")
-        repo.git.fetch('origin')
-        repo.remote(fork_remote_name).fetch()
+        try:
+            repo.git.fetch('origin')
+            repo.remote(fork_remote_name).fetch()
+        except Exception as e:
+            logger.warning(f"fetch 远程分支失败，继续使用本地缓存: {str(e)}")
     else:
         # 如果远程已存在且不强制刷新，跳过 fetch 操作
         logger.debug(f"远程仓库已存在，跳过 fetch 操作以节省时间")
@@ -241,13 +248,26 @@ def setup_repository(fork_repo_url=None, gitee_token=None, clone_dir=None, branc
         current_branches = repo.git.branch().split()
         if branch_name not in current_branches:
             logger.info(f"设置仓库，切换分支：{branch_name}， 同步远程分支：{remote_branch_ref}")
-            repo.git.checkout('-b', branch_name, remote_branch_ref)
+            try:
+                repo.git.checkout('-b', branch_name, remote_branch_ref)
+            except Exception as e:
+                # 远程分支引用不存在，尝试从 origin 创建
+                logger.warning(f"从 {remote_branch_ref} 创建分支失败: {str(e)}")
+                origin_ref = f"origin/{branch_name}"
+                logger.info(f"尝试从 {origin_ref} 创建分支")
+                try:
+                    repo.git.checkout('-b', branch_name, origin_ref)
+                except Exception as e2:
+                    raise RuntimeError(i18n("无法创建分支 %s：远程分支引用不存在") % branch_name) from e2
         else:
             # 只在强制刷新时才执行 pull
             if force_refresh:
                 logger.info(f"设置仓库，切换本地分支：{branch_name}，同步{fork_remote_name}代码")
                 repo.git.checkout(branch_name)
-                repo.git.pull(fork_remote_name, branch_name, "--rebase")
+                try:
+                    repo.git.pull(fork_remote_name, branch_name, "--rebase")
+                except Exception as e:
+                    logger.warning(f"pull 远程分支失败，继续使用本地分支: {str(e)}")
             else:
                 logger.debug(f"切换到已存在的分支：{branch_name}（跳过 pull 以节省时间）")
                 repo.git.checkout(branch_name)

@@ -9,7 +9,7 @@ from .gitee import setup_repository
 from .patch import getUrlText, ensure_patch_file
 from .commits import get_vulnerability_commits, branch_commit_from_upstream
 from .locales import i18n
-from .tools.project import safe_git_reset_hard, cleanup_git_in_progress_state
+from .tools.project import safe_git_reset_hard
 from .branches import check_analyse_cache_result
 
 logger = logging.getLogger(__name__)
@@ -644,22 +644,36 @@ def apply_patch(
         signer_email: str = None,
         cve_id: str = None,
         issue_url: str = None,
+        fix_branch: str = None,
+        use_llm: bool = False,
+        llm_provider: str = None,
+        llm_base_url: str = None,
+        llm_model_name: str = None,
+        api_key: str = None,
+        llm_confirm: bool = False,  # 新增：LLM 解决后是否需要人工确认
 ):
     """合并分支并且提交
 
     Args:
-        fork_repo_url: git仓库地址（可选，如果不提供则只做本地补丁应用，不推送）
-        gitee_token: Gitee访问令牌（可选，用于私有仓库认证）
+        fork_repo_url: git 仓库地址（可选，如果不提供则只做本地补丁应用，不推送）
+        gitee_token: Gitee 访问令牌（可选，用于私有仓库认证）
         branch: 处理的分支
         clone_dir: 本地克隆目录
-        patch_path: patch文件路径
+        patch_path: patch 文件路径
         signer_name: 签名者名称
         signer_email: 签名者邮箱
         cve_id: cve id
-        issue_url: issue链接（可选）
+        issue_url: issue 链接（可选）
+        fix_branch: 修复分支名称（可选，未指定时自动生成）
+        use_llm: 是否使用 LLM 自动解决冲突
+        llm_provider: LLM 提供商
+        llm_base_url: LLM API 基础地址
+        llm_model_name: LLM 模型名称
+        api_key: LLM API 密钥
+        llm_confirm: 是否在 LLM 解决冲突后需要人工确认（默认 False）
 
     Returns:
-        patch应用信息字典
+        patch 应用信息字典
     """
     if check_analyse_cache_result(cve_id, branch):
         return {
@@ -726,8 +740,8 @@ def apply_patch(
     # 清理工作区，确保没有未提交的文件导致后续操作失败
     try:
         logger.info("清理工作区，重置所有更改...")
-        # 重置所有更改，并可选清理 git am/rebase 等中间状态
-        safe_git_reset_hard(repo, cleanup_in_progress=True)
+        # 重置所有更改（使用安全函数处理锁文件问题）
+        safe_git_reset_hard(repo)
         # 清理未跟踪的文件和目录
         repo.git.clean('-fdx')
         logger.info("工作区清理完成")
@@ -737,22 +751,43 @@ def apply_patch(
     
     logger.info("apply_patch: 准备分支信息并创建修复分支...")
     branches = repo.git.branch().split()
-    issue_num = os.path.basename(issue_url) if issue_url else cve_id
-    fix_branch = f"fix-{branch}-{issue_num}"
+    # 标记是否用户明确指定了 fix_branch
+    fix_branch_specified = bool(fix_branch)
+    # 如果未指定 fix_branch，则自动生成
+    if not fix_branch:
+        issue_num = os.path.basename(issue_url) if issue_url else cve_id
+        fix_branch = f"fix-{branch}-{issue_num}"
+    logger.info(f"修复分支名称: {fix_branch}{'（用户指定）' if fix_branch_specified else '（自动生成）'}")
     try:
         if branch in branches:
             logger.info(f"检出已存在分支: {branch}")
             repo.git.checkout(branch)
+            # 尝试同步远程分支，失败时继续使用本地分支
+            try:
+                logger.info(f"同步远程分支: origin/{branch} (--rebase)")
+                repo.git.pull("origin", branch, "--rebase")
+            except Exception as pull_error:
+                logger.warning(f"同步远程分支失败，继续使用本地分支: {str(pull_error)}")
         else:
             logger.info(f"本地不存在分支 {branch}，从 origin/{branch} 创建")
             repo.git.checkout('-b', branch, f'origin/{branch}')
-        logger.info(f"同步远程分支: origin/{branch} (--rebase)")
-        repo.git.pull("origin", branch, "--rebase")
+
+        # 处理修复分支
         if fix_branch in branches:
-            logger.info(f"删除已存在的修复分支: {fix_branch}")
-            repo.git.branch('-D', fix_branch)
-        logger.info(f"创建并切换到修复分支: {fix_branch}")
-        repo.git.checkout('-b', fix_branch)
+            if fix_branch_specified:
+                # 用户明确指定了 fix_branch，不删除，直接切换（累积提交模式）
+                logger.info(f"修复分支已存在，切换到: {fix_branch}（累积提交模式）")
+                repo.git.checkout(fix_branch)
+            else:
+                # 自动生成的 fix_branch，删除重建
+                logger.info(f"删除已存在的修复分支: {fix_branch}")
+                repo.git.branch('-D', fix_branch)
+                logger.info(f"创建并切换到修复分支: {fix_branch}")
+                repo.git.checkout('-b', fix_branch)
+        else:
+            # 分支不存在，创建新分支
+            logger.info(f"创建并切换到修复分支: {fix_branch}")
+            repo.git.checkout('-b', fix_branch)
     except Exception as e:
         logger.error(f"切换分支失败: {str(e)}")
         return {
@@ -779,8 +814,6 @@ def apply_patch(
 
     logger.info(f"apply_patch: 应用补丁文件，patch_path={patch_path}")
     try:
-        # 应用补丁前再次做一次中间状态清理，防止上一步 pull/rebase 留下状态目录
-        cleanup_git_in_progress_state(repo)
         # 有冲突说明时用 git apply；无冲突时仅当补丁为 mbox 格式才用 git am，否则用 git apply
         use_apply = bool(conflict_message) or not _patch_is_mbox_format(patch_path)
         if use_apply:
@@ -800,20 +833,209 @@ def apply_patch(
         logger.info("补丁成功应用")
     except git.exc.GitCommandError as e:
         logger.error(f"应用补丁失败: {str(e)}")
-        if "rebase-apply still exists" in str(e):
-            logger.warning(
-                "检测到 git 中间状态残留（rebase-apply still exists），"
-                "已执行清理流程，建议重试当前补丁应用。"
-            )
-        # 失败后统一做 best-effort 清理，避免污染后续重试
-        cleanup_git_in_progress_state(repo)
 
         # 检查是否处于 am 过程中的冲突状态
         if "Applying" in str(e):
-            return {
-                "status": "error",
-                "error": i18n("无法完成补丁应用，请检查冲突并重试: %s") % (str(e))
-            }
+            repo.git.am("--abort")
+
+        # 尝试使用 LLM 自动解决冲突
+        if use_llm and api_key:
+            logger.info("尝试使用 LLM 自动解决冲突...")
+            try:
+                from .agent.conflict_resolver import resolve_patch_conflict
+
+                # 读取补丁内容
+                with open(patch_path, 'r', encoding='utf-8') as f:
+                    patch_content = f.read()
+
+                # 调用 LLM 解决冲突
+                result = resolve_patch_conflict(
+                    repo_path=repo.working_dir,
+                    patch_content=patch_content,
+                    target_branch=branch,
+                    api_key=api_key,
+                    provider=llm_provider or 'openai',
+                    custom_base_url=llm_base_url,
+                    custom_model_name=llm_model_name,
+                    context={'cve_id': cve_id, 'issue_url': issue_url}
+                )
+
+                if result.success and result.patch_content:
+                    logger.info("LLM 成功解决冲突，生成修复后的补丁...")
+
+                    # 先保存修复后的补丁到文件（确认前保存，方便用户查看和调试）
+                    import pathlib
+                    original_patch_path = pathlib.Path(patch_path)
+                    resolved_patch_filename = f"{original_patch_path.stem}_resolved{original_patch_path.suffix}"
+                    resolved_patch_path = str(original_patch_path.parent / resolved_patch_filename)
+
+                    with open(resolved_patch_path, 'w', encoding='utf-8') as f:
+                        f.write(result.patch_content)
+
+                    logger.info(f"修复后的补丁已保存到: {resolved_patch_path}")
+
+                    # 分析补丁差异（无论是否需要确认都显示）
+                    try:
+                        from .patch_diff_analyzer import analyze_patch_differences, generate_difference_summary
+                        diff_analysis = analyze_patch_differences(patch_content, result.patch_content)
+                        diff_summary = generate_difference_summary(diff_analysis)
+                    except Exception as analysis_error:
+                        logger.warning(f"补丁差异分析失败：{analysis_error}")
+                        diff_summary = "无法分析补丁差异"
+
+                    # 显示补丁信息（无论是否需要确认）
+                    logger.info("")
+                    logger.info("="*80)
+                    logger.info("【补丁修复信息】")
+                    logger.info("="*80)
+                    logger.info(f"原始补丁路径：{patch_path}")
+                    logger.info(f"修复后补丁路径：{resolved_patch_path}")
+                    logger.info("")
+                    logger.info("【补丁变更摘要】")
+                    logger.info(diff_summary)
+                    logger.info("="*80)
+
+                    # 非 debug 模式下额外用 print 输出到终端
+                    # 通过检查是否有控制台处理器(StreamHandler)来判断是否为 debug 模式
+                    root_logger = logging.getLogger()
+                    has_console_handler = any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in root_logger.handlers)
+                    if not has_console_handler:
+                        print("")
+                        print("="*80)
+                        print("【补丁修复信息】")
+                        print("="*80)
+                        print(f"原始补丁路径：{patch_path}")
+                        print(f"修复后补丁路径：{resolved_patch_path}")
+                        print("")
+                        print("【补丁变更摘要】")
+                        print(diff_summary)
+                        print("="*80)
+
+                    # 如果需要人工确认，则显示完整补丁并等待用户确认
+                    if llm_confirm:
+                        # 计算补丁行数，决定显示方式
+                        patch_lines = result.patch_content.count('\n') + 1
+                        max_display_lines = 50
+
+                        if patch_lines <= max_display_lines:
+                            # 短补丁：直接显示完整内容
+                            if has_console_handler:
+                                logger.info("\nLLM 生成的补丁内容如下，请确认是否应用：")
+                                logger.info("-"*80)
+                                print("\n" + result.patch_content)
+                                logger.info("-"*80)
+                            else:
+                                print("\nLLM 生成的补丁内容如下，请确认是否应用：")
+                                print("-"*80)
+                                print(result.patch_content)
+                                print("-"*80)
+                        else:
+                            # 长补丁：显示摘要
+                            print(f"\n补丁较长（{patch_lines} 行），已保存到：{resolved_patch_path}")
+                            print("请用编辑器查看完整内容")
+                            print("-"*80)
+
+                        while True:
+                            response = input("\n是否应用此补丁？(y/n/e): ").strip().lower()
+                            if response in ('y', 'yes'):
+                                logger.info("用户确认应用补丁")
+                                break
+                            elif response in ('n', 'no'):
+                                logger.info("用户拒绝应用补丁")
+                                logger.info(f"补丁文件已保留: {resolved_patch_path}")
+                                return {
+                                    "status": "cancelled",
+                                    "error": i18n("用户拒绝应用 LLM 生成的补丁"),
+                                    "resolved_patch_path": resolved_patch_path
+                                }
+                            elif response in ('edit', 'e'):
+                                # 允许用户编辑已保存的补丁文件
+                                try:
+                                    logger.info(f"\n编辑补丁文件：{resolved_patch_path}")
+
+                                    # 使用默认编辑器打开
+                                    editor = os.environ.get('EDITOR', 'vi')
+                                    logger.info(f"正在使用 {editor} 编辑器打开补丁...")
+                                    logger.info("提示：请保持 unified diff 格式（--- a/, +++ b/, @@ ... @@），不要修改文件头部")
+                                    subprocess.run([editor, resolved_patch_path])
+
+                                    with open(resolved_patch_path, 'r', encoding='utf-8') as f:
+                                        edited_patch = f.read()
+
+                                    # 验证编辑后的补丁是否包含必要的头部
+                                    if not edited_patch.strip().startswith('---'):
+                                        logger.error("错误：补丁缺少文件头部（--- a/...）")
+                                        logger.error("请确保补丁以正确的 unified diff 格式开头")
+                                        logger.warning("已放弃编辑，将重新显示补丁内容")
+                                        continue  # 回到确认循环
+
+                                    result.patch_content = edited_patch
+                                    logger.info("补丁已编辑")
+
+                                    # 在应用前先用 git apply --check 验证
+                                    try:
+                                        repo.git.apply('--check', resolved_patch_path)
+                                        logger.info("补丁验证通过")
+                                        # 重新显示编辑后的补丁，等待用户确认
+                                        edited_patch_lines = edited_patch.count('\n') + 1
+                                        if edited_patch_lines <= max_display_lines:
+                                            if has_console_handler:
+                                                logger.info("\n编辑后的补丁内容如下，请确认是否应用：")
+                                                logger.info("-"*80)
+                                                print("\n" + edited_patch)
+                                                logger.info("-"*80)
+                                            else:
+                                                print("\n编辑后的补丁内容如下，请确认是否应用：")
+                                                print("-"*80)
+                                                print(edited_patch)
+                                                print("-"*80)
+                                        else:
+                                            print(f"\n编辑后的补丁较长（{edited_patch_lines} 行），已保存到：{resolved_patch_path}")
+                                            print("请用编辑器查看完整内容")
+                                            print("-"*80)
+                                        # 继续循环，等待用户再次确认
+                                    except Exception as check_error:
+                                        logger.error(f"补丁验证失败，无法应用：{str(check_error)}")
+                                        logger.warning("请重新编辑或选择其他选项")
+                                        continue  # 回到确认循环
+                                except Exception as edit_error:
+                                    logger.error(f"编辑补丁失败：{edit_error}")
+                            else:
+                                logger.info("无效输入，请输入 y/n/e")
+
+                    logger.info("应用修复后的补丁...")
+
+                    try:
+                        # 应用修复后的补丁
+                        repo.git.apply(resolved_patch_path)
+                        repo.git.add("--all")
+                        author = headers.get("From", f"{signer_name} <{signer_email}>")
+                        date = headers.get("Date")
+                        msg = f"{commit_msg}{conflict_message}" if conflict_message else commit_msg
+                        if date:
+                            repo.git.commit("-m", msg, f"--author={author}", f"--date={date}", "-s")
+                        else:
+                            repo.git.commit("-m", msg, f"--author={author}", "-s")
+                        logger.info("修复后的补丁成功应用")
+                        logger.info(f"原始补丁：{patch_path}")
+                        logger.info(f"修复后补丁：{resolved_patch_path}")
+                    except Exception as apply_error:
+                        # 应用失败时保留补丁文件以便调试
+                        logger.error(f"应用 LLM 修复的补丁失败: {apply_error}")
+                        logger.error(f"补丁文件已保留: {resolved_patch_path}")
+                        raise
+                else:
+                    logger.error(f"LLM 无法解决冲突: {result.error_message}")
+                    return {
+                        "status": "error",
+                        "error": i18n("无法应用补丁，LLM 冲突解决失败: %s") % (result.error_message or str(e))
+                    }
+            except Exception as llm_error:
+                logger.error(f"LLM 冲突解决过程出错: {str(llm_error)}")
+                return {
+                    "status": "error",
+                    "error": i18n("无法应用补丁，LLM 冲突解决失败: %s") % (str(llm_error))
+                }
         else:
             logger.info("已中止补丁应用过程")
             return {

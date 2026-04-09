@@ -113,6 +113,24 @@ def main():
     pr_group = parser.add_argument_group('提交pr')
     pr_group.add_argument('--patch-path', type=str, help='patch文件路径')
     pr_group.add_argument('--branch', type=str, help='pr提交分支')
+    pr_group.add_argument(
+        '--fix-branch',
+        type=str,
+        default=None,  # 改为 None，未指定时自动生成
+        help='修复分支名称 (也可通过 FIX_BRANCH 环境变量设置)，未指定时自动生成为 fix-{branch}-{issue_num}',
+    )
+    # LLM 冲突解决参数（复用 backport_group 的 --llm-provider 等参数）
+    pr_group.add_argument(
+        '--use-llm',
+        action='store_true',
+        help='启用 LLM 自动解决补丁冲突（当 git apply 失败时，复用 --llm-provider 等参数配置）',
+    )
+    pr_group.add_argument(
+        '--no-confirm',
+        action='store_true',
+        default=False,
+        help='跳过 LLM 生成补丁后的人工确认步骤（默认需要确认，此参数用于自动化场景）',
+    )
 
     # 补丁回移植参数
     backport_group = parser.add_argument_group('补丁回移植参数')
@@ -196,6 +214,7 @@ def main():
     args.branches = args.branches or os.environ.get('BRANCHES', "OLK-5.10,OLK-6.6,master")
     args.signer_name = args.signer_name or os.environ.get('SIGNER_NAME')
     args.signer_email = args.signer_email or os.environ.get('SIGNER_EMAIL')
+    args.fix_branch = args.fix_branch or os.environ.get('FIX_BRANCH')
     # 统一使用 api_key 命名，同时兼容历史的 OPENAI_KEY 环境变量
     args.api_key = args.api_key or os.environ.get('API_KEY') or os.environ.get('OPENAI_KEY', "")
     args.patch_dataset_dir = args.patch_dataset_dir or os.environ.get('PATCH_DATASET_DIR', os.path.join(os.path.expanduser("~"), "backports/patch_dataset"))
@@ -237,6 +256,10 @@ def main():
     
     if not args.signer_email and args.action == 'apply-patch':
         parser.error("必须提供提交者邮箱(通过--signer-email参数或SIGNER_EMAIL环境变量)")
+
+    # 检查必要的branch（apply-patch、create-pr、backport需要）
+    if not args.branch and args.action in ['apply-patch', 'create-pr', 'backport']:
+        parser.error(f"{args.action} 模式需要指定目标分支，请使用 --branch 参数")
 
     # 配置根logger
     root_logger = logging.getLogger()
@@ -356,9 +379,12 @@ def handle_action(args):
 
 
 def handle_apply_patch(cve_id, args):
-    """应用patch到本地仓库（可选推送到fork分支）"""
+    """应用 patch 到本地仓库（可选推送到 fork 分支）"""
     apply_patch_lock.acquire()
     try:
+        # 默认需要人工确认，除非使用 --no-confirm 参数
+        llm_confirm = not getattr(args, 'no_confirm', False)
+
         result = apply_patch(
             fork_repo_url=args.fork_repo_url,
             gitee_token=args.gitee_token,
@@ -368,7 +394,14 @@ def handle_apply_patch(cve_id, args):
             signer_name=args.signer_name,
             signer_email=args.signer_email,
             cve_id=cve_id,
-            issue_url=args.issue_url
+            issue_url=args.issue_url,
+            fix_branch=args.fix_branch,
+            use_llm=getattr(args, 'use_llm', False),
+            llm_provider=getattr(args, 'llm_provider', None),
+            llm_base_url=getattr(args, 'llm_base_url', None),
+            llm_model_name=getattr(args, 'llm_model_name', None),
+            api_key=getattr(args, 'api_key', None),
+            llm_confirm=llm_confirm,
             )
     finally:
         apply_patch_lock.release()
