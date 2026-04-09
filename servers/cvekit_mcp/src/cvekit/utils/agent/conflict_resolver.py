@@ -200,9 +200,9 @@ class LLMConflictResolver:
         """
         original_prepare = project._prepare
 
-        def safe_prepare(ref: str) -> None:
+        def safe_prepare(ref: str, use_target_repo: bool = True) -> None:
             try:
-                original_prepare(ref)
+                original_prepare(ref, use_target_repo=use_target_repo)
             except Exception as e:
                 logger.warning(f"[ConflictResolver] ctags 生成失败（非致命）: {str(e)}")
                 logger.warning("[ConflictResolver] 继续执行，符号定位功能可能受限")

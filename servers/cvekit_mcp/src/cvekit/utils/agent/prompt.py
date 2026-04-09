@@ -18,7 +18,7 @@ Your TASK is to backport a patch fixing a vuln from a newer(release) version of 
 In patch backports, patches are often not used directly due to changes in CONTEXT or changes in patch logic. For lines that start with `-` and ` ` (space), you need to copy the original source code behind it.
 Your OBJECTIVES is to identify changes in context and changes in code logic in the vicinity of the patch. Generate a patch for the old version that matches its code based on the patch in the new version.
 
-You have 5 tools: `viewcode` `locate_symbol` `git_history` `git_show` and `validate`
+You have 7 tools: `viewcode` `locate_symbol` `viewcode_source` `locate_symbol_source` `git_history` `git_show` and `validate`
 
 - `viewcode` allows you to view a file in the codebase of a ref. When you can't find the relevant code in the continuous viewcode, you should consider whether the hunk doesn't need a backport.
 0. ref: the commit hash of the ref you want to view the file from.
@@ -30,6 +30,16 @@ You have 5 tools: `viewcode` `locate_symbol` `git_history` `git_show` and `valid
 0. ref: the commit hash of the ref you want to view the file from.
 1. symbol: the function name you want to locate in the codebase.
 
+- `viewcode_source` allows you to view files from SOURCE repository refs (for example `new_patch_parent`) to understand original patch intent.
+0. ref: source commit hash.
+1. path: source file path.
+2. startline: start line.
+3. endline: end line.
+
+- `locate_symbol_source` allows you to locate symbols in SOURCE repository refs.
+0. ref: source commit hash.
+1. symbol: function/variable name.
+
 - `git_history` allows you to gets the change history for the line where the current patch code snippet is located. This tools has no argument.
 
 - `git_show` allows you to get code changes and commit messages for the last ref appear in `git_history`, because the last change reveals the origin of the code block. This tools has no argument.
@@ -40,6 +50,31 @@ You have 5 tools: `viewcode` `locate_symbol` `git_history` `git_show` and `valid
 
 [IMPORTANT] Whenever you use a tool, you MUST give your thoughts and the reason for the call.
 [IMPORTANT] You need to use the code snippet given by the tool `viewcode` to generate the patch, never use the context directly from a new version of the patch!
+[IMPORTANT] In cross-repo backport mode, `viewcode`/`locate_symbol`/`validate` MUST use the target repo ref (typically `target_release`). Do NOT pass `new_patch_parent` to these tools.
+[IMPORTANT] `new_patch_parent` is source-patch context only. Use it for understanding the source commit, not for target-repo code navigation.
+[IMPORTANT] If you need source context for intent understanding, use `viewcode_source`/`locate_symbol_source` with `new_patch_parent`.
+[IMPORTANT] `git_history` and `git_show` are conditional tools, not default tools. Prefer `locate_symbol` + `viewcode` first.
+[IMPORTANT] Only call `git_history` if at least one condition is true:
+1) symbol/file locating failed (`locate_symbol` empty or too ambiguous),
+2) `viewcode` still cannot close context after two window expansions,
+3) `validate` reports context mismatch at least two times and diffs are scattered,
+4) you need lineage evidence to decide `need not ported` or code-move cases.
+[IMPORTANT] Do NOT call `git_history` when:
+1) `locate_symbol` already points to a clear location and `viewcode` shows complete context,
+2) only small local context drift exists (can patch context directly),
+3) there is already enough evidence to craft patch and run `validate`.
+[IMPORTANT] If `git_history` is called, call it at most once per hunk by default. Call `git_show` only when `git_history` returns useful related refs and lineage is still unclear.
+[IMPORTANT] `not found` != `equivalent`. Missing symbol/path alone is NEVER enough to conclude `need not ported`.
+[IMPORTANT] `need not ported` requires an evidence-based equivalence conclusion from tool outputs.
+[IMPORTANT] Before outputting `need not ported`, explicitly confirm with evidence chain:
+1) target-repo evidence from `viewcode`/`locate_symbol` (and source intent if needed),
+2) optional lineage evidence from `git_history`/`git_show` when gates are met,
+3) reason why old branch already has equivalent fix semantics.
+[IMPORTANT] Before generating a final patch OR `need not ported`, provide a concise evidence summary from tools:
+- target file/symbol location used,
+- key target-side context lines or conditions,
+- why this supports patching vs equivalent decision.
+[IMPORTANT] For file-level context changes (e.g., `#include`, macros, file header guards, top-level declarations), do NOT rely on `locate_symbol` first. Use patch file path + `viewcode` directly (typically from top-of-file window) to locate and verify context.
 
 Example of a patch format:
 ```diff
@@ -91,19 +126,33 @@ To make it convenient for you to view the patch similar location code, the follo
 
 Your workflow should be:
 1. Review the patch of the newer version and similar code blocks of the olded version. 
-2. Use `git_history` to check code change history. This information helps you to see where or if(`need not ported`) the current snippet exists in an older version. Since similar code blocks are text-based comparisons, it may not be possible to accurately determine the location of modifications.  
-2.1. For change history, it just helps you locate the code blocks and does not require patches in them as part of the migration.
-2.2. If there is only a simple modification it means that the code block has not changed and you just need to adapt the context in the corresponding position. (I.e. the patch just needs to adapt the context of the beginning of the space.)
-2.3. If the change code block was initially modified to be  `+`, you can choose to execute the contents of 3. to determine the source of this code.
-3. (Optional) You can only use `git_show` to view the LAST ref in `git_history` to further determine where the code is in older versions and change history. Use this tool ONLY if you think the ref will help to figure out the origin of the code block.
-3.1 If `git_show` indicates that it's new code added to this ref, it means that the patch probably doesn't need to be ported.
-3.2 If `git_show` indicates that this code was moved from somewhere for this ref, it means you need to go to the previous location to do the patch.
-4. Use tool `locate_symbol` to determine where the function or variable that appears in the patch is located in the older version. 
-5. Use tool `viewcode` to view the location of the symbol given by `locate_symbol`, `git_history`, `git_show` or line number given by similar code block. Adjust the `viewcode` parameter until the complete patch-related code fragment from the old version is observed.
-6. Based on the code given by `viewcode` and change history, craft a patch that can fix the vuln.
-7. Use `validate` to test the FULL patch on the older version to make sure it can be applied without any conflicts. If you don't think the hunk needs to be ported, you can put `need not ported` in the `patch` parameter of `validate`.
+2. Use tool `locate_symbol` to determine where the function or variable that appears in the patch is located in the older version.
+3. Use tool `viewcode` to inspect the target-repo code and adjust the viewing window until the complete patch-related fragment from the old version is observed.
+4. Decide equivalence status using tool evidence:
+4.1 If equivalent fix semantics are clearly present in target context, you may choose `need not ported`.
+4.2 `not found` is NOT equivalence; when evidence is insufficient, treat as non-equivalent and continue patching.
+5. If and only if at least one gate condition is met, call `git_history` once to gather lineage hints:
+5.1 symbol/file locating failed (`locate_symbol` empty or ambiguous),
+5.2 `viewcode` still cannot close context after two window expansions,
+5.3 `validate` reports context mismatch at least two times and diffs are scattered,
+5.4 you need lineage evidence to decide `need not ported` or code-move cases.
+5.5 Do NOT call `git_history` when:
+- `locate_symbol` already points to a clear location and `viewcode` has complete context,
+- only minor local context drift exists (can be fixed by adjusting hunk context directly),
+- evidence is already sufficient to craft patch and proceed to `validate`.
+6. (Optional) Call `git_show` only for the LAST related ref from `git_history` when lineage is still unclear.
+6.1 If `git_show` indicates that it's new code added to this ref, the patch may not need to be ported, but still require target-side equivalence evidence before `need not ported`.
+6.2 If `git_show` indicates code was moved, follow the previous location and continue with `viewcode`/`locate_symbol`.
+7. Write a concise evidence summary (target-side first) before final decision.
+8. Based on code given by `viewcode` (target context first), craft a patch that can fix the vuln.
+9. Use `validate` to test the FULL patch on the older version to make sure it can be applied without conflicts. If and only if you have evidence-based equivalence conclusion, set patch to `need not ported`.
 
 You must think step by step according to the workflow and use the tools provided to analyze the patch and the codebase to craft a patch for the target release.
+Default strategy: `locate_symbol` -> `viewcode` -> craft patch -> `validate`. `git_history`/`git_show` are fallback tools under the gate conditions above.
+
+When calling tools in cross-repo migration:
+- use ref = {target_release} for `viewcode`, `locate_symbol`, and `validate`.
+- use ref = {new_patch_parent} for `viewcode_source` and `locate_symbol_source`.
 
 The line number can be inaccurate, BUT The context lines MUST MUST be present in the old codebase.There should be no missing context lines or extra context lines which are not present in the old codebase.
 
@@ -138,10 +187,24 @@ You can VALIDATE the patch with provided tool `validate`. There are 3 processes 
 If the patch can not pass above validation, you need to REVISE the patch with the help of provided tools. The patch revision workflow should be:
 1. Review the patch of the newer version. 
 2. Use tool `locate_symbol` to determine where the function or variable that appears in the patch is located in the older version. 
-3. Use tool `viewcode` to view the location of the symbol given by `locate_symbol`, `git_history`, `git_show` or line number given by similar code block. Adjust the `viewcode` parameter until the complete patch-related code fragment from the old version is observed.
-4. Revise the patch that I give based on the code you get by `viewcode` and change history by `git_history`, just fix the root cause and return the completed patch to validate.
+3. Use tool `viewcode` to inspect the target code location from `locate_symbol` (or fallback hints) and adjust window until complete patch-related context is observed.
+4. Decide equivalence status with evidence:
+4.1 `not found` is NOT equivalence.
+4.2 Only when target-side evidence shows equivalent fix semantics may you conclude `need not ported`.
+5. Call `git_history` only under gate conditions:
+5.1 locate step fails or is highly ambiguous,
+5.2 two `viewcode` window expansions still cannot close context,
+5.3 at least two `validate` context mismatches with scattered diffs,
+5.4 lineage evidence is needed for `need not ported` or code-move decisions.
+5.5 Do NOT call `git_history` when clear target context is already available via `locate_symbol` + `viewcode`, or when only minor local context drift exists.
+6. (Optional) Call `git_show` only for the LAST related ref returned by `git_history` when lineage remains unclear.
+7. Write a concise evidence summary before deciding revise vs `need not ported`.
+8. Revise the patch based on target context from `viewcode` (and lineage hints only when gates are met), fix only root cause, then validate again.
 
 Please start to VALIDATE the patch and REVISE it if necessary. You need to make changes to complete_patch based on the compilation results to make it compile compliant.
+
+When calling tools, use ref = {target_release} for `viewcode`, `locate_symbol`, and `validate` in cross-repo migration.
+Default strategy for revision: `locate_symbol` -> `viewcode` -> revise patch -> `validate`. Treat `git_history`/`git_show` as gated fallback tools, not default steps.
 """
 
 SYSTEM_PROMPT_PTACH = """
@@ -151,7 +214,7 @@ Your TASK is to backport a patch fixing a vuln from a newer(release) version of 
 In patch backports, patches are often not used directly due to changes in CONTEXT or changes in patch logic. For lines that start with `-` and ` ` (space), you need to copy the original source code behind it.
 Your OBJECTIVES is to identify changes in context and changes in code logic in the vicinity of the patch. Generate a patch for the old version that matches its code based on the patch in the new version.
 
-You have 3 tools: `viewcode` `locate_symbol` and `validate`
+You have 5 tools: `viewcode` `locate_symbol` `viewcode_source` `locate_symbol_source` and `validate`
 
 - `viewcode` allows you to view a file in the codebase of a ref. When you can't find the relevant code in the continuous viewcode, you should consider whether the hunk doesn't need a backport.
 0. ref: the commit hash of the ref you want to view the file from.
@@ -163,11 +226,24 @@ You have 3 tools: `viewcode` `locate_symbol` and `validate`
 0. ref: the commit hash of the ref you want to view the file from.
 1. symbol: the function name you want to locate in the codebase.
 
+- `viewcode_source` allows you to view files from SOURCE repository refs (for example `new_patch_parent`) to understand original patch intent.
+0. ref: source commit hash.
+1. path: source file path.
+2. startline: start line.
+3. endline: end line.
+
+- `locate_symbol_source` allows you to locate symbols in SOURCE repository refs.
+0. ref: source commit hash.
+1. symbol: function/variable name.
+
 - `validate` allows you to test whether a patch can fix the vuln on a specific ref without any conflicts. If you don't think the hunk needs to be ported, you can put `need not ported` in the `patch` parameter of `validate`.
 0. ref: the commit hash of the ref you want to test the patch on.
 1. patch: the patch you want to test. Each line of patch must start with `+`, `-` or ` ` (space) and use tab indentation. If migration is not required, put `need not ported`.
 
 [IMPORTANT] You need to use the code snippet given by the tool `viewcode` to generate the patch, never use the context directly from a new version of the patch!
+[IMPORTANT] In cross-repo backport mode, use `viewcode`/`locate_symbol`/`validate` on target ref (`target_release`), and use `viewcode_source`/`locate_symbol_source` on source ref (`new_patch_parent`) only for intent understanding.
+[IMPORTANT] `not found` != `equivalent`. Missing symbol/path alone is not enough for `need not ported`.
+[IMPORTANT] Allow `need not ported` only when tool evidence supports equivalent fix semantics on target branch.
 
 Example of a patch format:
 ```diff

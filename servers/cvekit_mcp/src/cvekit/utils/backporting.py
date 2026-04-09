@@ -504,6 +504,208 @@ def load_config_from_dict(config_dict: dict):
     return data
 
 
+def _create_backport_logfile(config_dict: dict) -> str:
+    log_dir = os.path.join(os.path.expanduser("~"), ".cvekit", "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    now = datetime.datetime.now().strftime("%m%d%H%M")
+    project_name = config_dict.get("project", "linux")
+    tag_name = config_dict.get("tag", "unknown")
+    return os.path.join(log_dir, f"{project_name}-{tag_name}-{now}.log")
+
+
+def _save_original_patch_from_local(data):
+    if not data.project_dir:
+        return None, None
+    project_dir_normalized = data.project_dir.rstrip("/")
+    clone_dir = os.path.expanduser(os.path.dirname(project_dir_normalized))
+    local_patch_file = os.path.join(clone_dir, f"commit_patch_{data.new_patch}.patch")
+    logger.debug(f"尝试从本地文件读取补丁: {local_patch_file}")
+    if not os.path.exists(local_patch_file):
+        return None, None
+    try:
+        with open(local_patch_file, "r", encoding="utf-8") as f:
+            original_patch_content = f.read()
+        original_patch_path = os.path.join(
+            data.patch_dataset_dir, f"original_{data.new_patch}.patch"
+        )
+        with open(original_patch_path, "w", encoding="utf-8") as f:
+            f.write(original_patch_content)
+        logger.info(f"从本地文件读取原始补丁: {local_patch_file}")
+        logger.info(f"原始补丁文件已保存: {original_patch_path}")
+        return original_patch_content, original_patch_path
+    except Exception as e:
+        logger.warning(f"读取本地补丁文件失败: {str(e)}，将尝试从网络获取")
+        return None, None
+
+
+def _save_original_patch_from_remote(data):
+    from .patch import getUrlText
+
+    original_patch_url = (
+        "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/patch/"
+        f"?id={data.new_patch}"
+    )
+    try:
+        logger.info(f"从网络获取原始补丁: {original_patch_url}")
+        original_patch_content = getUrlText(original_patch_url)
+        original_patch_path = os.path.join(
+            data.patch_dataset_dir, f"original_{data.new_patch}.patch"
+        )
+        with open(original_patch_path, "w", encoding="utf-8") as f:
+            f.write(original_patch_content)
+        logger.info(f"原始补丁文件已保存: {original_patch_path}")
+        return original_patch_content, original_patch_path
+    except Exception as e:
+        logger.warning(f"从网络获取或保存原始补丁文件失败: {str(e)}")
+        return None, None
+
+
+def _prepare_original_patch(data):
+    content, path = _save_original_patch_from_local(data)
+    if content:
+        return content, path
+    return _save_original_patch_from_remote(data)
+
+
+def _normalize_unified_diff(patch_text: str) -> str:
+    out_lines = []
+    for line in patch_text.splitlines():
+        if (
+            line.startswith("diff --git ")
+            or line.startswith("index ")
+            or line.startswith("--- ")
+            or line.startswith("+++ ")
+            or line.startswith("@@")
+            or line.startswith("+")
+            or line.startswith("-")
+            or line.startswith(" ")
+            or line.startswith("\\ No newline at end of file")
+        ):
+            out_lines.append(line)
+        else:
+            out_lines.append(" " + line)
+    return "\n".join(out_lines)
+
+
+def _has_valid_diff_header(patch_text: str) -> bool:
+    return any(
+        marker in patch_text for marker in ("diff --git ", "\n--- ", "\n+++ ", "\n@@ ")
+    ) or patch_text.startswith(("diff --git ", "--- ", "+++ ", "@@ "))
+
+
+def _build_export_patch(project: Project, data, equivalent_exists: bool):
+    patch_candidates = project.succeeded_patches
+    rebuilt_complete_patch = project.rebuild_complete_patch()
+    if rebuilt_complete_patch:
+        patch_candidates = [rebuilt_complete_patch]
+
+    export_patch = project.validated_patch or "\n".join(patch_candidates)
+    if export_patch and not export_patch.endswith("\n"):
+        export_patch += "\n"
+
+    if not export_patch.strip() or not _has_valid_diff_header(export_patch):
+        if equivalent_exists:
+            logger.info("导出补丁为空或非标准 diff，且已确认目标分支等效存在，按无需回移植处理")
+            return "", True
+        raise RuntimeError("backported patch is empty or non-standard diff without equivalence proof")
+
+    try:
+        project._check_patch(export_patch, data.target_release)
+        return export_patch, False
+    except Exception as e:
+        logger.warning("原始导出补丁 check 失败，尝试 normalize/dedupe 兜底: %s", e)
+
+    normalized_patches = []
+    for patch in patch_candidates:
+        if patch and not patch.endswith("\n"):
+            patch = patch + "\n"
+        normalized_patches.append(_normalize_unified_diff(patch))
+    export_patch = project.validated_patch or "\n".join(normalized_patches)
+    export_patch = _normalize_unified_diff(export_patch)
+
+    if not export_patch.strip() or not _has_valid_diff_header(export_patch):
+        if equivalent_exists:
+            logger.info("兜底规范化后补丁为空/非标准 diff，且目标分支等效存在，按无需回移植处理")
+            return "", True
+        raise RuntimeError("backported patch is empty or non-standard diff after normalization")
+
+    try:
+        project._check_patch(export_patch, data.target_release)
+    except Exception as e:
+        logger.error(f"导出补丁前 git apply --check 失败: {e}")
+        raise RuntimeError("backported patch failed git apply --check")
+    return export_patch, False
+
+
+def _write_backported_artifacts(data, original_patch_content: str, export_patch: str):
+    backported_patch_path = os.path.join(
+        data.patch_dataset_dir, f"backported_{data.tag}_{data.target_release}.patch"
+    )
+    with open(backported_patch_path, "w", encoding="utf-8") as f:
+        f.write(export_patch)
+
+    import difflib
+
+    diff_path = os.path.join(
+        data.patch_dataset_dir, f"diff_{data.tag}_{data.target_release}.diff"
+    )
+    original_lines = (original_patch_content or "").splitlines(keepends=True)
+    backported_lines = export_patch.splitlines(keepends=True)
+    diff = difflib.unified_diff(
+        original_lines,
+        backported_lines,
+        fromfile=f"original_{data.new_patch}.patch",
+        tofile=f"backported_{data.tag}_{data.target_release}.patch",
+        lineterm="",
+    )
+    with open(diff_path, "w", encoding="utf-8") as f:
+        f.writelines(diff)
+    return backported_patch_path, diff_path
+
+
+def _attach_usage_stats(result: dict, data, before_usage: dict, after_usage: dict) -> None:
+    if data.llm_provider != "openai":
+        return
+    total_cost = after_usage["total_cost"] - before_usage["total_cost"]
+    total_tokens = after_usage["total_consume_tokens"] - before_usage["total_consume_tokens"]
+    result["cost"] = total_cost
+    result["tokens"] = total_tokens
+    logger.info(f"This patch total cost: ${total_cost:.2f}")
+    logger.info(f"This patch total consume tokens: {total_tokens/1000}(k)")
+
+
+def _finalize_export_result(
+    project: Project, data, original_patch_content: str, original_patch_path: str
+) -> tuple[str | None, str | None, bool, bool]:
+    backported_patch_path = None
+    diff_path = None
+    empty_patch = False
+    equivalent_exists = bool(getattr(project, "equivalent_exists", False))
+    if not project.succeeded_patches:
+        return backported_patch_path, diff_path, empty_patch, equivalent_exists
+    if not project.all_hunks_applied_succeeded and not equivalent_exists:
+        raise RuntimeError(
+            "backport incomplete: unresolved file conflicts remain; refuse to export partial patch"
+        )
+    export_patch, empty_patch = _build_export_patch(project, data, equivalent_exists)
+    if empty_patch:
+        return backported_patch_path, diff_path, empty_patch, equivalent_exists
+    backported_patch_path, diff_path = _write_backported_artifacts(
+        data, original_patch_content or "", export_patch
+    )
+    logger.info(f"原始补丁文件: {original_patch_path}")
+    logger.info(f"调整后补丁文件: {backported_patch_path}")
+    logger.info(f"差异文件: {diff_path}")
+    return backported_patch_path, diff_path, empty_patch, equivalent_exists
+
+
+def _copy_logfile_to_dataset(logfile: str, patch_dataset_dir: str) -> None:
+    try:
+        shutil.copy(logfile, patch_dataset_dir)
+    except Exception as e:
+        logger.warning(f"Failed to copy log file: {e}")
+
+
 def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
     """
     从配置字典运行补丁回移植流程。
@@ -518,41 +720,44 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
     logger.debug("=" * 80)
     logger.debug("[run_backport_from_config] 开始执行补丁回移植")
     logger.debug("=" * 80)
-    
-    # 设置日志级别
     if debug_mode:
         logger.setLevel(logging.DEBUG)
-    
-    # 创建日志文件并添加文件处理器
-    log_dir = os.path.join(os.path.expanduser("~"), ".cvekit", "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    
-    now = datetime.datetime.now().strftime("%m%d%H%M")
-    project_name = config_dict.get("project", "linux")
-    tag_name = config_dict.get("tag", "unknown")
-    logfile = os.path.join(log_dir, f"{project_name}-{tag_name}-{now}.log")
-    
+    logfile = _create_backport_logfile(config_dict)
     add_file_handler(logger, logfile)
-    
-    # 加载配置
+
     data = load_config_from_dict(config_dict)
     skip_cherry_pick = bool(config_dict.get("skip_cherry_pick", False))
-    
-    # 使用 LLM 进行补丁回移植
+    data.equivalent_exists = bool(config_dict.get("equivalent_exists", False))
     project = Project(data)
-    
-    logger.debug("Cleaning workspace (git clean -fdx)...")
     project.repo.git.clean("-fdx")
-    
     start_time = time.time()
-    
     before_usage = get_usage(data.openai_key, data.llm_provider)
     
-    agent_executor, llm = initial_agent(
-        project, data.openai_key, debug_mode, data.llm_provider,
-        custom_base_url=getattr(data, 'llm_base_url', None),
-        custom_model_name=getattr(data, 'llm_model_name', None)
-    )
+    llm_base_url = getattr(data, "llm_base_url", None)
+    llm_model_name = getattr(data, "llm_model_name", None)
+    try:
+        agent_executor, llm = initial_agent(
+            project,
+            data.openai_key,
+            debug_mode,
+            data.llm_provider,
+            custom_base_url=llm_base_url,
+            custom_model_name=llm_model_name,
+        )
+    except TypeError as e:
+        # 兼容旧版本 initial_agent（不接受 custom_base_url/custom_model_name 关键字参数）
+        if "unexpected keyword argument" not in str(e):
+            raise
+        logger.warning(
+            "initial_agent 不支持自定义 base_url/model 参数，回退到旧调用方式: %s",
+            str(e),
+        )
+        agent_executor, llm = initial_agent(
+            project,
+            data.openai_key,
+            debug_mode,
+            data.llm_provider,
+        )
     
     # 获取原始补丁文件路径（在 try 之前，确保即使失败也能保存）
     # 优化：优先从本地 clone_dir 目录读取，避免网络请求
@@ -603,9 +808,6 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
             logger.warning(f"从网络获取或保存原始补丁文件失败: {str(e)}")
     
     try:
-        logger.debug("=" * 80)
-        logger.debug("Starting patch backporting...")
-        logger.debug("=" * 80)
         do_backport(
             agent_executor,
             project,
@@ -614,171 +816,58 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
             logfile,
             skip_cherry_pick=skip_cherry_pick,
         )
-        
         end_time = time.time()
-        
-        # 对于 OpenAI 提供商，等待 API 使用量统计更新（可能有延迟）
-        # 对于其他提供商（如 deepseek），无需等待
         if data.llm_provider == "openai":
-            logger.debug("等待 API 使用量统计更新...")
             time.sleep(10)
-        
         after_usage = get_usage(data.openai_key, data.llm_provider)
-        
-        # 获取调整后的补丁文件
-        backported_patch_path = None
-        diff_path = None
-        empty_patch = False
-        equivalent_exists = bool(getattr(project, "equivalent_exists", False))
-        
-        if project.succeeded_patches:
-            # 保存调整后的补丁文件
-            backported_patch_path = os.path.join(
-                data.patch_dataset_dir, f"backported_{data.tag}_{data.target_release}.patch"
-            )
-
-            def _normalize_unified_diff(patch_text: str) -> str:
-                """
-                Ensure unified diff lines are properly prefixed.
-
-                Some model-generated patches miss the leading ' ' on context
-                lines (e.g., lines starting with tabs), which makes git apply
-                treat the patch as corrupt. This normalizes those lines.
-                """
-                out_lines = []
-                for line in patch_text.splitlines():
-                    if (
-                        line.startswith("diff --git ")
-                        or line.startswith("index ")
-                        or line.startswith("--- ")
-                        or line.startswith("+++ ")
-                        or line.startswith("@@")
-                        or line.startswith("+")
-                        or line.startswith("-")
-                        or line.startswith(" ")
-                        or line.startswith("\\ No newline at end of file")
-                    ):
-                        out_lines.append(line)
-                    else:
-                        out_lines.append(" " + line)
-                return "\n".join(out_lines)
-
-            normalized_patches = []
-            patch_candidates = project.succeeded_patches
-            rebuilt_complete_patch = project.rebuild_complete_patch()
-            if rebuilt_complete_patch:
-                patch_candidates = [rebuilt_complete_patch]
-            for patch in patch_candidates:
-                if patch and not patch.endswith("\n"):
-                    patch = patch + "\n"
-                normalized_patches.append(_normalize_unified_diff(patch))
-
-            export_patch = project.validated_patch or "\n".join(normalized_patches)
-            has_valid_diff_header = any(
-                marker in export_patch
-                for marker in ("diff --git ", "\n--- ", "\n+++ ", "\n@@ ")
-            ) or export_patch.startswith(("diff --git ", "--- ", "+++ ", "@@ "))
-            if not export_patch.strip() or not has_valid_diff_header:
-                if equivalent_exists:
-                    empty_patch = True
-                    logger.info(
-                        "导出补丁为空或非标准 diff，且已确认目标分支等效存在，按无需回移植处理"
-                    )
-                else:
-                    raise RuntimeError(
-                        "backported patch is empty or non-standard diff without equivalence proof"
-                    )
-            else:
-                # 防呆：导出前先做 git apply --check
-                try:
-                    project._check_patch(export_patch, data.target_release)
-                except Exception as e:
-                    logger.error(f"导出补丁前 git apply --check 失败: {e}")
-                    raise RuntimeError("backported patch failed git apply --check")
-
-                with open(backported_patch_path, 'w', encoding='utf-8') as f:
-                    f.write(export_patch)
-                
-                # 生成 diff 文件显示差异
-                import difflib
-                diff_path = os.path.join(data.patch_dataset_dir, f"diff_{data.tag}_{data.target_release}.diff")
-                original_lines = original_patch_content.splitlines(keepends=True)
-                backported_lines = export_patch.splitlines(keepends=True)
-                
-                diff = difflib.unified_diff(
-                    original_lines,
-                    backported_lines,
-                    fromfile=f"original_{data.new_patch}.patch",
-                    tofile=f"backported_{data.tag}_{data.target_release}.patch",
-                    lineterm=''
-                )
-                
-                with open(diff_path, 'w', encoding='utf-8') as f:
-                    f.writelines(diff)
-                
-                logger.info(f"原始补丁文件: {original_patch_path}")
-                logger.info(f"调整后补丁文件: {backported_patch_path}")
-                logger.info(f"差异文件: {diff_path}")
+        (
+            backported_patch_path,
+            diff_path,
+            empty_patch,
+            equivalent_exists,
+        ) = _finalize_export_result(
+            project, data, original_patch_content or "", original_patch_path
+        )
 
         result = {
-            'status': 'success',
-            'logfile': logfile,
-            'time_cost': int(end_time - start_time),
-            'original_patch_path': original_patch_path,
-            'backported_patch_path': backported_patch_path,
-            'diff_path': diff_path,
-            'empty_patch': empty_patch,
-            'equivalent_exists': equivalent_exists,
+            "status": "success",
+            "logfile": logfile,
+            "time_cost": int(end_time - start_time),
+            "original_patch_path": original_patch_path,
+            "backported_patch_path": backported_patch_path,
+            "diff_path": diff_path,
+            "empty_patch": empty_patch,
+            "equivalent_exists": equivalent_exists,
         }
-        
-        if data.llm_provider == "openai":
-            total_cost = after_usage['total_cost'] - before_usage['total_cost']
-            total_tokens = after_usage['total_consume_tokens'] - before_usage['total_consume_tokens']
-            result['cost'] = total_cost
-            result['tokens'] = total_tokens
-            logger.info(f"This patch total cost: ${total_cost:.2f}")
-            logger.info(f"This patch total consume tokens: {total_tokens/1000}(k)")
-        
+        _attach_usage_stats(result, data, before_usage, after_usage)
         logger.info(f"This patch total cost time: {int(end_time - start_time)} Seconds.")
-        
         return result
-        
+
     except KeyboardInterrupt:
         logger.debug("KeyboardInterrupt detected, calculating usage!")
         end_time = time.time()
         after_usage = get_usage(data.openai_key, data.llm_provider)
-        
         result = {
-            'status': 'interrupted',
-            'logfile': logfile,
-            'time_cost': int(end_time - start_time),
-            'original_patch_path': original_patch_path
+            "status": "interrupted",
+            "logfile": logfile,
+            "time_cost": int(end_time - start_time),
+            "original_patch_path": original_patch_path,
         }
-        
-        if data.llm_provider == "openai":
-            total_cost = after_usage['total_cost'] - before_usage['total_cost']
-            total_tokens = after_usage['total_consume_tokens'] - before_usage['total_consume_tokens']
-            result['cost'] = total_cost
-            result['tokens'] = total_tokens
-        
+        _attach_usage_stats(result, data, before_usage, after_usage)
         return result
-        
+
     except Exception as e:
         logger.error(f"Error during execution: {type(e).__name__}={e}")
         logger.debug("Exception stack trace:", exc_info=True)
         return {
-            'status': 'failed',
-            'error': str(e),
-            'logfile': logfile,
-            'original_patch_path': original_patch_path
+            "status": "failed",
+            "error": str(e),
+            "logfile": logfile,
+            "original_patch_path": original_patch_path,
         }
-    
+
     finally:
-        # 复制日志文件到补丁数据集目录
-        try:
-            shutil.copy(logfile, data.patch_dataset_dir)
-        except Exception as e:
-            logger.warning(f"Failed to copy log file: {e}")
+        _copy_logfile_to_dataset(logfile, data.patch_dataset_dir)
 
 
 def main():
@@ -856,6 +945,7 @@ def main():
     logger.debug("[main] 开始加载配置文件...")
     data = load_yml(config_file)
     logger.debug(f"[main] 配置文件加载完成，data 对象类型: {type(data)}")
+    data.equivalent_exists = bool(getattr(data, "equivalent_exists", False))
 
     # 使用 LLM 进行补丁回移植
     logger.debug("[main] 开始初始化项目对象...")
