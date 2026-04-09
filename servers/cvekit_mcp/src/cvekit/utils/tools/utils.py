@@ -238,13 +238,37 @@ def revise_patch(
         # TODO: if the distance is close, it should be revised
         # XXX: if the distance is far, it should not be revised
         contexts, num_context, _, _ = extract_context(tmp_lines)
-        lineno, _ = find_most_similar_block(
+        lineno, dist = find_most_similar_block(
             contexts, target_file_lines, num_context, False
         )
+        # Guardrail: if anchor match confidence is low, avoid aggressive context
+        # rewrites and keep model-provided hunk content as-is.
+        non_empty_context = [x.strip() for x in contexts if x.strip()]
+        context_chars = sum(len(x) for x in non_empty_context)
+        max_rel_dist = float(os.getenv("CVEKIT_PATCH_ALIGN_MAX_REL_DIST", "0.35"))
+        max_abs_dist = int(os.getenv("CVEKIT_PATCH_ALIGN_MAX_ABS_DIST", "80"))
+        low_confidence_anchor = (
+            num_context <= 0
+            or context_chars <= 0
+            or (dist > max_abs_dist and (dist / max(context_chars, 1)) > max_rel_dist)
+        )
+        if low_confidence_anchor:
+            logger.debug(
+                "[revise_patch] low confidence anchor, skip context rewrite: "
+                "dist=%s, context_chars=%s, num_context=%s, rel=%.4f",
+                dist,
+                context_chars,
+                num_context,
+                (dist / max(context_chars, 1)),
+            )
         i = 0
         revised_lines = []
         for line in tmp_lines:
             if line.startswith(" ") or line.startswith("-"):
+                if low_confidence_anchor:
+                    revised_lines.append(line)
+                    i += 1
+                    continue
                 sign = line[0]
                 target_idx = lineno - 1 + i
                 if target_idx < 0 or target_idx >= len(target_file_lines):
@@ -263,7 +287,7 @@ def revise_patch(
             else:
                 revised_lines.append(line.replace("'s ", "->"))
 
-        if revise_context:
+        if revise_context and not low_confidence_anchor:
             logger.debug("force to revise all context lines")
             last_line = 0
             for line in tmp_lines:

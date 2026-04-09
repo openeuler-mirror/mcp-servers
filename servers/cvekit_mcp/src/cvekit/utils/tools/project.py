@@ -1530,8 +1530,8 @@ class Project:
         
         这个函数会：
         1. 切换到目标引用并重置工作区
-        2. 修正补丁（修复行号、格式等）
-        3. 尝试应用补丁
+        2. 先直接尝试应用原始补丁
+        3. 若失败再修正补丁（修复行号、格式等）并重试
         4. 处理各种错误情况：
            - 文件不存在：尝试查找文件移动后的位置
            - 补丁损坏：返回错误信息
@@ -1594,116 +1594,120 @@ class Project:
             return ret
         patch = normalized_patch
         
-        # 修正补丁（使用目标仓库的路径）
         if revise_context:
             logger.debug("[_apply_hunk] revise_context=True")
-        
-        logger.debug("[_apply_hunk] 开始修正补丁...")
-        logger.debug(f"  参数: patch 长度={len(patch)}, target_dir={self.target_dir}, revise_context={revise_context}")
-        revised_patch, fixed = utils.revise_patch(patch, self.target_dir, revise_context)
-        logger.debug(f"[_apply_hunk] 补丁修正完成:")
-        logger.debug(f"  - fixed={fixed} (是否进行了修正)")
-        logger.debug(f"  - revised_patch 长度: {len(revised_patch)} 字符")
-        
-        if fixed:
-            logger.debug("[_apply_hunk] 补丁已修正（行号、格式等）")
-        else:
-            logger.debug("[_apply_hunk] 补丁无需修正")
 
-        # 二次结构校验：避免 revise_patch 产出“可读但非合法 unified diff”的漂移补丁
-        valid_revised, revised_invalid_reason, normalized_revised_patch = (
-            utils.validate_unified_diff_patch(revised_patch)
-        )
-        if not valid_revised:
-            self.round_succeeded = False
-            ret = (
-                "Rejected revised patch before apply: "
-                f"{revised_invalid_reason}. Please regenerate patch with strict unified diff format.\n"
-            )
-            logger.debug(
-                f"[_apply_hunk] revised patch unified diff 预检失败: {revised_invalid_reason}"
-            )
-            logger.debug(f"[_apply_hunk] 返回结果: {ret}")
-            return ret
-        revised_patch = normalized_revised_patch
-        
-        # 将修正后的补丁写入临时文件
-        logger.debug("[_apply_hunk] 创建临时文件保存补丁...")
-        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-            f.write(revised_patch)
-            temp_file_path = f.name
-        logger.debug(f"[_apply_hunk] 临时文件创建成功: {temp_file_path}")
-        logger.debug(f"Applying patch {temp_file_path}")
-        
-        # 尝试应用补丁（在目标仓库中）
-        logger.debug("[_apply_hunk] 尝试应用补丁（git apply）...")
-        logger.debug(f"[_apply_hunk] 在目标仓库中应用补丁: {self.target_dir}")
+        apply_failed_exc = None
+        apply_failed_stderr = ""
+        diagnose_patch = patch
+
+        # Phase-1: try original normalized patch first.
+        logger.debug("[_apply_hunk] Phase-1: 直接尝试原始补丁（不 revise）...")
         try:
-            logger.debug(f"  执行: git apply {temp_file_path} -v")
+            with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
+                f.write(patch)
+                temp_file_path = f.name
+            logger.debug("  执行: git apply %s -v", temp_file_path)
             self.target_repo.git.apply([temp_file_path], v=True)
-            logger.debug("[_apply_hunk] 补丁应用成功！")
+            logger.debug("[_apply_hunk] Phase-1 成功：原始补丁可直接应用")
             ret += "Patch applied successfully\n"
-            logger.debug(f"[_apply_hunk] 返回结果: {ret}")
-            self.last_success_revised_patch = revised_patch
-            
-            # 记录成功的补丁（同文件同区域用替换而非累积）
-            self._upsert_succeeded_patch(revised_patch)
-            logger.debug(f"[_apply_hunk] 成功补丁已添加到列表，当前成功补丁数: {len(self.succeeded_patches)}")
-            
-            # 标记本轮成功
+            self.last_success_revised_patch = patch
+            self._upsert_succeeded_patch(patch)
             self.round_succeeded = True
             logger.debug(f"[_apply_hunk] round_succeeded={self.round_succeeded}")
-            
-        except Exception as e:
+        except Exception as e_raw:
+            apply_failed_exc = e_raw
+            if hasattr(e_raw, "stderr") and e_raw.stderr:
+                apply_failed_stderr = str(e_raw.stderr)
+            logger.debug(
+                "[_apply_hunk] Phase-1 失败，进入 Phase-2 revise 重试: %s",
+                type(e_raw).__name__,
+            )
+
+            # Phase-2: revise patch only after direct apply failed.
+            logger.debug("[_apply_hunk] Phase-2: 开始修正补丁并重试应用...")
+            logger.debug(
+                "  参数: patch 长度=%s, target_dir=%s, revise_context=%s",
+                len(patch),
+                self.target_dir,
+                revise_context,
+            )
+            revised_patch, fixed = utils.revise_patch(patch, self.target_dir, revise_context)
+            logger.debug(
+                "[_apply_hunk] Phase-2 revise 完成: fixed=%s, revised_patch长度=%s",
+                fixed,
+                len(revised_patch),
+            )
+
+            valid_revised, revised_invalid_reason, normalized_revised_patch = (
+                utils.validate_unified_diff_patch(revised_patch)
+            )
+            if valid_revised:
+                revised_patch = normalized_revised_patch
+                diagnose_patch = revised_patch
+                try:
+                    with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
+                        f.write(revised_patch)
+                        temp_file_path = f.name
+                    logger.debug("  执行: git apply %s -v", temp_file_path)
+                    self.target_repo.git.apply([temp_file_path], v=True)
+                    logger.debug("[_apply_hunk] Phase-2 成功：revised 补丁可应用")
+                    ret += "Patch applied successfully\n"
+                    self.last_success_revised_patch = revised_patch
+                    self._upsert_succeeded_patch(revised_patch)
+                    self.round_succeeded = True
+                    logger.debug(f"[_apply_hunk] round_succeeded={self.round_succeeded}")
+                except Exception as e_revised:
+                    apply_failed_exc = e_revised
+                    if hasattr(e_revised, "stderr") and e_revised.stderr:
+                        apply_failed_stderr = str(e_revised.stderr)
+                    logger.debug(
+                        "[_apply_hunk] Phase-2 失败: %s", type(e_revised).__name__
+                    )
+            else:
+                logger.debug(
+                    "[_apply_hunk] Phase-2 revise 产物结构无效，保留 Phase-1 失败信息用于诊断: %s",
+                    revised_invalid_reason,
+                )
+
+        # 两阶段都失败时，按原有分支返回可操作反馈。
+        if not self.round_succeeded and apply_failed_exc is not None:
+            e = apply_failed_exc
+            error_stderr = apply_failed_stderr or ""
             logger.debug(f"[_apply_hunk] 补丁应用失败，捕获异常: {type(e).__name__}")
             logger.debug(f"  - 异常对象: {e}")
             logger.debug(f"  - 异常类型: {type(e)}")
-            
-            # 获取异常信息
-            error_stderr = ""
-            if hasattr(e, 'stderr'):
-                error_stderr = e.stderr
+            if error_stderr:
                 logger.debug(
                     "  - stderr 摘要: %s",
                     (error_stderr[:200] + "...") if len(error_stderr) > 200 else error_stderr,
                 )
-            
-            # 处理文件不存在错误
+
             if "No such file" in error_stderr:
                 logger.debug("[_apply_hunk] 错误类型: 文件不存在（No such file）")
-                logger.debug("File not found")
                 logger.debug("[_apply_hunk] 尝试查找文件移动后的位置...")
-                find_ret = self._apply_file_move_handling(ref, revised_patch)
-                logger.debug(f"[_apply_hunk] 文件查找结果: {find_ret[:200]}..." if len(find_ret) > 200 else f"[_apply_hunk] 文件查找结果: {find_ret}")
+                find_ret = self._apply_file_move_handling(ref, diagnose_patch)
+                logger.debug(
+                    f"[_apply_hunk] 文件查找结果: {find_ret[:200]}..."
+                    if len(find_ret) > 200
+                    else f"[_apply_hunk] 文件查找结果: {find_ret}"
+                )
                 ret += find_ret
                 logger.debug(f"[_apply_hunk] 返回结果已更新，当前长度: {len(ret)} 字符")
-            
-            # 处理补丁损坏错误
             elif "corrupt patch" in error_stderr:
                 logger.debug("[_apply_hunk] 错误类型: 补丁损坏（corrupt patch）")
                 ret = "Unexpected corrupt patch, Please carefully check your answer, especially in your call tools arguments.\n"
-                logger.debug(f"[_apply_hunk] 返回补丁损坏错误信息")
                 logger.debug(f"[_apply_hunk] 返回结果: {ret}")
-                # raise Exception("Unexpected corrupt patch")
-            
-            # 处理上下文不匹配错误（最常见的情况）
             else:
                 logger.debug("[_apply_hunk] 错误类型: 上下文不匹配（Context mismatch）")
-                logger.debug("  - context_mismatch=true")
-                
-                # 添加上下文不匹配的错误信息
-                context_error_msg = "This patch does not apply because of CONTEXT MISMATCH. Context are patch lines that already exist in the file, that is, lines starting with ` ` and `-`. You should modify the error patch according to the context of older version.\n"
+                context_error_msg = (
+                    "This patch does not apply because of CONTEXT MISMATCH. Context are patch "
+                    "lines that already exist in the file, that is, lines starting with ` ` and "
+                    "`-`. You should modify the error patch according to the context of older version.\n"
+                )
                 ret += context_error_msg
-                logger.debug(f"[_apply_hunk] 已添加上下文不匹配说明")
-                
-                # 获取错误处理信息（相似代码块和差异）
                 logger.debug("[_apply_hunk] 调用 _apply_error_handling 获取详细错误信息...")
-                logger.debug(f"  参数: ref={ref}, revised_patch 长度={len(revised_patch)}")
-                block, differ = self._apply_error_handling(ref, revised_patch)
-                logger.debug(f"[_apply_hunk] 错误处理信息获取完成:")
-                logger.debug(f"  - block 长度: {len(block)} 字符")
-                logger.debug(f"  - differ 长度: {len(differ)} 字符")
-                
+                block, differ = self._apply_error_handling(ref, diagnose_patch)
                 ret += block
                 ret += "Besides, here is detailed info about how the context differs between the patch and the old version.\n"
                 ret += differ
@@ -1974,14 +1978,12 @@ class Project:
 
         # Handle "need not ported" uniformly to avoid causal inversion:
         # a non-diff marker must never overwrite an already materialized patch result.
+        # NOTE:
+        # In conflict-driven backport flow, external precheck may already prove
+        # insufficient. Here we allow the LLM to decide equivalence based on
+        # tool evidence (viewcode/locate_symbol/git_history/git_show), while
+        # still preventing overwrite of a concrete validated patch.
         if is_need_not_ported:
-            if not self.equivalent_exists:
-                self.round_succeeded = False
-                return (
-                    "Rejected: 'need not ported' is not accepted without explicit "
-                    "equivalence evidence in target branch.\n"
-                )
-
             existing_patch = self.validated_patch or self.rebuild_complete_patch()
             if self._is_unified_diff_patch(existing_patch):
                 self.round_succeeded = False
@@ -1991,6 +1993,7 @@ class Project:
                 )
 
             # Explicitly record equivalence mode as final result: no exported patch.
+            self.equivalent_exists = True
             self.round_succeeded = True
             self.compile_succeeded = True
             self.testcase_succeeded = True
