@@ -913,19 +913,34 @@ def apply_patch(
 
                     # 如果需要人工确认，则显示完整补丁并等待用户确认
                     if llm_confirm:
-                        logger.info("\nLLM 生成的补丁内容如下，请确认是否应用：")
-                        logger.info("-"*80)
+                        # 计算补丁行数，决定显示方式
+                        patch_lines = result.patch_content.count('\n') + 1
+                        max_display_lines = 50
 
-                        # 显示完整补丁
-                        print("\n" + result.patch_content)
-                        logger.info("-"*80)
+                        if patch_lines <= max_display_lines:
+                            # 短补丁：直接显示完整内容
+                            if has_console_handler:
+                                logger.info("\nLLM 生成的补丁内容如下，请确认是否应用：")
+                                logger.info("-"*80)
+                                print("\n" + result.patch_content)
+                                logger.info("-"*80)
+                            else:
+                                print("\nLLM 生成的补丁内容如下，请确认是否应用：")
+                                print("-"*80)
+                                print(result.patch_content)
+                                print("-"*80)
+                        else:
+                            # 长补丁：显示摘要
+                            print(f"\n补丁较长（{patch_lines} 行），已保存到：{resolved_patch_path}")
+                            print("请用编辑器查看完整内容")
+                            print("-"*80)
 
                         while True:
                             response = input("\n是否应用此补丁？(y/n/e): ").strip().lower()
-                            if response in ['y', 'yes']:
+                            if response in ('y', 'yes'):
                                 logger.info("用户确认应用补丁")
                                 break
-                            elif response in ['n', 'no']:
+                            elif response in ('n', 'no'):
                                 logger.info("用户拒绝应用补丁")
                                 logger.info(f"补丁文件已保留: {resolved_patch_path}")
                                 return {
@@ -960,8 +975,25 @@ def apply_patch(
                                     # 在应用前先用 git apply --check 验证
                                     try:
                                         repo.git.apply('--check', resolved_patch_path)
-                                        logger.info("补丁验证通过，可以应用")
-                                        break
+                                        logger.info("补丁验证通过")
+                                        # 重新显示编辑后的补丁，等待用户确认
+                                        edited_patch_lines = edited_patch.count('\n') + 1
+                                        if edited_patch_lines <= max_display_lines:
+                                            if has_console_handler:
+                                                logger.info("\n编辑后的补丁内容如下，请确认是否应用：")
+                                                logger.info("-"*80)
+                                                print("\n" + edited_patch)
+                                                logger.info("-"*80)
+                                            else:
+                                                print("\n编辑后的补丁内容如下，请确认是否应用：")
+                                                print("-"*80)
+                                                print(edited_patch)
+                                                print("-"*80)
+                                        else:
+                                            print(f"\n编辑后的补丁较长（{edited_patch_lines} 行），已保存到：{resolved_patch_path}")
+                                            print("请用编辑器查看完整内容")
+                                            print("-"*80)
+                                        # 继续循环，等待用户再次确认
                                     except Exception as check_error:
                                         logger.error(f"补丁验证失败，无法应用：{str(check_error)}")
                                         logger.warning("请重新编辑或选择其他选项")
@@ -969,7 +1001,7 @@ def apply_patch(
                                 except Exception as edit_error:
                                     logger.error(f"编辑补丁失败：{edit_error}")
                             else:
-                                logger.info("无效输入，请输入 y/n/edit")
+                                logger.info("无效输入，请输入 y/n/e")
 
                     logger.info("应用修复后的补丁...")
 
