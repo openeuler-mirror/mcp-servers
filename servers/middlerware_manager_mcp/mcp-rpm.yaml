@@ -1,0 +1,23 @@
+name: "middleware-manager-mcp"
+summary: "MCP server for middleware management"
+description: |
+  Provides MCP tools for managing middleware services,
+  including installation, configuration, status monitoring,
+  and version management for common middleware like Redis, Kafka, RabbitMQ, etc.
+
+dependencies:
+  system:
+    - python3
+    - uv
+    - python3-mcp
+    - jq
+  packages:
+    - systemd
+
+files:
+  required:
+    - mcp_config.json
+    - src/middleware_manager_mcp.py
+  optional:
+    - src/requirements.txt
+    - README.md

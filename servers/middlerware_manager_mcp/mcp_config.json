@@ -1,0 +1,19 @@
+{
+    "mcpServers": {
+        "middleware_manager_mcp": {
+            "command": "uv",
+            "args": [
+                "--directory",
+                "/opt/mcp-servers/servers/middleware_manager_mcp/src",
+                "run",
+                "middleware_manager_mcp.py"
+            ],
+            "disabled": false,
+            "alwaysAllow": [
+                "list_middleware",
+                "get_middleware_status",
+                "get_middleware_info"
+            ]
+        }
+    }
+}
