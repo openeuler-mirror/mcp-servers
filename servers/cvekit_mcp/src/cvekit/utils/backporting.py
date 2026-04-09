@@ -727,16 +727,37 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
 
     data = load_config_from_dict(config_dict)
     skip_cherry_pick = bool(config_dict.get("skip_cherry_pick", False))
+    data.equivalent_exists = bool(config_dict.get("equivalent_exists", False))
     project = Project(data)
     project.repo.git.clean("-fdx")
     start_time = time.time()
     before_usage = get_usage(data.openai_key, data.llm_provider)
     
-    agent_executor, llm = initial_agent(
-        project, data.openai_key, debug_mode, data.llm_provider,
-        custom_base_url=getattr(data, 'llm_base_url', None),
-        custom_model_name=getattr(data, 'llm_model_name', None)
-    )
+    llm_base_url = getattr(data, "llm_base_url", None)
+    llm_model_name = getattr(data, "llm_model_name", None)
+    try:
+        agent_executor, llm = initial_agent(
+            project,
+            data.openai_key,
+            debug_mode,
+            data.llm_provider,
+            custom_base_url=llm_base_url,
+            custom_model_name=llm_model_name,
+        )
+    except TypeError as e:
+        # 兼容旧版本 initial_agent（不接受 custom_base_url/custom_model_name 关键字参数）
+        if "unexpected keyword argument" not in str(e):
+            raise
+        logger.warning(
+            "initial_agent 不支持自定义 base_url/model 参数，回退到旧调用方式: %s",
+            str(e),
+        )
+        agent_executor, llm = initial_agent(
+            project,
+            data.openai_key,
+            debug_mode,
+            data.llm_provider,
+        )
     
     # 获取原始补丁文件路径（在 try 之前，确保即使失败也能保存）
     # 优化：优先从本地 clone_dir 目录读取，避免网络请求
@@ -924,6 +945,7 @@ def main():
     logger.debug("[main] 开始加载配置文件...")
     data = load_yml(config_file)
     logger.debug(f"[main] 配置文件加载完成，data 对象类型: {type(data)}")
+    data.equivalent_exists = bool(getattr(data, "equivalent_exists", False))
 
     # 使用 LLM 进行补丁回移植
     logger.debug("[main] 开始初始化项目对象...")
