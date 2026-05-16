@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PROJECT VERSION\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-04-08 15:34+0800\n"
+"POT-Creation-Date: 2026-05-16 03:03+0000\n"
 "PO-Revision-Date: 2025-10-11 16:27+0800\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: en_US\n"
@@ -24,23 +24,25 @@ msgstr ""
 "CVE remediation process automation tool, providing CVE analysis, patch "
 "adaptation, and other functions"
 
-#: server.py:27
+#: server.py:27 server.py:600
 msgid "Gitee访问令牌"
 msgstr "Gitee access token"
 
 #: server.py:28
 msgid "LLM提供商(可选，优先级: 命令行参数 > 环境变量LLM_PROVIDER > 默认openai)"
-msgstr "LLM provider (optional, priority: command-line argument > LLM_PROVIDER environment variable > default openai)"
+msgstr ""
+"LLM provider (optional, priority: command-line argument > LLM_PROVIDER "
+"environment variable > default openai)"
 
 #: server.py:29 server.py:341
 msgid "LLM API密钥(可选，用于自动调整补丁)"
 msgstr "LLM API key (optional, for automatic patch adjustment)"
 
-#: server.py:30 server.py:343
+#: server.py:30
 msgid "LLM API基础地址(可选，覆盖默认配置)"
 msgstr "LLM API base URL (optional, overrides default configuration)"
 
-#: server.py:31 server.py:344
+#: server.py:31
 msgid "LLM模型名称(可选，覆盖默认配置)"
 msgstr "LLM model name (optional, overrides default configuration)"
 
@@ -123,8 +125,7 @@ msgstr ""
 "step\n"
 "    "
 
-#: server.py:223 server.py:257 server.py:286 server.py:338 server.py:600
-#: server.py:672
+#: server.py:223 server.py:257 server.py:287 server.py:338 server.py:672
 msgid "Gitee访问令牌(可选)"
 msgstr "Gitee access token (optional)"
 
@@ -180,7 +181,7 @@ msgstr ""
 " the next step\n"
 "    "
 
-#: server.py:255
+#: server.py:255 server.py:340
 msgid "Fork仓库URL"
 msgstr "Fork repository URL"
 
@@ -237,7 +238,7 @@ msgstr ""
 " proceed to the next step\n"
 "    "
 
-#: server.py:287 server.py:339
+#: server.py:286
 msgid "克隆目录(可选)"
 msgstr "Clone directory (optional)"
 
@@ -350,13 +351,21 @@ msgstr ""
 msgid "要分析的分支列表，逗号分隔"
 msgstr "The list of branches to be analyzed, separated by commas"
 
-#: server.py:340
-msgid "Fork仓库URL(可选)"
-msgstr "Fork repository URL (optional)"
+#: server.py:339
+msgid "克隆目录"
+msgstr "Clone directory"
 
 #: server.py:342
-msgid "LLM提供商(可选，默认openai)"
+msgid "LLM提供商(默认openai)"
 msgstr "LLM provider (optional, default: openai)"
+
+#: server.py:343
+msgid "LLM API基础地址(覆盖默认配置)"
+msgstr "LLM API base URL (overrides default configuration)"
+
+#: server.py:344
+msgid "LLM模型名称(覆盖默认配置)"
+msgstr "LLM model name (overrides default configuration)"
 
 #: server.py:372
 #, python-format
@@ -367,41 +376,47 @@ msgstr "Branch analysis failed: %s"
 msgid "未找到受影响的分支"
 msgstr "No affected branches were found"
 
-#: build/lib/cvekit/cli.py:310 build/lib/cvekit/cli.py:436
+#: build/lib/cvekit/cli.py:499 build/lib/cvekit/cli.py:714
+#: build/lib/cvekit/utils/backport_batch.py:1479
+#: build/lib/cvekit/utils/backport_batch.py:2088
 #: build/lib/cvekit/utils/branches.py:406
 #: build/lib/cvekit/utils/branches.py:432
 #: build/lib/cvekit/utils/branches.py:436
-#: build/lib/cvekit/utils/branches.py:494
 #: build/lib/cvekit/utils/branches.py:498
-#: build/lib/cvekit/utils/branches.py:514
-#: build/lib/cvekit/utils/branches.py:531 cvekit/cli.py:455 cvekit/cli.py:670
-#: cvekit/utils/backport_batch.py:1444 cvekit/utils/backport_batch.py:2011
+#: build/lib/cvekit/utils/branches.py:502
+#: build/lib/cvekit/utils/branches.py:518
+#: build/lib/cvekit/utils/branches.py:535 cvekit/cli.py:494 cvekit/cli.py:709
+#: cvekit/utils/backport_batch.py:1461 cvekit/utils/backport_batch.py:2028
 #: cvekit/utils/branches.py:406 cvekit/utils/branches.py:432
-#: cvekit/utils/branches.py:436 cvekit/utils/branches.py:494
-#: cvekit/utils/branches.py:498 cvekit/utils/branches.py:514
-#: cvekit/utils/branches.py:531 server.py:382 server.py:432 server.py:440
+#: cvekit/utils/branches.py:436 cvekit/utils/branches.py:498
+#: cvekit/utils/branches.py:502 cvekit/utils/branches.py:518
+#: cvekit/utils/branches.py:535 server.py:382 server.py:432 server.py:440
 #: server.py:467 server.py:472 server.py:501 server.py:528
 msgid "适配状态"
 msgstr "Adaptation status"
 
-#: build/lib/cvekit/cli.py:310 build/lib/cvekit/utils/branches.py:436
-#: build/lib/cvekit/utils/branches.py:498 cvekit/cli.py:455
-#: cvekit/utils/backport_batch.py:1439 cvekit/utils/backport_batch.py:2011
-#: cvekit/utils/branches.py:436 cvekit/utils/branches.py:498 server.py:383
+#: build/lib/cvekit/cli.py:499 build/lib/cvekit/utils/backport_batch.py:1474
+#: build/lib/cvekit/utils/backport_batch.py:2088
+#: build/lib/cvekit/utils/branches.py:436
+#: build/lib/cvekit/utils/branches.py:502 cvekit/cli.py:494
+#: cvekit/utils/backport_batch.py:1456 cvekit/utils/backport_batch.py:2028
+#: cvekit/utils/branches.py:436 cvekit/utils/branches.py:502 server.py:383
 msgid "需要调整"
 msgstr "Need to adjust"
 
-#: build/lib/cvekit/cli.py:308 build/lib/cvekit/cli.py:434
+#: build/lib/cvekit/cli.py:497 build/lib/cvekit/cli.py:712
+#: build/lib/cvekit/utils/backport_batch.py:1478
+#: build/lib/cvekit/utils/backport_batch.py:2087
 #: build/lib/cvekit/utils/branches.py:404
 #: build/lib/cvekit/utils/branches.py:427
-#: build/lib/cvekit/utils/branches.py:488
-#: build/lib/cvekit/utils/branches.py:512
-#: build/lib/cvekit/utils/branches.py:529
-#: build/lib/cvekit/utils/branches.py:555 cvekit/cli.py:453 cvekit/cli.py:668
-#: cvekit/utils/backport_batch.py:1443 cvekit/utils/backport_batch.py:2010
+#: build/lib/cvekit/utils/branches.py:492
+#: build/lib/cvekit/utils/branches.py:516
+#: build/lib/cvekit/utils/branches.py:533
+#: build/lib/cvekit/utils/branches.py:559 cvekit/cli.py:492 cvekit/cli.py:707
+#: cvekit/utils/backport_batch.py:1460 cvekit/utils/backport_batch.py:2027
 #: cvekit/utils/branches.py:404 cvekit/utils/branches.py:427
-#: cvekit/utils/branches.py:488 cvekit/utils/branches.py:512
-#: cvekit/utils/branches.py:529 cvekit/utils/branches.py:555 server.py:384
+#: cvekit/utils/branches.py:492 cvekit/utils/branches.py:516
+#: cvekit/utils/branches.py:533 cvekit/utils/branches.py:559 server.py:384
 #: server.py:464 server.py:499 server.py:526 server.py:609
 msgid "目标分支"
 msgstr "Target branch"
@@ -428,36 +443,41 @@ msgstr "Diff file"
 msgid "backport_result结构: %s"
 msgstr "backport_result structure: %s"
 
-#: build/lib/cvekit/cli.py:311 build/lib/cvekit/cli.py:437
+#: build/lib/cvekit/cli.py:500 build/lib/cvekit/cli.py:715
+#: build/lib/cvekit/utils/backport_batch.py:1480
+#: build/lib/cvekit/utils/backport_batch.py:2089
 #: build/lib/cvekit/utils/branches.py:407
 #: build/lib/cvekit/utils/branches.py:429
-#: build/lib/cvekit/utils/branches.py:490
-#: build/lib/cvekit/utils/branches.py:515
-#: build/lib/cvekit/utils/branches.py:532 cvekit/cli.py:456 cvekit/cli.py:671
-#: cvekit/utils/backport_batch.py:1445 cvekit/utils/backport_batch.py:2012
+#: build/lib/cvekit/utils/branches.py:494
+#: build/lib/cvekit/utils/branches.py:519
+#: build/lib/cvekit/utils/branches.py:536 cvekit/cli.py:495 cvekit/cli.py:710
+#: cvekit/utils/backport_batch.py:1462 cvekit/utils/backport_batch.py:2029
 #: cvekit/utils/branches.py:407 cvekit/utils/branches.py:429
-#: cvekit/utils/branches.py:490 cvekit/utils/branches.py:515
-#: cvekit/utils/branches.py:532 server.py:431 server.py:439 server.py:466
+#: cvekit/utils/branches.py:494 cvekit/utils/branches.py:519
+#: cvekit/utils/branches.py:536 server.py:431 server.py:439 server.py:466
 #: server.py:471 server.py:502 server.py:529 server.py:610
 msgid "冲突点"
 msgstr "Conflict point"
 
-#: cvekit/utils/backport_batch.py:1437 server.py:432 server.py:467
+#: build/lib/cvekit/utils/backport_batch.py:1472
+#: cvekit/utils/backport_batch.py:1454 server.py:432 server.py:467
 msgid "无需执行（补丁已存在）"
 msgstr "No action needed (patch already exists)"
 
-#: build/lib/cvekit/cli.py:312 build/lib/cvekit/utils/branches.py:408
+#: build/lib/cvekit/cli.py:501 build/lib/cvekit/utils/backport_batch.py:1481
+#: build/lib/cvekit/utils/backport_batch.py:2090
+#: build/lib/cvekit/utils/branches.py:408
 #: build/lib/cvekit/utils/branches.py:433
 #: build/lib/cvekit/utils/branches.py:437
-#: build/lib/cvekit/utils/branches.py:495
 #: build/lib/cvekit/utils/branches.py:499
-#: build/lib/cvekit/utils/branches.py:516
-#: build/lib/cvekit/utils/branches.py:533 cvekit/cli.py:457
-#: cvekit/utils/backport_batch.py:1446 cvekit/utils/backport_batch.py:2013
+#: build/lib/cvekit/utils/branches.py:503
+#: build/lib/cvekit/utils/branches.py:520
+#: build/lib/cvekit/utils/branches.py:537 cvekit/cli.py:496
+#: cvekit/utils/backport_batch.py:1463 cvekit/utils/backport_batch.py:2030
 #: cvekit/utils/branches.py:408 cvekit/utils/branches.py:433
-#: cvekit/utils/branches.py:437 cvekit/utils/branches.py:495
-#: cvekit/utils/branches.py:499 cvekit/utils/branches.py:516
-#: cvekit/utils/branches.py:533 server.py:433 server.py:441 server.py:468
+#: cvekit/utils/branches.py:437 cvekit/utils/branches.py:499
+#: cvekit/utils/branches.py:503 cvekit/utils/branches.py:520
+#: cvekit/utils/branches.py:537 server.py:433 server.py:441 server.py:468
 #: server.py:473 server.py:483 server.py:489 server.py:503
 msgid "建议调整文件"
 msgstr "Suggested adjustment files"
@@ -465,21 +485,21 @@ msgstr "Suggested adjustment files"
 #: build/lib/cvekit/utils/branches.py:409
 #: build/lib/cvekit/utils/branches.py:434
 #: build/lib/cvekit/utils/branches.py:438
-#: build/lib/cvekit/utils/branches.py:496
 #: build/lib/cvekit/utils/branches.py:500
-#: build/lib/cvekit/utils/branches.py:517
-#: build/lib/cvekit/utils/branches.py:534 cvekit/utils/branches.py:409
+#: build/lib/cvekit/utils/branches.py:504
+#: build/lib/cvekit/utils/branches.py:521
+#: build/lib/cvekit/utils/branches.py:538 cvekit/utils/branches.py:409
 #: cvekit/utils/branches.py:434 cvekit/utils/branches.py:438
-#: cvekit/utils/branches.py:496 cvekit/utils/branches.py:500
-#: cvekit/utils/branches.py:517 cvekit/utils/branches.py:534 server.py:434
+#: cvekit/utils/branches.py:500 cvekit/utils/branches.py:504
+#: cvekit/utils/branches.py:521 cvekit/utils/branches.py:538 server.py:434
 #: server.py:442 server.py:469 server.py:474 server.py:485 server.py:490
 #: server.py:505 server.py:530
 msgid "是否存在冲突"
 msgstr "Whether conflicts exist"
 
 #: build/lib/cvekit/utils/branches.py:438
-#: build/lib/cvekit/utils/branches.py:500 cvekit/utils/branches.py:438
-#: cvekit/utils/branches.py:500 server.py:434 server.py:442 server.py:469
+#: build/lib/cvekit/utils/branches.py:504 cvekit/utils/branches.py:438
+#: cvekit/utils/branches.py:504 server.py:434 server.py:442 server.py:469
 #: server.py:474 server.py:485 server.py:539
 msgid "是"
 msgstr "Yes"
@@ -489,10 +509,11 @@ msgstr "Yes"
 msgid "backport识别为空补丁: 分支 %s 已无需执行第五/第六步"
 msgstr "Backport identified an empty patch: branch %s no longer needs steps 5/6"
 
-#: build/lib/cvekit/cli.py:310 build/lib/cvekit/utils/branches.py:432
-#: build/lib/cvekit/utils/branches.py:494 cvekit/cli.py:455
-#: cvekit/utils/backport_batch.py:1439 cvekit/utils/branches.py:432
-#: cvekit/utils/branches.py:494 server.py:440 server.py:472
+#: build/lib/cvekit/cli.py:499 build/lib/cvekit/utils/backport_batch.py:1474
+#: build/lib/cvekit/utils/branches.py:432
+#: build/lib/cvekit/utils/branches.py:498 cvekit/cli.py:494
+#: cvekit/utils/backport_batch.py:1456 cvekit/utils/branches.py:432
+#: cvekit/utils/branches.py:498 server.py:440 server.py:472
 msgid "成功"
 msgstr "success"
 
@@ -528,11 +549,11 @@ msgstr "backport failed: %s"
 
 #: build/lib/cvekit/utils/branches.py:409
 #: build/lib/cvekit/utils/branches.py:434
-#: build/lib/cvekit/utils/branches.py:496
-#: build/lib/cvekit/utils/branches.py:517
-#: build/lib/cvekit/utils/branches.py:534 cvekit/utils/branches.py:409
-#: cvekit/utils/branches.py:434 cvekit/utils/branches.py:496
-#: cvekit/utils/branches.py:517 cvekit/utils/branches.py:534 server.py:490
+#: build/lib/cvekit/utils/branches.py:500
+#: build/lib/cvekit/utils/branches.py:521
+#: build/lib/cvekit/utils/branches.py:538 cvekit/utils/branches.py:409
+#: cvekit/utils/branches.py:434 cvekit/utils/branches.py:500
+#: cvekit/utils/branches.py:521 cvekit/utils/branches.py:538 server.py:490
 msgid "否"
 msgstr "No"
 
@@ -543,40 +564,42 @@ msgstr ""
 " Path | Suggested Adjustment Files | Diff File | Whether Conflicts Exist "
 "| Commit Message |\n"
 
-#: build/lib/cvekit/cli.py:307 build/lib/cvekit/utils/branches.py:403
+#: build/lib/cvekit/cli.py:496 build/lib/cvekit/utils/backport_batch.py:1477
+#: build/lib/cvekit/utils/backport_batch.py:2086
+#: build/lib/cvekit/utils/branches.py:403
 #: build/lib/cvekit/utils/branches.py:426
-#: build/lib/cvekit/utils/branches.py:487
-#: build/lib/cvekit/utils/branches.py:511
-#: build/lib/cvekit/utils/branches.py:528
-#: build/lib/cvekit/utils/branches.py:554 cvekit/cli.py:452
-#: cvekit/utils/backport_batch.py:1442 cvekit/utils/backport_batch.py:2009
+#: build/lib/cvekit/utils/branches.py:491
+#: build/lib/cvekit/utils/branches.py:515
+#: build/lib/cvekit/utils/branches.py:532
+#: build/lib/cvekit/utils/branches.py:558 cvekit/cli.py:491
+#: cvekit/utils/backport_batch.py:1459 cvekit/utils/backport_batch.py:2026
 #: cvekit/utils/branches.py:403 cvekit/utils/branches.py:426
-#: cvekit/utils/branches.py:487 cvekit/utils/branches.py:511
-#: cvekit/utils/branches.py:528 cvekit/utils/branches.py:554 server.py:498
+#: cvekit/utils/branches.py:491 cvekit/utils/branches.py:515
+#: cvekit/utils/branches.py:532 cvekit/utils/branches.py:558 server.py:498
 msgid "补丁ID"
 msgstr "Patch ID"
 
-#: build/lib/cvekit/cli.py:309 build/lib/cvekit/cli.py:435
+#: build/lib/cvekit/cli.py:498 build/lib/cvekit/cli.py:713
 #: build/lib/cvekit/utils/branches.py:405
 #: build/lib/cvekit/utils/branches.py:428
-#: build/lib/cvekit/utils/branches.py:489
-#: build/lib/cvekit/utils/branches.py:513
-#: build/lib/cvekit/utils/branches.py:530
-#: build/lib/cvekit/utils/branches.py:557 cvekit/cli.py:454 cvekit/cli.py:669
+#: build/lib/cvekit/utils/branches.py:493
+#: build/lib/cvekit/utils/branches.py:517
+#: build/lib/cvekit/utils/branches.py:534
+#: build/lib/cvekit/utils/branches.py:561 cvekit/cli.py:493 cvekit/cli.py:708
 #: cvekit/utils/branches.py:405 cvekit/utils/branches.py:428
-#: cvekit/utils/branches.py:489 cvekit/utils/branches.py:513
-#: cvekit/utils/branches.py:530 cvekit/utils/branches.py:557 server.py:500
+#: cvekit/utils/branches.py:493 cvekit/utils/branches.py:517
+#: cvekit/utils/branches.py:534 cvekit/utils/branches.py:561 server.py:500
 #: server.py:527
 msgid "是否受影响"
 msgstr "Whether affected"
 
-#: build/lib/cvekit/cli.py:440 build/lib/cvekit/cli.py:441
-#: build/lib/cvekit/cli.py:447 build/lib/cvekit/utils/branches.py:440
-#: build/lib/cvekit/utils/branches.py:504
-#: build/lib/cvekit/utils/branches.py:521
-#: build/lib/cvekit/utils/branches.py:538 cvekit/cli.py:674 cvekit/cli.py:675
-#: cvekit/cli.py:681 cvekit/utils/branches.py:440 cvekit/utils/branches.py:504
-#: cvekit/utils/branches.py:521 cvekit/utils/branches.py:538 server.py:504
+#: build/lib/cvekit/cli.py:718 build/lib/cvekit/cli.py:719
+#: build/lib/cvekit/cli.py:725 build/lib/cvekit/utils/branches.py:440
+#: build/lib/cvekit/utils/branches.py:508
+#: build/lib/cvekit/utils/branches.py:525
+#: build/lib/cvekit/utils/branches.py:542 cvekit/cli.py:713 cvekit/cli.py:714
+#: cvekit/cli.py:720 cvekit/utils/branches.py:440 cvekit/utils/branches.py:508
+#: cvekit/utils/branches.py:525 cvekit/utils/branches.py:542 server.py:504
 msgid "提交信息"
 msgstr "Commit message"
 
@@ -601,9 +624,9 @@ msgstr ""
 "Please select which branches to apply patches to (multiple selection "
 "allowed, enter branch names separated by commas):\n"
 
-#: build/lib/cvekit/cli.py:309 build/lib/cvekit/cli.py:447
-#: build/lib/cvekit/utils/branches.py:489 cvekit/cli.py:454 cvekit/cli.py:681
-#: cvekit/utils/branches.py:489 server.py:539
+#: build/lib/cvekit/cli.py:498 build/lib/cvekit/cli.py:725
+#: build/lib/cvekit/utils/branches.py:493 cvekit/cli.py:493 cvekit/cli.py:720
+#: cvekit/utils/branches.py:493 server.py:539
 msgid "受影响"
 msgstr "Affected"
 
@@ -721,7 +744,7 @@ msgid "patch路径"
 msgstr "Patch file path"
 
 #: server.py:597
-msgid "克隆目录(可选，与第四步保持一致)"
+msgid "克隆目录(与第四步保持一致)"
 msgstr "Clone directory (optional, consistent with step 4)"
 
 #: server.py:598
@@ -832,7 +855,7 @@ msgid "目标仓库url"
 msgstr "Target repository URL"
 
 #: server.py:671
-msgid "克隆目录(可选，与第四/第五步保持一致)"
+msgid "克隆目录(与第四/第五步保持一致)"
 msgstr "Clone directory (optional, consistent with steps 4 and 5)"
 
 #: server.py:684
@@ -867,11 +890,15 @@ msgstr "- PR link: %s\n"
 msgid "请确认PR是否创建成功"
 msgstr "Please confirm whether the PR was created successfully"
 
-#: build/lib/cvekit/cli.py:373 cvekit/cli.py:519
+#: build/lib/cvekit/cli.py:563 cvekit/cli.py:558
 msgid "提供的issue中未找到CVE ID"
 msgstr "No CVE ID found in the issue"
 
-#: build/lib/cvekit/cli.py:426 cvekit/cli.py:660
+#: build/lib/cvekit/cli.py:582 cvekit/cli.py:577
+msgid "必须提供 --cve-id 或 --issue-url 参数"
+msgstr "--cve-id or --issue-url must be provided"
+
+#: build/lib/cvekit/cli.py:704 cvekit/cli.py:699
 msgid ""
 "\n"
 "分析结果:"
@@ -879,105 +906,117 @@ msgstr ""
 "\n"
 "Analysis result:"
 
-#: build/lib/cvekit/cli.py:427 cvekit/cli.py:661
+#: build/lib/cvekit/cli.py:705 cvekit/cli.py:700
 msgid "无结果输出"
 msgstr "No output"
 
-#: build/lib/cvekit/cli.py:447 cvekit/cli.py:681
+#: build/lib/cvekit/cli.py:725 cvekit/cli.py:720
 msgid "分支"
 msgstr "Branch"
 
-#: build/lib/cvekit/cli.py:447 cvekit/cli.py:681
+#: build/lib/cvekit/cli.py:725 cvekit/cli.py:720
 msgid "状态"
 msgstr "Status"
 
-#: build/lib/cvekit/cli.py:447 cvekit/cli.py:681
+#: build/lib/cvekit/cli.py:725 cvekit/cli.py:720
 msgid "补丁路径"
 msgstr "Patch path"
 
-#: build/lib/cvekit/utils/apply_patch.py:395 cvekit/utils/apply_patch.py:668
+#: build/lib/cvekit/utils/apply_patch.py:682 cvekit/utils/apply_patch.py:682
 #, python-format
 msgid "分支: %s, CVE: %s 已修复或不受影响, 补丁应用失败"
 msgstr "branch: %s, CVE: %s has fixed or not affected, apply patch failed"
 
-#: build/lib/cvekit/utils/apply_patch.py:406
+#: build/lib/cvekit/utils/apply_patch.py:693
 #: build/lib/cvekit/utils/branches.py:389
-#: build/lib/cvekit/utils/create_pr.py:30 cvekit/utils/apply_patch.py:679
+#: build/lib/cvekit/utils/create_pr.py:31 cvekit/utils/apply_patch.py:693
 #: cvekit/utils/branches.py:389 cvekit/utils/create_pr.py:31
 msgid "未能获取修复提交(fixed)，无法继续流程"
 msgstr "Failed to obtain fixed commit; cannot continue the process"
 
-#: build/lib/cvekit/utils/apply_patch.py:430 cvekit/utils/apply_patch.py:703
+#: build/lib/cvekit/utils/apply_patch.py:717 cvekit/utils/apply_patch.py:717
 #, python-format
 msgid "生成commit信息失败: %s"
 msgstr "Failed to generate commit information: %s"
 
-#: build/lib/cvekit/utils/apply_patch.py:447 cvekit/utils/apply_patch.py:723
+#: build/lib/cvekit/utils/apply_patch.py:737 cvekit/utils/apply_patch.py:737
 #, python-format
 msgid "配置用户信息失败: %s"
 msgstr "Failed to config user information: %s"
 
-#: build/lib/cvekit/utils/apply_patch.py:484 cvekit/utils/apply_patch.py:760
+#: build/lib/cvekit/utils/apply_patch.py:795 cvekit/utils/apply_patch.py:795
 #, python-format
 msgid "切换分支失败: %s"
 msgstr "Failed to switch branches: %s"
 
-#: build/lib/cvekit/utils/apply_patch.py:520 cvekit/utils/apply_patch.py:815
-#, python-format
-msgid "无法完成补丁应用，请检查冲突并重试: %s"
-msgstr "Can not apply patch, please check for conflicts and try again: %s"
+#: build/lib/cvekit/utils/apply_patch.py:948 cvekit/utils/apply_patch.py:948
+msgid "用户拒绝应用 LLM 生成的补丁"
+msgstr ""
 
-#: build/lib/cvekit/utils/apply_patch.py:526 cvekit/utils/apply_patch.py:821
+#: build/lib/cvekit/utils/apply_patch.py:1031
+#: build/lib/cvekit/utils/apply_patch.py:1037 cvekit/utils/apply_patch.py:1031
+#: cvekit/utils/apply_patch.py:1037
+msgid "无法应用补丁，LLM 冲突解决失败: %s"
+msgstr "Can not apply patch, LLM failed to resolve confict: %s"
+
+#: build/lib/cvekit/utils/apply_patch.py:1043 cvekit/utils/apply_patch.py:1043
 #, python-format
 msgid "无法应用补丁: %s"
 msgstr "Can not apply patch: %s"
 
-#: build/lib/cvekit/utils/apply_patch.py:555 cvekit/utils/apply_patch.py:852
+#: build/lib/cvekit/utils/apply_patch.py:1074 cvekit/utils/apply_patch.py:1074
 #, python-format
 msgid "无法推送变更: %s"
 msgstr "Unable to push changes: %s"
 
+#: build/lib/cvekit/utils/backport_batch.py:1467
+#: cvekit/utils/backport_batch.py:1449
+msgid "补丁实际上已应用（或等效存在），无需继续执行后续步骤"
+msgstr ""
+"The patch has actually been applied (or an equivalent already exists); no"
+" need to continue with subsequent steps."
+
 #: build/lib/cvekit/utils/branches.py:405
 #: build/lib/cvekit/utils/branches.py:407
-#: build/lib/cvekit/utils/branches.py:513
-#: build/lib/cvekit/utils/branches.py:515
-#: build/lib/cvekit/utils/branches.py:559 cvekit/utils/branches.py:405
-#: cvekit/utils/branches.py:407 cvekit/utils/branches.py:513
-#: cvekit/utils/branches.py:515 cvekit/utils/branches.py:559
+#: build/lib/cvekit/utils/branches.py:517
+#: build/lib/cvekit/utils/branches.py:519
+#: build/lib/cvekit/utils/branches.py:563 cvekit/utils/branches.py:405
+#: cvekit/utils/branches.py:407 cvekit/utils/branches.py:517
+#: cvekit/utils/branches.py:519 cvekit/utils/branches.py:563
 msgid "已修复"
 msgstr "Fixed"
 
-#: build/lib/cvekit/utils/branches.py:530
-#: build/lib/cvekit/utils/branches.py:558 cvekit/utils/branches.py:530
-#: cvekit/utils/branches.py:558
+#: build/lib/cvekit/utils/branches.py:534
+#: build/lib/cvekit/utils/branches.py:562 cvekit/utils/branches.py:534
+#: cvekit/utils/branches.py:562
 msgid "不受影响"
 msgstr "Not affected"
 
-#: build/lib/cvekit/utils/branches.py:532 cvekit/utils/branches.py:532
+#: build/lib/cvekit/utils/branches.py:536 cvekit/utils/branches.py:536
 msgid "无"
 msgstr "None"
 
-#: build/lib/cvekit/utils/create_pr.py:110 cvekit/utils/create_pr.py:111
+#: build/lib/cvekit/utils/create_pr.py:111 cvekit/utils/create_pr.py:111
 #, python-format
 msgid "分支: %s, CVE: %s 已修复或不受影响, 创建PR失败"
 msgstr "branch: %s, CVE: %s has fixed or not affected, create PR failed"
 
-#: build/lib/cvekit/utils/create_pr.py:155 cvekit/utils/create_pr.py:184
+#: build/lib/cvekit/utils/create_pr.py:184 cvekit/utils/create_pr.py:184
 #, python-format
 msgid "推送分支到远程 fork 仓库失败：%s，stderr：%s"
 msgstr "Failed to push branch to remote fork repository: %s, stderr: %s"
 
-#: build/lib/cvekit/utils/create_pr.py:161 cvekit/utils/create_pr.py:190
+#: build/lib/cvekit/utils/create_pr.py:190 cvekit/utils/create_pr.py:190
 #, python-format
 msgid "推送分支时发生未知错误：%s"
 msgstr "An unknown error occurred while pushing the branch: %s"
 
-#: build/lib/cvekit/utils/create_pr.py:181 cvekit/utils/create_pr.py:210
+#: build/lib/cvekit/utils/create_pr.py:210 cvekit/utils/create_pr.py:210
 #, python-format
 msgid "oegitext配置token失败: %s, stderr: %s"
 msgstr "Failed to configure the token for oegitext: %s, stderr: %s"
 
-#: build/lib/cvekit/utils/create_pr.py:202 cvekit/utils/create_pr.py:231
+#: build/lib/cvekit/utils/create_pr.py:231 cvekit/utils/create_pr.py:231
 #, python-format
 msgid "提交pr失败: %s, stderr: %s"
 msgstr "PR submission failed: %s, stderr: %s"
@@ -1002,23 +1041,21 @@ msgstr "Clone repository failed: %s"
 msgid "无法克隆仓库: %s"
 msgstr "Can not clone repository %s"
 
-#: build/lib/cvekit/utils/gitee.py:287
+#: build/lib/cvekit/utils/gitee.py:261 cvekit/utils/gitee.py:261
 #, python-format
-msgid "获取html_url失败， cve id: %s"
-msgstr "Failed to obtain html_url, CVE ID: %s"
-
-#: cvekit/cli.py:538
-msgid "必须提供 --cve-id 或 --issue-url 参数"
-msgstr "--cve-id or --issue-url must be provided"
-
-#: cvekit/utils/backport_batch.py:1432
-msgid "补丁实际上已应用（或等效存在），无需继续执行后续步骤"
+msgid "无法创建分支 %s：远程分支引用不存在"
 msgstr ""
-"The patch has actually been applied (or an equivalent already exists); no"
-" need to continue with subsequent steps."
 
-#: cvekit/utils/gitee.py:315
-#, fuzzy, python-format
+#: build/lib/cvekit/utils/gitee.py:335 cvekit/utils/gitee.py:335
 msgid "获取html_url失败， cve id: %s (目标: %s)"
 msgstr "Failed to obtain html_url, CVE ID: %s (target: %s)"
+
+#~ msgid "Fork仓库URL(可选)"
+#~ msgstr "Fork repository URL (optional)"
+
+#~ msgid "无法完成补丁应用，请检查冲突并重试: %s"
+#~ msgstr "Can not apply patch, please check for conflicts and try again: %s"
+
+#~ msgid "获取html_url失败， cve id: %s"
+#~ msgstr "Failed to obtain html_url, CVE ID: %s"
 

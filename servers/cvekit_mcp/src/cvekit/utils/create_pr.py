@@ -118,7 +118,7 @@ def create_pr(
     base_org_name = parts[-2]
     base_repo_name = parts[-1].replace('.git', '')
     title = f"Fix {cve_id}"
-    body = generate_pr_body(cve_id, issue_url, clone_dir) if base_org_name == "kernel" else title
+    body = generate_pr_body(cve_id, issue_url, clone_dir) if base_repo_name == "kernel" else title
     issue_num = os.path.basename(issue_url)
     fix_branch = f"fix-{branch}-{issue_num}"
 
