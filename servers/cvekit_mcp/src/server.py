@@ -49,7 +49,7 @@ def run_cvekit(action: str, params: dict) -> dict:
             cmd.append(f'--cve-id={params["cve_id"]}')
         if args.gitee_token:
             cmd.append(f'--gitee-token={args.gitee_token}')
-        elif 'gitee_token' in params:
+        elif params.get("gitee_token"):
             cmd.append(f'--gitee-token={params["gitee_token"]}')
         
         # 添加动作特定参数
@@ -220,7 +220,7 @@ def run_cvekit(action: str, params: dict) -> dict:
     """))
 def parse_issue(
     cve_id: str = Field(..., description="cve id"),
-    gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
+    gitee_token: str = Field(None, description=i18n("Gitee访问令牌(可选)"))
 ) -> str:
     
     result = run_cvekit('parse-issue', {
@@ -254,7 +254,7 @@ def parse_issue(
 def setup_env(
     fork_repo_url: str = Field(..., description=i18n("Fork仓库URL")),
     clone_dir: str = Field(..., description=i18n("工作空间或克隆目录，本地克隆仓库在该目录所在的仓库名文件夹中")),
-    gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
+    gitee_token: str = Field(None, description=i18n("Gitee访问令牌(可选)"))
 ) -> dict:
 
     result = run_cvekit('setup-env', {
@@ -283,8 +283,8 @@ def setup_env(
     """))
 def get_commits(
     cve_id: str = Field(..., description="cve id"),
-    gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)")),
-    clone_dir: Optional[str] = Field(None, description=i18n("克隆目录(可选)"))
+    clone_dir: str = Field(None, description=i18n("克隆目录(可选)")),
+    gitee_token: str = Field(None, description=i18n("Gitee访问令牌(可选)"))
 ) -> str:
     result = run_cvekit('get-commits', {
         'cve_id': cve_id,
@@ -334,14 +334,14 @@ def get_commits(
     """))
 def analyze_branches(
     cve_id: str = Field(..., description="cve id"),
-    branches: Optional[str] = Field('OLK-5.10,OLK-6.6,master', description=i18n("要分析的分支列表，逗号分隔")),
+    branches: str = Field('OLK-5.10,OLK-6.6,master', description=i18n("要分析的分支列表，逗号分隔")),
     gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)")),
-    clone_dir: Optional[str] = Field(None, description=i18n("克隆目录(可选)")),
-    fork_repo_url: Optional[str] = Field(None, description=i18n("Fork仓库URL(可选)")),
+    clone_dir: str = Field(None, description=i18n("克隆目录")),
+    fork_repo_url: str = Field(None, description=i18n("Fork仓库URL")),
     api_key: Optional[str] = Field(None, description=i18n("LLM API密钥(可选，用于自动调整补丁)")),
-    llm_provider: Optional[str] = Field(None, description=i18n("LLM提供商(可选，默认openai)")),
-    llm_base_url: Optional[str] = Field(None, description=i18n("LLM API基础地址(可选，覆盖默认配置)")),
-    llm_model_name: Optional[str] = Field(None, description=i18n("LLM模型名称(可选，覆盖默认配置)"))
+    llm_provider: Optional[str] = Field(None, description=i18n("LLM提供商(默认openai)")),
+    llm_base_url: str = Field(None, description=i18n("LLM API基础地址(覆盖默认配置)")),
+    llm_model_name: str = Field(None, description=i18n("LLM模型名称(覆盖默认配置)"))
 ) -> str:
     # 使用全局变量作为默认值
     if not gitee_token:
@@ -591,13 +591,13 @@ def analyze_branches(
     """))
 def apply_patch(
     cve_id: str = Field(..., description="cve id"),
-    branch: Optional[str] = Field(description=i18n("要应用patch的分支名")),
-    fork_repo_url: Optional[str] = Field(description=i18n("fork仓库url")),
-    patch_path: Optional[str] = Field(description=i18n("patch路径")),
-    clone_dir: Optional[str] = Field(None, description=i18n("克隆目录(可选，与第四步保持一致)")),
-    signer_name: Optional[str] = Field(description=i18n("提交者姓名")),
-    signer_email: Optional[str] = Field(None, description=i18n("提交者邮箱")),
-    gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
+    branch: str = Field(description=i18n("要应用patch的分支名")),
+    fork_repo_url: str = Field(description=i18n("fork仓库url")),
+    patch_path: str = Field(description=i18n("patch路径")),
+    clone_dir: str = Field(None, description=i18n("克隆目录(与第四步保持一致)")),
+    signer_name: str = Field(description=i18n("提交者姓名")),
+    signer_email: str = Field(None, description=i18n("提交者邮箱")),
+    gitee_token: str = Field(None, description=i18n("Gitee访问令牌"))
 ) -> str:
     
     if not patch_path or not os.path.exists(patch_path):
@@ -665,11 +665,11 @@ def apply_patch(
     """))
 def create_pr(
     cve_id: str = Field(..., description="cve id"),
-    branch: Optional[str] = Field(None, description=i18n("受影响分支名，目标分支")),
-    fork_repo_url: Optional[str] = Field(None, description=i18n("fork仓库url")),
+    branch: str = Field(None, description=i18n("受影响分支名，目标分支")),
+    fork_repo_url: str = Field(None, description=i18n("fork仓库url")),
     repo_url: str = Field(..., description=i18n("目标仓库url")),
-    clone_dir: Optional[str] = Field(None, description=i18n("克隆目录(可选，与第四/第五步保持一致)")),
-    gitee_token: Optional[str] = Field(None, description=i18n("Gitee访问令牌(可选)"))
+    clone_dir: str = Field(None, description=i18n("克隆目录(与第四/第五步保持一致)")),
+    gitee_token: str = Field(None, description=i18n("Gitee访问令牌(可选)"))
 ) -> str:
     result = run_cvekit('create-pr', {
         'cve_id': cve_id,
