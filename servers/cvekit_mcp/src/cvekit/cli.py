@@ -217,6 +217,8 @@ def main():
     args.repo_url = args.repo_url or os.environ.get('REPO_URL')
     args.gitee_token = args.gitee_token or os.environ.get('GITEE_TOKEN')
     args.clone_dir = args.clone_dir or os.environ.get('CLONE_DIR')
+    if args.clone_dir:
+        args.clone_dir = os.path.abspath(os.path.expanduser(args.clone_dir))
     args.branches = args.branches or os.environ.get('BRANCHES', "OLK-5.10,OLK-6.6,master")
     args.signer_name = args.signer_name or os.environ.get('SIGNER_NAME')
     args.signer_email = args.signer_email or os.environ.get('SIGNER_EMAIL')
@@ -487,6 +489,7 @@ def handle_backport(cve_id, args):
     
     # 构建与分支分析结果对应的返回结构
     is_empty_patch = bool(backport_result.get('empty_patch'))
+    equivalent_exists = bool(backport_result.get('equivalent_exists'))
     result = {
         i18n("补丁ID"): cve_id,
         i18n("目标分支"): target_branch,
@@ -506,6 +509,7 @@ def handle_backport(cve_id, args):
         'backported_patch_path': backport_result.get('backported_patch_path'),
         'diff_path': backport_result.get('diff_path'),
         'empty_patch': is_empty_patch,
+        'equivalent_exists': equivalent_exists,
         'logfile': backport_result.get('logfile'),
         'time_cost': backport_result.get('time_cost'),
         'status': backport_result.get('status'),

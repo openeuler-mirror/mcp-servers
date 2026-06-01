@@ -25,7 +25,7 @@ from typing import Any, List, Tuple
 import Levenshtein
 from git import Repo
 from git.exc import GitCommandError
-from langchain_core.tools import tool
+from langchain_core.tools import StructuredTool, tool
 
 from . import utils
 from .logger import logger
@@ -222,6 +222,9 @@ class Project:
         self.last_success_revised_patch = ""
         # Only allow "need not ported" when equivalence is explicitly proven.
         self.equivalent_exists = bool(getattr(data, "equivalent_exists", False))
+        self.equivalent_file_keys: set[str] = set()
+        self.current_file_equivalent = False
+        self.active_file_key = ""
 
     def _extract_hunk_identity(
         self, patch_chunk: str
@@ -554,6 +557,7 @@ class Project:
         frozen_file_patches: list[str] = []
         expected_file_keys = [k for k, _ in file_patches]
         frozen_file_keys: list[str] = []
+        retained_expected_file_keys: list[str] = []
 
         for file_idx, (file_key, file_patch) in enumerate(file_patches):
             logger.debug(
@@ -564,6 +568,8 @@ class Project:
             )
             self.round_succeeded = False
             self.context_mismatch_times = 0
+            self.current_file_equivalent = False
+            self.active_file_key = file_key
             self.set_succeeded_patches(frozen_file_patches)
 
             ret = self._apply_hunk(target_release, file_patch, False)
@@ -588,6 +594,15 @@ class Project:
                 )
                 return False, ""
 
+            if self.current_file_equivalent:
+                frozen_file_keys.append(file_key)
+                logger.info(
+                    "[Project.apply_file_patches_with_freeze] 文件补丁 %s 判定为等效存在，跳过导出该文件补丁",
+                    file_key,
+                )
+                self.active_file_key = ""
+                continue
+
             # 优先冻结“本轮真正成功 apply 的 revised_patch”（包含可能的重命名路径修复结果）。
             frozen_patch = self.last_success_revised_patch or self.build_succeeded_patch_for_file(file_key) or file_patch
             # 关闭文件级“累积预检查”。
@@ -595,7 +610,9 @@ class Project:
 
             frozen_file_patches.append(frozen_patch)
             frozen_file_keys.append(file_key)
+            retained_expected_file_keys.append(file_key)
             self.set_succeeded_patches(frozen_file_patches)
+            self.active_file_key = ""
 
         missing_keys = sorted(set(expected_file_keys) - set(frozen_file_keys))
         if missing_keys:
@@ -616,6 +633,8 @@ class Project:
                 break
             except Exception as e:
                 removed = frozen_file_patches.pop()
+                if retained_expected_file_keys:
+                    retained_expected_file_keys.pop()
                 logger.warning(
                     "[Project.apply_file_patches_with_freeze] 全量 git apply --check 失败，回滚最后新增文件。"
                     " 剩余冻结数=%s; error=%s",
@@ -628,14 +647,42 @@ class Project:
                 )
 
         if not frozen_file_patches:
+            if set(expected_file_keys).issubset(self.equivalent_file_keys):
+                self.set_succeeded_patches([])
+                self.validated_patch = ""
+                self.equivalent_exists = True
+                self.all_hunks_applied_succeeded = True
+                self.now_hunk = "completed"
+                self.active_file_key = ""
+                self.current_file_equivalent = False
+                logger.info(
+                    "[Project.apply_file_patches_with_freeze] 所有文件均判定为等效存在，无需导出补丁"
+                )
+                return True, "need not ported"
             self.set_succeeded_patches([])
             self.validated_patch = ""
             logger.error("[Project.apply_file_patches_with_freeze] 全量检查后无可用冻结补丁")
             return False, ""
 
+        missing_after_full_check = sorted(
+            set(expected_file_keys)
+            - (set(retained_expected_file_keys) | set(self.equivalent_file_keys))
+        )
+        if missing_after_full_check:
+            logger.error(
+                "[Project.apply_file_patches_with_freeze] 全量检查通过前丢失文件，拒绝返回不完整补丁。"
+                " 缺失 keys=%s",
+                missing_after_full_check,
+            )
+            self.set_succeeded_patches([])
+            self.validated_patch = ""
+            return False, ""
+
         self.set_succeeded_patches(frozen_file_patches)
         self.all_hunks_applied_succeeded = True
         self.now_hunk = "completed"
+        self.active_file_key = ""
+        self.current_file_equivalent = False
         logger.info("[Project.apply_file_patches_with_freeze] 文件级冻结流程完成")
         return True, complete_patch
 
@@ -1984,9 +2031,32 @@ class Project:
         # tool evidence (viewcode/locate_symbol/git_history/git_show), while
         # still preventing overwrite of a concrete validated patch.
         if is_need_not_ported:
+            current_file_key = getattr(self, "active_file_key", "") or self._extract_patch_target_path(self.now_hunk)
+            if current_file_key:
+                current_file_patch = self.last_success_revised_patch or self.build_succeeded_patch_for_file(current_file_key)
+                validated_patch = self.validated_patch or ""
+                validated_keys = [key for key, _ in self.extract_grouped_file_patches(validated_patch)] if validated_patch else []
+                if self._is_unified_diff_patch(current_file_patch) or current_file_key in validated_keys:
+                    self.round_succeeded = False
+                    self.current_file_equivalent = False
+                    return (
+                        "Rejected: concrete patch has been materialized and validated for the current file; "
+                        "'need not ported' cannot overwrite it.\n"
+                    )
+
+                self.equivalent_file_keys.add(current_file_key)
+                self.current_file_equivalent = True
+                self.round_succeeded = True
+                self.last_success_revised_patch = ""
+                return (
+                    "Patch is equivalent in target branch for current file; "
+                    "need not ported.\n"
+                )
+
             existing_patch = self.validated_patch or self.rebuild_complete_patch()
             if self._is_unified_diff_patch(existing_patch):
                 self.round_succeeded = False
+                self.current_file_equivalent = False
                 return (
                     "Rejected: concrete patch has been materialized and validated; "
                     "'need not ported' cannot overwrite it.\n"
@@ -1994,6 +2064,7 @@ class Project:
 
             # Explicitly record equivalence mode as final result: no exported patch.
             self.equivalent_exists = True
+            self.current_file_equivalent = False
             self.round_succeeded = True
             self.compile_succeeded = True
             self.testcase_succeeded = True
@@ -2008,6 +2079,20 @@ class Project:
                 return (
                     "Rejected: final validation expects a unified diff patch, got non-diff text.\n"
                 )
+            patch = self.normalize_patch(patch)
+            baseline_patch = self.validated_patch or self.rebuild_complete_patch()
+            baseline_keys = [key for key, _ in self.extract_grouped_file_patches(baseline_patch)]
+            if baseline_keys:
+                candidate_key_set = {key for key, _ in self.extract_grouped_file_patches(patch)}
+                missing_file_keys = [key for key in baseline_keys if key not in candidate_key_set]
+                if missing_file_keys:
+                    self.round_succeeded = False
+                    missing_files = ", ".join(missing_file_keys)
+                    return (
+                        "Rejected: final validation patch dropped file(s) from the existing "
+                        f"complete_patch: {missing_files}. Return the FULL multi-file patch "
+                        "and keep untouched file blocks unchanged.\n"
+                    )
             ret = ""
             if not self.compile_succeeded:
                 ret += self._compile_patch(
@@ -2262,11 +2347,11 @@ def creat_viewcode_source_tool(project: Project):
 
 
 def create_validate_tool(project: Project):
-    @tool
     def validate(ref: str, patch: str) -> str:
         """
         validate a patch on a specific ref of the target repository.
         """
+        validate_tool.return_direct = False
         is_cross_repo = hasattr(project, "target_dir") and project.target_dir != project.dir
         target_ref = getattr(project, "target_release", None)
         if is_cross_repo and target_ref and ref != target_ref:
@@ -2310,9 +2395,23 @@ def create_validate_tool(project: Project):
                 ref,
             )
 
-        return project._validate(validated_ref, patch)
+        result = project._validate(validated_ref, patch)
+        validate_tool.return_direct = bool(
+            getattr(project, "current_file_equivalent", False)
+            or (
+                getattr(project, "round_succeeded", False)
+                and getattr(project, "poc_succeeded", False)
+            )
+        )
+        return result
 
-    return validate
+    validate_tool = StructuredTool.from_function(
+        func=validate,
+        name="validate",
+        description="validate a patch on a specific ref of the target repository.",
+        return_direct=False,
+    )
+    return validate_tool
 
 
 def create_git_history_tool(project: Project):
@@ -2335,4 +2434,3 @@ def create_git_show_tool(project: Project):
         return project._git_show()
 
     return git_show
-

@@ -21,6 +21,7 @@ https://community.openai.com/t/character-limit-response-for-the-gpt-3-5-api/4267
 """
 
 import datetime
+from urllib.parse import urlparse
 
 import requests
 from rich import print
@@ -34,26 +35,42 @@ price = {
 }
 
 
-def get_usage(api_key, provider="openai"):
+def _empty_usage():
+    return {
+        "current_time": datetime.datetime.now(),
+        "total_cost": 0.0,
+        "total_consume_input": 0,
+        "total_consume_output": 0,
+        "total_consume_tokens": 0,
+    }
+
+
+def _is_official_openai_base_url(base_url):
+    if not base_url:
+        return True
+    parsed = urlparse(str(base_url).strip())
+    return parsed.hostname == "api.openai.com"
+
+
+def get_usage(api_key, provider="openai", base_url=None):
     """
     获取 API 使用量统计
     
     Args:
         api_key: API 密钥
         provider: 模型提供商，可选值: "openai", "deepseek"，默认为 "openai"
+        base_url: LLM API 基础地址。仅官方 OpenAI 地址会查询 usage。
     
     Returns:
         dict: 包含使用量统计信息的字典
     """
-    # 对于非 OpenAI 提供商，返回默认的空使用量数据
-    if provider != "openai":
-        return {
-            "current_time": datetime.datetime.now(),
-            "total_cost": 0.0,
-            "total_consume_input": 0,
-            "total_consume_output": 0,
-            "total_consume_tokens": 0,
-        }
+    # 对于非 OpenAI 官方 usage API，返回默认的空使用量数据。
+    # 注意：provider=openai 也可能只是表示 OpenAI-compatible 协议。
+    provider = (provider or "").lower()
+    if provider != "openai" or not _is_official_openai_base_url(base_url):
+        return _empty_usage()
+    if not api_key:
+        return _empty_usage()
     
     # 仅对 OpenAI 提供商调用 API
     headers = {
@@ -70,13 +87,18 @@ def get_usage(api_key, provider="openai"):
         "%Y-%m-%d"
     )
     data = (datetime.datetime.now()).strftime("%Y-%m-%d")
-    resp_billing = requests.get(
-        f"https://api.openai.com/v1/usage?date={data}", headers=headers
-    )
-    if not resp_billing.ok:
-        return resp_billing.text
+    try:
+        resp_billing = requests.get(
+            f"https://api.openai.com/v1/usage?date={data}",
+            headers=headers,
+            timeout=10,
+        )
+        if not resp_billing.ok:
+            return _empty_usage()
+        billing_data = resp_billing.json()
+    except (requests.RequestException, ValueError):
+        return _empty_usage()
 
-    billing_data = resp_billing.json()
     total_price = 0.0
     total_consume_input = 0
     total_consume_output = 0

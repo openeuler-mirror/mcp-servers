@@ -19,6 +19,8 @@ mcp = FastMCP(i18n("CVE修复流程自动化工具，提供CVE分析、补丁适
 
 # 全局变量，用于存储命令行参数
 default_llm_provider = None
+default_llm_base_url = None
+default_llm_model_name = None
 default_api_key = None
 default_gitee_token = None
 
@@ -351,6 +353,10 @@ def analyze_branches(
         api_key = default_api_key
     if not llm_provider:
         llm_provider = default_llm_provider or 'openai'
+    if llm_base_url is None:
+        llm_base_url = default_llm_base_url
+    if llm_model_name is None:
+        llm_model_name = default_llm_model_name
     
     sorted_branches = sorted([branch.strip() for branch in branches.split(",")])
     cache_key = _get_cache_key(cve_id, ",".join(sorted_branches))
@@ -594,7 +600,7 @@ def apply_patch(
     branch: str = Field(description=i18n("要应用patch的分支名")),
     fork_repo_url: str = Field(description=i18n("fork仓库url")),
     patch_path: str = Field(description=i18n("patch路径")),
-    clone_dir: str = Field(None, description=i18n("克隆目录(与第四步保持一致)")),
+    clone_dir: str = Field(..., description=i18n("克隆目录(与第四步保持一致)")),
     signer_name: str = Field(description=i18n("提交者姓名")),
     signer_email: str = Field(None, description=i18n("提交者邮箱")),
     gitee_token: str = Field(None, description=i18n("Gitee访问令牌"))
@@ -700,7 +706,7 @@ def create_pr(
 
 def _init_defaults_from_args() -> None:
     """根据命令行参数初始化全局默认配置。"""
-    global default_gitee_token, default_llm_provider, default_api_key
+    global default_gitee_token, default_llm_provider, default_llm_base_url, default_llm_model_name, default_api_key
 
     if args.gitee_token:
         default_gitee_token = args.gitee_token
@@ -711,6 +717,8 @@ def _init_defaults_from_args() -> None:
         default_llm_provider = os.environ.get('LLM_PROVIDER')
     else:
         default_llm_provider = 'openai'
+    default_llm_base_url = args.llm_base_url or os.environ.get('LLM_BASE_URL') or os.environ.get("BASE_URL")
+    default_llm_model_name = args.llm_model_name or os.environ.get('LLM_MODEL_NAME') or os.environ.get('MODEL_NAME') or os.environ.get("DEFAULT_MODEL_TYPE")
     if args.api_key:
         default_api_key = args.api_key
 

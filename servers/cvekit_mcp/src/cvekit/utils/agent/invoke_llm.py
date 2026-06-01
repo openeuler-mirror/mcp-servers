@@ -30,6 +30,15 @@ from ..tools.logger import logger
 from ..tools.project import Project, safe_git_reset_hard
 
 
+def _clean_config_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = str(value).strip()
+    if not value or value.lower() in {"none", "null"}:
+        return None
+    return value
+
+
 def _get_llm_config(provider: str = "openai", custom_base_url: str = None, custom_model_name: str = None):
     """
     获取不同 LLM 提供商的配置信息
@@ -53,14 +62,22 @@ def _get_llm_config(provider: str = "openai", custom_base_url: str = None, custo
           - 环境变量 LLM_BASE_URL : API 基础地址（例如 "https://api.example.com/v1"）
           - 或通过参数 custom_base_url / custom_model_name 直接传入
     """
-    # 允许通过环境变量 LLM_PROVIDER 覆盖 provider 参数
-    env_provider = os.getenv("LLM_PROVIDER")
-    if env_provider:
+    custom_base_url = _clean_config_value(custom_base_url)
+    custom_model_name = _clean_config_value(custom_model_name)
+    provider = _clean_config_value(provider)
+
+    # 只有调用方没有显式 provider 时，才使用环境变量兜底，避免父进程环境覆盖 MCP 参数。
+    env_provider = _clean_config_value(os.getenv("LLM_PROVIDER"))
+    if not provider and env_provider:
         logger.debug(
-            f"[_get_llm_config] 从环境变量 LLM_PROVIDER 覆盖 provider: "
-            f"{provider} -> {env_provider}"
+            f"[_get_llm_config] 使用环境变量 LLM_PROVIDER 作为 provider: {env_provider}"
         )
         provider = env_provider
+    elif provider and env_provider and provider.lower() != env_provider.lower():
+        logger.debug(
+            f"[_get_llm_config] 忽略环境变量 LLM_PROVIDER={env_provider}，"
+            f"优先使用显式 provider={provider}"
+        )
 
     provider = (provider or "openai").lower()
     logger.debug(f"[_get_llm_config] 开始获取 LLM 配置: provider={provider}")
@@ -104,8 +121,12 @@ def _get_llm_config(provider: str = "openai", custom_base_url: str = None, custo
     original_provider = provider
 
     # 优先使用自定义配置（参数或环境变量）
-    env_base_url = os.getenv("LLM_BASE_URL")
-    env_model_name = os.getenv("MODEL_NAME") or os.getenv("DEFAULT_MODEL_TYPE")
+    env_base_url = _clean_config_value(os.getenv("LLM_BASE_URL"))
+    env_model_name = (
+        _clean_config_value(os.getenv("LLM_MODEL_NAME"))
+        or _clean_config_value(os.getenv("MODEL_NAME"))
+        or _clean_config_value(os.getenv("DEFAULT_MODEL_TYPE"))
+    )
 
     # 确定是否使用自定义配置
     use_custom = custom_base_url or custom_model_name or env_base_url or env_model_name or provider not in configs
@@ -116,6 +137,8 @@ def _get_llm_config(provider: str = "openai", custom_base_url: str = None, custo
             base_url = custom_base_url
         elif env_base_url:
             base_url = env_base_url
+        elif provider in configs:
+            base_url = configs[provider]["base_url"]
         else:
             # 如果没有自定义 base_url，使用 openai 的默认值
             base_url = configs.get("openai", {}).get("base_url", "https://api.openai.com/v1")
@@ -124,6 +147,8 @@ def _get_llm_config(provider: str = "openai", custom_base_url: str = None, custo
             model_name = custom_model_name
         elif env_model_name:
             model_name = env_model_name
+        elif provider in configs:
+            model_name = configs[provider]["model"]
         else:
             # 如果没有自定义 model_name，使用 openai 的默认值
             model_name = configs.get("openai", {}).get("model", "gpt-4-turbo")
@@ -166,6 +191,17 @@ def _get_llm_config(provider: str = "openai", custom_base_url: str = None, custo
     logger.debug(f"  - base_url={base_url}")
     logger.debug(f"  - model_name={model_name}")
     logger.debug(f"[_get_llm_config] 返回配置: ({base_url}, {model_name})")
+
+    if not base_url or not base_url.startswith(("http://", "https://")):
+        raise ValueError(
+            f"Invalid LLM base_url for provider={provider}: {base_url!r}. "
+            "Set --llm-base-url or LLM_BASE_URL to a full URL with http:// or https://."
+        )
+    if not model_name:
+        raise ValueError(
+            f"Invalid LLM model_name for provider={provider}: {model_name!r}. "
+            "Set --llm-model-name, LLM_MODEL_NAME, or MODEL_NAME."
+        )
     
     return base_url, model_name
 
@@ -536,7 +572,7 @@ def do_backport(
             patch_dataset_dir=getattr(data, "patch_dataset_dir", None),
         )
         if not ok:
-            return
+            return False
 
     _sync_patch_dataset_to_target(project, data)
     project.context_mismatch_times = 0
@@ -545,7 +581,7 @@ def do_backport(
     if project.poc_succeeded:
         _enforce_complete_patch_check_or_raise(project, data)
         _log_backport_success(project, data.target_release)
-        return
+        return True
 
     _run_final_llm_fix(
         project=project,
@@ -559,5 +595,7 @@ def do_backport(
     if project.poc_succeeded:
         _enforce_complete_patch_check_or_raise(project, data)
         _log_backport_success(project, data.target_release)
+        return True
     else:
         logger.error(f"[do_backport] 回移植补丁到目标发布版本 {data.target_release} 失败")
+        return False
