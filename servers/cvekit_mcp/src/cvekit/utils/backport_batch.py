@@ -9,7 +9,11 @@ import yaml
 from dataclasses import dataclass
 
 from .backporting import run_backport_from_config
-from .apply_patch import extract_commit_message_from_patch
+from .commit_message_template import (
+    DEFAULT_COMMIT_MESSAGE_TEMPLATE,
+    DEFAULT_LINUX_REPO_PATH,
+    build_commit_message_preview,
+)
 from .locales import i18n
 from tabulate import tabulate
 
@@ -153,6 +157,8 @@ def _normalize_excel_cell_value(row, idx) -> str:
 
 def handle_backport_batch(args):
     """处理批量补丁回移植逻辑（从 cli 入口拆分到 utils 模块）"""
+    if getattr(args, "preview_commit_message", False):
+        return _handle_preview_commit_message(args)
     if getattr(args, "apply", None):
         return _handle_direct_apply_backported_patch(args)
     logger.info("[backport-batch] 开始处理: config=%s", args.backport_config)
@@ -211,9 +217,56 @@ def handle_backport_batch(args):
     return results
 
 
-def _build_commit_message_from_original_patch(original_patch_path: str):
-    message, _ = extract_commit_message_from_patch(original_patch_path)
-    return message
+def _build_commit_message_report_fields(
+    *,
+    patch_path: str,
+    openeuler_commit_id: str,
+    item_config: dict,
+    base_config: dict,
+    args,
+) -> dict:
+    if not patch_path or not os.path.exists(patch_path):
+        return {
+            "commit_message_preview": "",
+            "commit_message_context": {},
+            "source_detection": {
+                "source": "openEuler",
+                "commit_id": str(openeuler_commit_id or ""),
+                "method": "missing_patch",
+                "warning": "缺少原始 patch，无法生成 commit message 预览。",
+            },
+            "commit_message_warnings": ["缺少原始 patch，无法生成 commit message 预览。"],
+        }
+    try:
+        return build_commit_message_preview(
+            patch_path=patch_path,
+            openeuler_commit_id=openeuler_commit_id,
+            template=(
+                str(getattr(args, "commit_message_template", "") or "").strip()
+                or str(item_config.get("commit_message_template") or "").strip()
+                or str(base_config.get("commit_message_template") or "").strip()
+                or DEFAULT_COMMIT_MESSAGE_TEMPLATE
+            ),
+            linux_repo_path=(
+                str(getattr(args, "linux_repo_path", "") or "").strip()
+                or str(item_config.get("linux_repo_path") or "").strip()
+                or str(base_config.get("linux_repo_path") or "").strip()
+                or DEFAULT_LINUX_REPO_PATH
+            ),
+        )
+    except Exception as exc:
+        logger.warning("[backport-batch] commit message preview failed: %s", exc)
+        return {
+            "commit_message_preview": "",
+            "commit_message_context": {},
+            "source_detection": {
+                "source": "openEuler",
+                "commit_id": str(openeuler_commit_id or ""),
+                "method": "preview_failed",
+                "warning": str(exc),
+            },
+            "commit_message_warnings": [str(exc)],
+        }
 
 
 def _looks_like_patch_path(value: str) -> bool:
@@ -267,30 +320,78 @@ def _select_apply_item(sorted_items, is_report_config, apply_value: str):
     return matches[0]
 
 
-def _infer_original_patch_path(item_config: dict, commit_id: str, base_config: dict, args):
-    original_patch_path = item_config.get("original_patch_path")
-    if original_patch_path and os.path.exists(original_patch_path):
-        return original_patch_path
+def _handle_preview_commit_message(args):
+    logger.info("[backport-batch] 进入 commit message 预览模式: apply=%s", args.apply)
+    if not getattr(args, "apply", None):
+        raise ValueError("--preview-commit-message 需要同时提供 --apply")
+    context = _prepare_backport_batch_context(args)
+    if context is None:
+        return {
+            "status": "cancelled",
+            "action": "backport-batch-preview-commit-message",
+            "message": "用户在交互模式中退出",
+        }
 
-    base_dataset_dir = (
-        item_config.get("patch_dataset_dir")
-        or base_config.get("patch_dataset_dir")
-        or args.patch_dataset_dir
+    item = _select_apply_item(
+        context.sorted_items,
+        context.is_report_config,
+        args.apply,
     )
-    if not base_dataset_dir or not commit_id:
-        return ""
+    item_config = _resolve_item_config(item, context.is_report_config)
+    commit_id = str(item.get("commit") or item.get("input_commit") or "").strip()
+    apply_value = str(args.apply).strip()
+    if _looks_like_patch_path(apply_value):
+        patch_path = os.path.abspath(os.path.expanduser(apply_value))
+    else:
+        patch_path = (
+            item_config.get("backported_patch_path")
+            or item_config.get("patch_path")
+            or item_config.get("original_patch_path")
+            or ""
+        )
+    original_patch_path = _infer_original_patch_path(
+        item_config=item_config,
+    )
+    commit_message_source = original_patch_path or patch_path
+    if not commit_message_source:
+        raise ValueError(f"未找到可预览的补丁路径: commit={commit_id}")
+    preview = build_commit_message_preview(
+        patch_path=commit_message_source,
+        openeuler_commit_id=commit_id,
+        template=(
+            str(getattr(args, "commit_message_template", "") or "").strip()
+            or str(item_config.get("commit_message_template") or "").strip()
+            or str(context.base_config.get("commit_message_template") or "").strip()
+            or DEFAULT_COMMIT_MESSAGE_TEMPLATE
+        ),
+        linux_repo_path=(
+            str(getattr(args, "linux_repo_path", "") or "").strip()
+            or str(item_config.get("linux_repo_path") or "").strip()
+            or str(context.base_config.get("linux_repo_path") or "").strip()
+            or DEFAULT_LINUX_REPO_PATH
+        ),
+    )
+    return {
+        "action": "backport-batch-preview-commit-message",
+        "status": "success",
+        "apply": args.apply,
+        "commit": commit_id,
+        "patch_path": patch_path,
+        "original_patch_path": original_patch_path,
+        "commit_message_source": commit_message_source,
+        **preview,
+    }
 
-    commit_dataset_dir = os.path.join(base_dataset_dir, str(commit_id))
-    if not os.path.isdir(commit_dataset_dir):
-        return ""
-    candidates = sorted(
-        filename
-        for filename in os.listdir(commit_dataset_dir)
-        if filename.startswith("original_") and filename.endswith(".patch")
-    )
-    if not candidates:
-        return ""
-    return os.path.join(commit_dataset_dir, candidates[0])
+
+def _infer_original_patch_path(item_config: dict):
+    for key in ("original_patch_path", "patch_path", "backported_patch_path"):
+        value = str(item_config.get(key) or "").strip()
+        if not value:
+            continue
+        path = os.path.abspath(os.path.expanduser(value))
+        if os.path.exists(path):
+            return path
+    return ""
 
 
 def _apply_patch_file_to_target_repo(
@@ -384,19 +485,32 @@ def _handle_direct_apply_backported_patch(args):
 
     original_patch_path = _infer_original_patch_path(
         item_config=item_config,
-        commit_id=str(commit_id),
-        base_config=context.base_config,
-        args=args,
     )
     commit_message_source = original_patch_path or patch_path
-    commit_message = _build_commit_message_from_original_patch(commit_message_source)
+    commit_message_preview = build_commit_message_preview(
+        patch_path=commit_message_source,
+        openeuler_commit_id=str(commit_id or ""),
+        template=(
+            str(getattr(args, "commit_message_template", "") or "").strip()
+            or str(item_config.get("commit_message_template") or "").strip()
+            or str(context.base_config.get("commit_message_template") or "").strip()
+            or DEFAULT_COMMIT_MESSAGE_TEMPLATE
+        ),
+        linux_repo_path=(
+            str(getattr(args, "linux_repo_path", "") or "").strip()
+            or str(item_config.get("linux_repo_path") or "").strip()
+            or str(context.base_config.get("linux_repo_path") or "").strip()
+            or DEFAULT_LINUX_REPO_PATH
+        ),
+    )
+    commit_message = commit_message_preview["commit_message"]
     apply_result = _apply_patch_file_to_target_repo(
         target_path=context.base_target_path,
         target_branch=target_branch,
         patch_path=patch_path,
         commit_message=commit_message,
-        signer_name=str(getattr(args, "signer_name", "") or "").strip(),
-        signer_email=str(getattr(args, "signer_email", "") or "").strip(),
+        signer_name=str(getattr(args, "signer_name", "") or context.base_config.get("signer_name") or "").strip(),
+        signer_email=str(getattr(args, "signer_email", "") or context.base_config.get("signer_email") or "").strip(),
     )
     if apply_result.get("status") == "success":
         _write_apply_status_to_report_config(
@@ -418,6 +532,10 @@ def _handle_direct_apply_backported_patch(args):
         "patch_path": patch_path,
         "original_patch_path": original_patch_path,
         "commit_message_source": commit_message_source,
+        "commit_message_preview": commit_message_preview.get("commit_message_preview", ""),
+        "commit_message_context": commit_message_preview.get("commit_message_context", {}),
+        "source_detection": commit_message_preview.get("source_detection", {}),
+        "commit_message_warnings": commit_message_preview.get("commit_message_warnings", []),
         "applied_commit": apply_result.get("commit"),
         "error": apply_result.get("error"),
     }
@@ -1301,6 +1419,9 @@ def _apply_patch_to_target_repo(
     target_branch: str,
     commit_sha: str,
     project_dir: str,
+    commit_message: str,
+    signer_name: str = "",
+    signer_email: str = "",
 ):
     target_repo = git.Repo(target_path)
     _ensure_clean_and_checkout(target_repo, target_branch)
@@ -1317,8 +1438,21 @@ def _apply_patch_to_target_repo(
             if remote_name not in [r.name for r in target_repo.remotes]:
                 target_repo.create_remote(remote_name, upstream_url)
             target_repo.remotes[remote_name].fetch()
-        target_repo.git.cherry_pick(commit_sha)
-        return {"status": "success"}
+        target_repo.git.cherry_pick("--no-commit", commit_sha)
+        if not target_repo.is_dirty(index=True, working_tree=True, untracked_files=False):
+            return {"status": "skipped", "error": "补丁未产生变更（可能已等效存在）"}
+        commit_args = ["-m", commit_message, "-s"]
+        use_signer_identity = bool(signer_name and signer_email)
+        if use_signer_identity:
+            commit_args.append(f"--author={signer_name} <{signer_email}>")
+            with target_repo.git.custom_environment(
+                GIT_COMMITTER_NAME=signer_name,
+                GIT_COMMITTER_EMAIL=signer_email,
+            ):
+                target_repo.git.commit(*commit_args)
+        else:
+            target_repo.git.commit(*commit_args)
+        return {"status": "success", "commit": target_repo.head.commit.hexsha}
     except Exception as e:
         _abort_cherry_pick(target_repo)
         _reset_hard_and_clean(target_repo, original_head)
@@ -1722,6 +1856,20 @@ def _build_backport_runtime_config(
         "tag": tag or commit_id,
         "patch_dataset_dir": dataset_dir,
         "skip_cherry_pick": True,
+        "signer_name": item_config.get("signer_name") or base_config.get("signer_name") or getattr(args, "signer_name", None),
+        "signer_email": item_config.get("signer_email") or base_config.get("signer_email") or getattr(args, "signer_email", None),
+        "commit_message_template": (
+            str(getattr(args, "commit_message_template", "") or "").strip()
+            or str(item_config.get("commit_message_template") or "").strip()
+            or str(base_config.get("commit_message_template") or "").strip()
+            or DEFAULT_COMMIT_MESSAGE_TEMPLATE
+        ),
+        "linux_repo_path": (
+            str(getattr(args, "linux_repo_path", "") or "").strip()
+            or str(item_config.get("linux_repo_path") or "").strip()
+            or str(base_config.get("linux_repo_path") or "").strip()
+            or DEFAULT_LINUX_REPO_PATH
+        ),
     }
     if item_config.get("error_message") or base_config.get("error_message") or args.error_message:
         config_dict["error_message"] = (
@@ -1872,11 +2020,31 @@ def _execute_backport_batch_action(
                     fixed_commit,
                     target_branch,
                 )
+                commit_message_source = _infer_original_patch_path(item_config) or patch_path
+                commit_message_preview = build_commit_message_preview(
+                    patch_path=commit_message_source,
+                    openeuler_commit_id=str(commit_id or fixed_commit or ""),
+                    template=(
+                        str(getattr(args, "commit_message_template", "") or "").strip()
+                        or str(item_config.get("commit_message_template") or "").strip()
+                        or str(config_dict.get("commit_message_template") or "").strip()
+                        or DEFAULT_COMMIT_MESSAGE_TEMPLATE
+                    ),
+                    linux_repo_path=(
+                        str(getattr(args, "linux_repo_path", "") or "").strip()
+                        or str(item_config.get("linux_repo_path") or "").strip()
+                        or str(config_dict.get("linux_repo_path") or "").strip()
+                        or DEFAULT_LINUX_REPO_PATH
+                    ),
+                )
                 apply_result = _apply_patch_to_target_repo(
                     base_target_path,
                     target_branch,
                     fixed_commit,
                     base_project_dir,
+                    commit_message_preview["commit_message"],
+                    signer_name=str(getattr(args, "signer_name", "") or config_dict.get("signer_name") or "").strip(),
+                    signer_email=str(getattr(args, "signer_email", "") or config_dict.get("signer_email") or "").strip(),
                 )
                 result = {
                     "status": apply_result.get("status"),
@@ -1885,6 +2053,10 @@ def _execute_backport_batch_action(
                     "diff_path": "",
                     "logfile": "",
                     "time_cost": 0,
+                    "commit_message_preview": commit_message_preview.get("commit_message_preview", ""),
+                    "commit_message_context": commit_message_preview.get("commit_message_context", {}),
+                    "source_detection": commit_message_preview.get("source_detection", {}),
+                    "commit_message_warnings": commit_message_preview.get("commit_message_warnings", []),
                 }
                 if apply_result.get("error"):
                     result["error"] = apply_result["error"]
@@ -1917,11 +2089,31 @@ def _execute_backport_batch_action(
                 "time_cost": 0,
                 "error": "缺少 patch_path，无法应用补丁",
             }, did_backport, refreshed_status
+        commit_message_source = _infer_original_patch_path(item_config) or patch_path
+        commit_message_preview = build_commit_message_preview(
+            patch_path=commit_message_source,
+            openeuler_commit_id=str(commit_id or fixed_commit or ""),
+            template=(
+                str(getattr(args, "commit_message_template", "") or "").strip()
+                or str(item_config.get("commit_message_template") or "").strip()
+                or str(config_dict.get("commit_message_template") or "").strip()
+                or DEFAULT_COMMIT_MESSAGE_TEMPLATE
+            ),
+            linux_repo_path=(
+                str(getattr(args, "linux_repo_path", "") or "").strip()
+                or str(item_config.get("linux_repo_path") or "").strip()
+                or str(config_dict.get("linux_repo_path") or "").strip()
+                or DEFAULT_LINUX_REPO_PATH
+            ),
+        )
         apply_result = _apply_patch_to_target_repo(
             base_target_path,
             target_branch,
             fixed_commit,
             base_project_dir,
+            commit_message_preview["commit_message"],
+            signer_name=str(getattr(args, "signer_name", "") or config_dict.get("signer_name") or "").strip(),
+            signer_email=str(getattr(args, "signer_email", "") or config_dict.get("signer_email") or "").strip(),
         )
         result = {
             "status": apply_result.get("status"),
@@ -1931,6 +2123,10 @@ def _execute_backport_batch_action(
             "diff_path": "",
             "logfile": "",
             "time_cost": 0,
+            "commit_message_preview": commit_message_preview.get("commit_message_preview", ""),
+            "commit_message_context": commit_message_preview.get("commit_message_context", {}),
+            "source_detection": commit_message_preview.get("source_detection", {}),
+            "commit_message_warnings": commit_message_preview.get("commit_message_warnings", []),
         }
         if apply_result.get("error"):
             result["error"] = apply_result["error"]
@@ -1967,6 +2163,8 @@ def _build_backport_batch_report_item(
     has_conflict,
     conflict_check_method,
     conflict_check_error,
+    base_config,
+    args,
 ):
     empty_patch = bool(backport_result.get("empty_patch"))
     equivalent_exists = bool(backport_result.get("equivalent_exists"))
@@ -1989,6 +2187,20 @@ def _build_backport_batch_report_item(
         if empty_and_equivalent
         else (resolved_backported_patch if effective_has_conflict else resolved_original_patch)
     )
+    message_fields = {
+        "commit_message_preview": backport_result.get("commit_message_preview", ""),
+        "commit_message_context": backport_result.get("commit_message_context", {}),
+        "source_detection": backport_result.get("source_detection", {}),
+        "commit_message_warnings": backport_result.get("commit_message_warnings", []),
+    }
+    if not message_fields["commit_message_preview"] and resolved_original_patch:
+        message_fields = _build_commit_message_report_fields(
+            patch_path=resolved_original_patch,
+            openeuler_commit_id=str(commit_id or input_commit or ""),
+            item_config=item_config,
+            base_config=base_config,
+            args=args,
+        )
     return {
         "commit": commit_id,
         "input_commit": input_commit,
@@ -2008,6 +2220,7 @@ def _build_backport_batch_report_item(
         "original_patch_path": resolved_original_patch,
         "backported_patch_path": resolved_backported_patch,
         "patch_path": effective_patch_path,
+        **message_fields,
     }
 
 
@@ -2195,6 +2408,8 @@ def _process_backport_batch_item(
             has_conflict=has_conflict,
             conflict_check_method=conflict_check_method,
             conflict_check_error=conflict_check_error,
+            base_config=base_config,
+            args=args,
         )
         return {
             "skip": False,
@@ -2267,6 +2482,8 @@ def _build_backport_batch_report(
         ),
         "patch_dataset_dir": base_config.get("patch_dataset_dir"),
         "llm_provider": effective_provider,
+        "commit_message_template": base_config.get("commit_message_template") or DEFAULT_COMMIT_MESSAGE_TEMPLATE,
+        "linux_repo_path": base_config.get("linux_repo_path") or DEFAULT_LINUX_REPO_PATH,
     }
 
     # 在 llm_provider 之后添加 llm_base_url 和 llm_model_name（如果有值）

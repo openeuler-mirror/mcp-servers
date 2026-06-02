@@ -196,6 +196,21 @@ def main():
         type=str,
         help='仅在 backport-batch 下使用：直接应用补丁（可传 backported patch 路径或 commit id）'
     )
+    backport_group.add_argument(
+        '--preview-commit-message',
+        action='store_true',
+        help='仅在 backport-batch 下使用：预览指定 --apply 条目的模板化 commit message，不修改仓库'
+    )
+    backport_group.add_argument(
+        '--commit-message-template',
+        type=str,
+        help='仅在 backport-batch 下使用：覆盖配置文件中的 commit message 模板'
+    )
+    backport_group.add_argument(
+        '--linux-repo-path',
+        type=str,
+        help='仅在 backport-batch 下使用：用于验证 upstream commit 的 Linux 仓库路径'
+    )
     
     # package相关参数
     package_group = parser.add_argument_group('软件包CVE适配参数')
