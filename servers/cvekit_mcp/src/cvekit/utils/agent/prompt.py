@@ -65,11 +65,15 @@ You have 7 tools: `viewcode` `locate_symbol` `viewcode_source` `locate_symbol_so
 3) there is already enough evidence to craft patch and run `validate`.
 [IMPORTANT] If `git_history` is called, call it at most once per hunk by default. Call `git_show` only when `git_history` returns useful related refs and lineage is still unclear.
 [IMPORTANT] `not found` != `equivalent`. Missing symbol/path alone is NEVER enough to conclude `need not ported`.
-[IMPORTANT] `need not ported` requires an evidence-based equivalence conclusion from tool outputs.
-[IMPORTANT] Before outputting `need not ported`, explicitly confirm with evidence chain:
+[IMPORTANT] Before writing a patch, first explain in plain words what behavior the source patch changes. Then inspect the target code and decide whether the target already provides the same behavior, even if it is implemented differently. Similar names, helper functions, exported symbols, or related mechanisms are not enough by themselves; explain how the existing target code actually solves the same problem. If you cannot prove that, continue with patch generation.
+[IMPORTANT] Only when target-side evidence shows equivalent fix semantics, or when target-side evidence proves that the vulnerable execution path does not exist in target, may you conclude `need not ported`.
+[IMPORTANT] Before outputting `need not ported`, explicitly confirm with an evidence chain:
 1) target-repo evidence from `viewcode`/`locate_symbol` (and source intent if needed),
-2) optional lineage evidence from `git_history`/`git_show` when gates are met,
-3) reason why old branch already has equivalent fix semantics.
+2) optional lineage evidence from `git_history`/`git_show` only when gate conditions are met,
+3) either:
+- the target-side carrier of equivalent fix semantics, or
+- concrete proof that the vulnerable execution path does not exist in target,
+4) why this is sufficient to eliminate the vulnerable behavior in target.
 [IMPORTANT] Before generating a final patch OR `need not ported`, provide a concise evidence summary from tools:
 - target file/symbol location used,
 - key target-side context lines or conditions,
@@ -128,9 +132,25 @@ Your workflow should be:
 1. Review the patch of the newer version and similar code blocks of the olded version. 
 2. Use tool `locate_symbol` to determine where the function or variable that appears in the patch is located in the older version.
 3. Use tool `viewcode` to inspect the target-repo code and adjust the viewing window until the complete patch-related fragment from the old version is observed.
-4. Decide equivalence status using tool evidence:
-4.1 If equivalent fix semantics are clearly present in target context, you may choose `need not ported`.
-4.2 `not found` is NOT equivalence; when evidence is insufficient, treat as non-equivalent and continue patching.
+4. Decide equivalence status using tool evidence before generating any patch:
+4.1 First explain in plain words what behavior the source patch changes.
+4.2 Inspect whether the target already solves the same problem, even if it uses different code.
+4.3 Similar names, helper functions, exported symbols, or related mechanisms are not enough by themselves. You must explain how the existing target code actually provides the same behavior.
+4.4 If equivalent fix semantics are clearly present in target context, you must choose `need not ported` and call `validate` with patch=`need not ported`.
+4.5 Missing file, missing symbol, or lineage evidence alone is NOT equivalence.
+4.6 You may conclude `need not ported` only if one of the following is demonstrated with concrete target-side evidence:
+- an equivalent implementation already exists in target, or
+- the vulnerable execution path does not exist in target.
+4.7 Before concluding `need not ported`, explicitly summarize:
+- source-side vulnerable behavior,
+- target-side file/symbol/module inspected,
+- equivalent target-side carrier OR target-side absence proof,
+- why this removes the vulnerable behavior in target.
+4.8 Need-not-ported exploration budget:
+- after target file/symbol missing is established, do at most one source-context lookup,
+- one lineage lookup (`git_history` and optionally `git_show`),
+- and one module-local target equivalence check.
+After this budget is exhausted, either conclude `need not ported` with target-side proof, or stop pursuing `need not ported` and continue patching.
 5. If and only if at least one gate condition is met, call `git_history` once to gather lineage hints:
 5.1 symbol/file locating failed (`locate_symbol` empty or ambiguous),
 5.2 `viewcode` still cannot close context after two window expansions,
@@ -148,7 +168,7 @@ Your workflow should be:
 9. Use `validate` to test the FULL patch on the older version to make sure it can be applied without conflicts. If and only if you have evidence-based equivalence conclusion, set patch to `need not ported`.
 
 You must think step by step according to the workflow and use the tools provided to analyze the patch and the codebase to craft a patch for the target release.
-Default strategy: `locate_symbol` -> `viewcode` -> craft patch -> `validate`. `git_history`/`git_show` are fallback tools under the gate conditions above.
+Default strategy: `locate_symbol` -> `viewcode` -> behavior/equivalence check -> (`need not ported` OR craft patch) -> `validate`. `git_history`/`git_show` are fallback tools under the gate conditions above.
 
 When calling tools in cross-repo migration:
 - use ref = {target_release} for `viewcode`, `locate_symbol`, and `validate`.
@@ -188,9 +208,17 @@ If the patch can not pass above validation, you need to REVISE the patch with th
 1. Review the patch of the newer version. 
 2. Use tool `locate_symbol` to determine where the function or variable that appears in the patch is located in the older version. 
 3. Use tool `viewcode` to inspect the target code location from `locate_symbol` (or fallback hints) and adjust window until complete patch-related context is observed.
-4. Decide equivalence status with evidence:
-4.1 `not found` is NOT equivalence.
-4.2 Only when target-side evidence shows equivalent fix semantics may you conclude `need not ported`.
+4. Decide equivalence status with evidence before revising the patch:
+4.1 First explain in plain words what behavior the source patch changes.
+4.2 Inspect whether the target already solves the same problem, even if it uses different code.
+4.3 Similar names, helper functions, exported symbols, or related mechanisms are not enough by themselves. You must explain how the existing target code actually provides the same behavior.
+4.4 Missing file, missing symbol, source-side evidence, or lineage evidence alone is NOT equivalence.
+4.5 Only when target-side evidence shows equivalent fix semantics, or when target-side evidence proves that the vulnerable execution path does not exist in target, may you conclude `need not ported`.
+4.6 Before concluding `need not ported`, explicitly summarize:
+- source-side vulnerable behavior,
+- target-side file/symbol/module inspected,
+- equivalent target-side carrier OR target-side absence proof,
+- why this removes the vulnerable behavior in target.
 5. Call `git_history` only under gate conditions:
 5.1 locate step fails or is highly ambiguous,
 5.2 two `viewcode` window expansions still cannot close context,
@@ -199,7 +227,7 @@ If the patch can not pass above validation, you need to REVISE the patch with th
 5.5 Do NOT call `git_history` when clear target context is already available via `locate_symbol` + `viewcode`, or when only minor local context drift exists.
 6. (Optional) Call `git_show` only for the LAST related ref returned by `git_history` when lineage remains unclear.
 7. Write a concise evidence summary before deciding revise vs `need not ported`.
-8. Revise the patch based on target context from `viewcode` (and lineage hints only when gates are met), fix only root cause, then validate again.
+8. Revise the patch based on target context from `viewcode` (and lineage hints only when gates are met), fix only root cause, preserve every file block already present in `complete_patch`, then validate again.
 
 Please start to VALIDATE the patch and REVISE it if necessary. You need to make changes to complete_patch based on the compilation results to make it compile compliant.
 

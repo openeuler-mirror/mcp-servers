@@ -92,6 +92,8 @@ APP_WORK_DIR="${ROOT_DIR}/cve_service"
 APP_CLIENT_LOG="${ROOT_DIR}/cve_service/app_client.log"
 # public-inbox 仓库本地路径（用于同步与打包进镜像）
 PUBLIC_INBOX_REPO="${ROOT_DIR}/public-inbox/linux-cve-announce/git/0.git"
+# public-inbox mirror 源仓库地址
+PUBLIC_INBOX_GIT_URL="https://lore.kernel.org/linux-cve-announce/0"
 # public-inbox 压缩包本地路径（如存在则解压）
 PUBLIC_INBOX_TAR="${ROOT_DIR}/public-inbox.tar"
 # public-inbox 压缩包下载地址（为空则不下载）
@@ -282,8 +284,10 @@ prepare_public_inbox() {
     download_file "${PUBLIC_INBOX_TAR_URL}" "${PUBLIC_INBOX_TAR}"
     tar -xf "${PUBLIC_INBOX_TAR}" -C "${ROOT_DIR}"
   else
-    warn "public-inbox 仓库与压缩包均不存在，稍后将跳过 public-inbox 镜像构建。"
-    return 1
+    log "克隆 public-inbox mirror 仓库：${PUBLIC_INBOX_GIT_URL}"
+    ensure_dir "$(dirname "${PUBLIC_INBOX_REPO}")"
+    git clone --mirror "${PUBLIC_INBOX_GIT_URL}" "${PUBLIC_INBOX_REPO}"
+    return 0
   fi
 
   if [ -d "${PUBLIC_INBOX_REPO}" ]; then

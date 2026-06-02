@@ -19,7 +19,7 @@ WORKDIR /srv/public-inbox
 
 # 把你宿主机上的 bare 仓库打进镜像
 # 构建上下文需要包含 linux-cve-announce/git/0.git 这个目录
-COPY public-inbox/linux-cve-announce/git/0.git /srv/public-inbox/linux-cve-announce/git/0.git
+COPY public-inbox/linux-cve-announce/git/0.git/ /srv/public-inbox/linux-cve-announce/git/0.git/
 
 # 初始化 inbox 配置并建立索引（V2）
 RUN public-inbox-init -V2 \

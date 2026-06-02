@@ -1474,8 +1474,8 @@ def _build_batch_summary_result(
         "merged_check_error": merged_check_error,
         "conflict_check": {
             "has_conflict": False if empty_and_equivalent else has_conflict,
-            "method": conflict_check_method,
-            "error": conflict_check_error,
+            "method": "llm-equivalence" if empty_and_equivalent else conflict_check_method,
+            "error": None if empty_and_equivalent else conflict_check_error,
         },
         "original_patch_path": backport_result.get("original_patch_path"),
         "backported_patch_path": backport_result.get("backported_patch_path"),
@@ -1980,7 +1980,10 @@ def _build_backport_batch_report_item(
         backport_result.get("original_patch_path") or item_config.get("original_patch_path") or patch_path
     )
     resolved_backported_patch = backport_result.get("backported_patch_path")
+    effective_merged_in_target = False if empty_and_equivalent else merged_in_target
     effective_has_conflict = False if empty_and_equivalent else has_conflict
+    effective_conflict_check_method = "llm-equivalence" if empty_and_equivalent else conflict_check_method
+    effective_conflict_check_error = None if empty_and_equivalent else conflict_check_error
     effective_patch_path = (
         ""
         if empty_and_equivalent
@@ -1993,12 +1996,12 @@ def _build_backport_batch_report_item(
         "committed_datetime": committed_datetime,
         "target_branch": target_branch,
         "status": backport_result.get("status"),
-        "merged_in_target": merged_in_target,
+        "merged_in_target": effective_merged_in_target,
         "merged_check_error": merged_check_error,
         "is_merge_commit": is_merge_commit,
         "has_conflict": effective_has_conflict,
-        "conflict_check_method": conflict_check_method,
-        "conflict_check_error": conflict_check_error,
+        "conflict_check_method": effective_conflict_check_method,
+        "conflict_check_error": effective_conflict_check_error,
         "empty_patch": empty_patch,
         "equivalent_exists": equivalent_exists,
         "error": short_note if short_note else backport_result.get("error"),

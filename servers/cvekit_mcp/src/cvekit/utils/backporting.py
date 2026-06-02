@@ -682,6 +682,8 @@ def _finalize_export_result(
     empty_patch = False
     equivalent_exists = bool(getattr(project, "equivalent_exists", False))
     if not project.succeeded_patches:
+        if equivalent_exists:
+            return backported_patch_path, diff_path, True, equivalent_exists
         return backported_patch_path, diff_path, empty_patch, equivalent_exists
     if not project.all_hunks_applied_succeeded and not equivalent_exists:
         raise RuntimeError(
@@ -731,10 +733,14 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
     project = Project(data)
     project.repo.git.clean("-fdx")
     start_time = time.time()
-    before_usage = get_usage(data.openai_key, data.llm_provider)
     
     llm_base_url = getattr(data, "llm_base_url", None)
     llm_model_name = getattr(data, "llm_model_name", None)
+    before_usage = get_usage(
+        data.openai_key,
+        data.llm_provider,
+        llm_base_url,
+    )
     try:
         agent_executor, llm = initial_agent(
             project,
@@ -808,7 +814,7 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
             logger.warning(f"从网络获取或保存原始补丁文件失败: {str(e)}")
     
     try:
-        do_backport(
+        backport_ok = do_backport(
             agent_executor,
             project,
             data,
@@ -816,10 +822,16 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
             logfile,
             skip_cherry_pick=skip_cherry_pick,
         )
+        if not backport_ok:
+            raise RuntimeError("backport did not reach successful terminal state")
         end_time = time.time()
         if data.llm_provider == "openai":
             time.sleep(10)
-        after_usage = get_usage(data.openai_key, data.llm_provider)
+        after_usage = get_usage(
+            data.openai_key,
+            data.llm_provider,
+            base_url=getattr(data, "llm_base_url", None),
+        )
         (
             backported_patch_path,
             diff_path,
@@ -846,7 +858,11 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
     except KeyboardInterrupt:
         logger.debug("KeyboardInterrupt detected, calculating usage!")
         end_time = time.time()
-        after_usage = get_usage(data.openai_key, data.llm_provider)
+        after_usage = get_usage(
+            data.openai_key,
+            data.llm_provider,
+            base_url=getattr(data, "llm_base_url", None),
+        )
         result = {
             "status": "interrupted",
             "logfile": logfile,
@@ -963,12 +979,23 @@ def main():
     logger.debug(f"[main] 获取 LLM 使用量统计（回移植前）...")
     logger.debug(f"  - openai_key={'***' + data.openai_key[-4:] if data.openai_key else 'None'} (已脱敏)")
     logger.debug(f"  - llm_provider={data.llm_provider}")
-    before_usage = get_usage(data.openai_key, data.llm_provider)
+    before_usage = get_usage(
+        data.openai_key,
+        data.llm_provider,
+        base_url=getattr(data, "llm_base_url", None),
+    )
     logger.debug(f"[main] 回移植前使用量统计: {before_usage}")
     
     logger.debug("[main] 初始化 LLM 代理...")
     logger.debug(f"  参数: project={project}, openai_key={'***' + data.openai_key[-4:] if data.openai_key else 'None'}, debug_mode={debug_mode}, llm_provider={data.llm_provider}")
-    agent_executor, llm = initial_agent(project, data.openai_key, debug_mode, data.llm_provider)
+    agent_executor, llm = initial_agent(
+        project,
+        data.openai_key,
+        debug_mode,
+        data.llm_provider,
+        custom_base_url=getattr(data, "llm_base_url", None),
+        custom_model_name=getattr(data, "llm_model_name", None),
+    )
     logger.debug(f"[main] LLM 代理初始化完成:")
     logger.debug(f"  - agent_executor={agent_executor}")
     logger.debug(f"  - llm={llm}")
@@ -978,7 +1005,9 @@ def main():
         logger.debug("[main] 开始执行补丁回移植...")
         logger.debug("=" * 80)
         logger.debug(f"  参数: agent_executor={agent_executor}, project={project}, data={data}, llm={llm}, logfile={logfile}")
-        do_backport(agent_executor, project, data, llm, logfile)
+        backport_ok = do_backport(agent_executor, project, data, llm, logfile)
+        if not backport_ok:
+            raise RuntimeError("backport did not reach successful terminal state")
         logger.debug("[main] 补丁回移植执行完成")
         
         end_time = time.time()
@@ -992,7 +1021,11 @@ def main():
             time.sleep(10)
         
         logger.debug("[main] 获取 LLM 使用量统计（回移植后）...")
-        after_usage = get_usage(data.openai_key, data.llm_provider)
+        after_usage = get_usage(
+            data.openai_key,
+            data.llm_provider,
+            base_url=getattr(data, "llm_base_url", None),
+        )
         logger.debug(f"[main] 回移植后使用量统计: {after_usage}")
         
         if data.llm_provider == "openai":
@@ -1025,7 +1058,11 @@ def main():
         logger.debug(f"[main] 总耗时: {end_time - start_time:.2f} 秒")
 
         logger.debug("[main] 获取 LLM 使用量统计（中断后）...")
-        after_usage = get_usage(data.openai_key, data.llm_provider)
+        after_usage = get_usage(
+            data.openai_key,
+            data.llm_provider,
+            base_url=getattr(data, "llm_base_url", None),
+        )
         logger.debug(f"[main] 中断后使用量统计: {after_usage}")
         
         if data.llm_provider == "openai":
