@@ -93,6 +93,12 @@ class CommitMessageParser:
 
         metadata_lines, content_lines = self._split_metadata_block(rest)
         metadata = self._parse_metadata(metadata_lines)
+        if not metadata.get("upstream_commit_id"):
+            # 有些补丁不会把 upstream sha 放在 openEuler metadata block 里，
+            # 而是作为正文里的 "[ Upstream commit ... ]" 或单独 "commit ..." 行出现。
+            upstream_commit_id = self._extract_upstream_commit_from_text(text)
+            if upstream_commit_id:
+                metadata["upstream_commit_id"] = upstream_commit_id
         body, trailers = self._split_body_and_trailers(content_lines)
 
         return ParsedCommitMessage(
@@ -166,6 +172,17 @@ class CommitMessageParser:
                     metadata["upstream_commit_id"] = ref_commit
         return metadata
 
+    def _extract_upstream_commit_from_text(self, text: str) -> str:
+        for line in (text or "").splitlines():
+            stripped = line.strip()
+            upstream_match = re.match(r"^\[\s*Upstream commit ([0-9a-fA-F]{7,40})\s*\]$", stripped)
+            if upstream_match:
+                return upstream_match.group(1)
+            commit_match = re.match(r"^commit\s+([0-9a-fA-F]{7,40})\s*$", stripped)
+            if commit_match:
+                return commit_match.group(1)
+        return ""
+
     def _extract_commit_from_reference(self, reference: str) -> str:
         if "git.kernel.org" not in (reference or ""):
             return ""
@@ -215,6 +232,8 @@ class SourceDetector:
         openeuler_commit_id = str(openeuler_commit_id or "").strip()
         candidate = (parsed.upstream_commit_id or "").strip()
         if candidate:
+            # candidate 可能来自 Reference、"[ Upstream commit ... ]" 或 "commit ..." 行；
+            # 只有 Linux 仓库里能解析到它时，才把 commit message 渲染为 upstream 来源。
             if self._commit_exists(candidate):
                 return SourceDetectionResult(
                     source="upstream",
@@ -261,17 +280,33 @@ class SourceDetector:
         if repo is None or not commit_id:
             return False
         try:
-            repo.commit(commit_id)
+            repo.git.merge_base("--is-ancestor", commit_id, self._master_ref(repo))
             return True
         except Exception:
             return False
+
+    def _master_ref(self, repo: git.Repo) -> str:
+        for ref in ("origin/master", "upstream/master", "master"):
+            try:
+                repo.commit(ref)
+                return ref
+            except Exception:
+                continue
+        return "master"
 
     def _find_commits_by_subject(self, subject: str) -> list[str]:
         repo = self._repo()
         if repo is None or not subject:
             return []
         try:
-            output = repo.git.log("--all", "--format=%H%x00%s", "--fixed-strings", f"--grep={subject}")
+            # commit message 的 upstream 判断只看 Linux master，避免其它分支/remote
+            # 上的同标题 stable commit 把 source 判定扰乱。
+            output = repo.git.log(
+                self._master_ref(repo),
+                "--format=%H%x00%s",
+                "--fixed-strings",
+                f"--grep={subject}",
+            )
         except Exception as exc:
             logger.warning("source detection: subject search failed: %s", exc)
             return []

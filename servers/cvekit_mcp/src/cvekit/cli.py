@@ -180,6 +180,12 @@ def main():
         help='指定 Excel sheet 名称（默认第一个）'
     )
     backport_group.add_argument(
+        '--commit-sort',
+        choices=['describe', 'time'],
+        default='describe',
+        help='backport-batch commit 排序方式；不传时使用配置里的 commit_sort。describe 按 git describe 的 tag+distance 排序；time 按提交时间排序，同秒时用 git topo-order 稳定顺序'
+    )
+    backport_group.add_argument(
         '-i',
         '--interactive',
         action='store_true',
