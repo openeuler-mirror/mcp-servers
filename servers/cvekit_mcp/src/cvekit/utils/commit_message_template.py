@@ -21,6 +21,14 @@ commit {{commit_id}} {{source}}
 {{trailers}}"""
 
 DEFAULT_LINUX_REPO_PATH = "~/Image/linux"
+COMMIT_MESSAGE_SOURCE_AUTO = "auto"
+COMMIT_MESSAGE_SOURCE_OPEN_EULER = "openEuler"
+COMMIT_MESSAGE_SOURCE_UPSTREAM = "upstream"
+COMMIT_MESSAGE_SOURCE_CHOICES = {
+    COMMIT_MESSAGE_SOURCE_AUTO,
+    COMMIT_MESSAGE_SOURCE_OPEN_EULER,
+    COMMIT_MESSAGE_SOURCE_UPSTREAM,
+}
 
 TRAILER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9-]*-by:\s+.+")
 VARIABLE_RE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
@@ -320,6 +328,41 @@ class SourceDetector:
         return list(dict.fromkeys(matches))
 
 
+def normalize_commit_message_source(value: str | None) -> str:
+    value = str(value or "").strip()
+    return value if value in COMMIT_MESSAGE_SOURCE_CHOICES else COMMIT_MESSAGE_SOURCE_AUTO
+
+
+def resolve_fixed_source_detection(
+    parsed: ParsedCommitMessage,
+    openeuler_commit_id: str,
+    source: str | None,
+) -> SourceDetectionResult | None:
+    source = normalize_commit_message_source(source)
+    if source == COMMIT_MESSAGE_SOURCE_AUTO:
+        return None
+
+    openeuler_commit_id = str(openeuler_commit_id or "").strip()
+    if source == COMMIT_MESSAGE_SOURCE_OPEN_EULER:
+        return SourceDetectionResult(
+            source=COMMIT_MESSAGE_SOURCE_OPEN_EULER,
+            commit_id=openeuler_commit_id,
+            method="fixed_openeuler",
+        )
+
+    upstream_commit_id = str(parsed.upstream_commit_id or "").strip()
+    warning = ""
+    if not upstream_commit_id:
+        upstream_commit_id = openeuler_commit_id
+        warning = "未从 patch message 中解析到 upstream commit，已沿用 openEuler commit id。"
+    return SourceDetectionResult(
+        source=COMMIT_MESSAGE_SOURCE_UPSTREAM,
+        commit_id=upstream_commit_id,
+        method="fixed_upstream",
+        warning=warning,
+    )
+
+
 class CommitMessageRenderer:
     def validate_template(self, template: str) -> None:
         if not isinstance(template, str) or not template.strip():
@@ -360,10 +403,13 @@ def build_commit_message_preview(
     openeuler_commit_id: str,
     template: str | None = None,
     linux_repo_path: str | None = None,
+    commit_message_source: str | None = None,
 ) -> dict[str, Any]:
     parser = CommitMessageParser()
     parsed = parser.parse_patch_file(patch_path)
-    detection = SourceDetector(linux_repo_path).detect(parsed, openeuler_commit_id)
+    detection = resolve_fixed_source_detection(parsed, openeuler_commit_id, commit_message_source)
+    if detection is None:
+        detection = SourceDetector(linux_repo_path).detect(parsed, openeuler_commit_id)
     context = {
         **parsed.to_dict(),
         "commit_id": detection.commit_id,

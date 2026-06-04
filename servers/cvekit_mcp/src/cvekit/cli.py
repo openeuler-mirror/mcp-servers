@@ -213,6 +213,12 @@ def main():
         help='仅在 backport-batch 下使用：覆盖配置文件中的 commit message 模板'
     )
     backport_group.add_argument(
+        '--commit-message-source',
+        choices=['auto', 'openEuler', 'upstream'],
+        default='',
+        help='仅在 backport-batch 下使用：固定 commit message 来源，auto 表示自动判断'
+    )
+    backport_group.add_argument(
         '--linux-repo-path',
         type=str,
         help='仅在 backport-batch 下使用：用于验证 upstream commit 的 Linux 仓库路径'
