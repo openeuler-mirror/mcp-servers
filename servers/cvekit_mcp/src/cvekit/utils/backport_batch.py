@@ -13,6 +13,7 @@ from .commit_message_template import (
     DEFAULT_COMMIT_MESSAGE_TEMPLATE,
     DEFAULT_LINUX_REPO_PATH,
     build_commit_message_preview,
+    normalize_commit_message_source,
 )
 from .locales import i18n
 from .backport_sort import resolve_sorted_backport_items
@@ -21,6 +22,16 @@ from tabulate import tabulate
 logger = logging.getLogger(__name__)
 
 import readline
+
+
+def _resolve_commit_message_source(args, item_config: dict, base_config: dict) -> str:
+    return normalize_commit_message_source(
+        str(getattr(args, "commit_message_source", "") or "").strip()
+        or str(item_config.get("commit_message_source") or "").strip()
+        or str(base_config.get("commit_message_source") or "").strip()
+        or "auto"
+    )
+
 
 @dataclass
 class BackportBatchContext:
@@ -254,6 +265,7 @@ def _build_commit_message_report_fields(
                 or str(base_config.get("linux_repo_path") or "").strip()
                 or DEFAULT_LINUX_REPO_PATH
             ),
+            commit_message_source=_resolve_commit_message_source(args, item_config, base_config),
         )
     except Exception as exc:
         logger.warning("[backport-batch] commit message preview failed: %s", exc)
@@ -371,6 +383,7 @@ def _handle_preview_commit_message(args):
             or str(context.base_config.get("linux_repo_path") or "").strip()
             or DEFAULT_LINUX_REPO_PATH
         ),
+        commit_message_source=_resolve_commit_message_source(args, item_config, context.base_config),
     )
     return {
         "action": "backport-batch-preview-commit-message",
@@ -503,6 +516,7 @@ def _handle_direct_apply_backported_patch(args):
             or str(context.base_config.get("linux_repo_path") or "").strip()
             or DEFAULT_LINUX_REPO_PATH
         ),
+        commit_message_source=_resolve_commit_message_source(args, item_config, context.base_config),
     )
     commit_message = commit_message_preview["commit_message"]
     apply_result = _apply_patch_file_to_target_repo(
@@ -1586,6 +1600,7 @@ def _build_backport_runtime_config(
             or str(base_config.get("linux_repo_path") or "").strip()
             or DEFAULT_LINUX_REPO_PATH
         ),
+        "commit_message_source": _resolve_commit_message_source(args, item_config, base_config),
     }
     if item_config.get("error_message") or base_config.get("error_message") or args.error_message:
         config_dict["error_message"] = (
@@ -1752,6 +1767,7 @@ def _execute_backport_batch_action(
                         or str(config_dict.get("linux_repo_path") or "").strip()
                         or DEFAULT_LINUX_REPO_PATH
                     ),
+                    commit_message_source=_resolve_commit_message_source(args, item_config, config_dict),
                 )
                 apply_result = _apply_patch_to_target_repo(
                     base_target_path,
@@ -1821,6 +1837,7 @@ def _execute_backport_batch_action(
                 or str(config_dict.get("linux_repo_path") or "").strip()
                 or DEFAULT_LINUX_REPO_PATH
             ),
+            commit_message_source=_resolve_commit_message_source(args, item_config, config_dict),
         )
         apply_result = _apply_patch_to_target_repo(
             base_target_path,
