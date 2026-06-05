@@ -97,12 +97,12 @@ def _get_llm_config(provider: str = "openai", custom_base_url: str = None, custo
         },
         "minimax": {
             "base_url": "https://api.minimaxi.com/v1",
-            "model": "MiniMax-M2.1",
+            "model": "MiniMax-M2.7-highspeed",
         },
         # 兼容别名：minimaxi -> minimax
         "minimaxi": {
             "base_url": "https://api.minimaxi.com/v1",
-            "model": "MiniMax-M2.1",
+            "model": "MiniMax-M2.7-highspeed",
         },
         # 本地 / 自建 OpenAI 兼容模型服务：
         # - 默认假设为 OpenAI 兼容接口（/v1/completions 或 /v1/chat/completions）

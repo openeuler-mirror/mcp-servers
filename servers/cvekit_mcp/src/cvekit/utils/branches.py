@@ -251,7 +251,7 @@ def git_apply_check_patch(
                 _ensure_clean_worktree(repo)
                 logger.info(f"执行 git checkout {branch_name}（当前分支: {current_branch}）")
                 logger.debug(f"切换到分支: {branch_name}")
-                repo.git.checkout(branch_name)
+                repo.git.checkout('-f', branch_name)
         except Exception as e:
             # 如果分支不存在，调用 setup_repository 来创建分支
             logger.debug(f"分支 {branch_name} 不存在，调用 setup_repository 创建: {str(e)}")
@@ -469,18 +469,15 @@ def process_branches(repo, issue_info, fork_repo_url, gitee_token=None, clone_di
         except Exception as e:
             logger.warning(f"重置工作区失败: {str(e)}")
         
+        # 强制同步到远程分支最新状态
+        # -f: 丢弃本地改动（即使 git status 显示 clean，分叉分支间文件差异也会被拦截）
+        # -B: 分支不存在则创建，存在则重置到远程引用
+        logger.info(f"执行 git checkout -f -B {branch} {remote_branch}")
         try:
-            # 尝试切换到本地分支（如果存在）
-            logger.info(f"执行 git checkout {branch}")
-            repo.git.checkout(branch)
-        except Exception:
-            try:
-                # 如果本地分支不存在，创建并切换到跟踪分支
-                logger.info(f"执行 git checkout -b {branch} --track {remote_branch}")
-                repo.git.checkout('-b', branch, '--track', remote_branch)
-            except Exception as e:
-                logger.error(f"创建并切换分支 {branch} 失败: {str(e)}")
-                continue
+            repo.git.checkout('-f', '-B', branch, remote_branch)
+        except Exception as e:
+            logger.error(f"切换分支 {branch} 失败: {str(e)}")
+            continue
             
         # 传递 repo 参数，避免重复调用 setup_repository
         patchs = check_cve_patch_apply_status(fork_repo_url, issue_info.cve_id, gitee_token, branch, issue_info.fixed_commit, clone_dir, repo=repo)

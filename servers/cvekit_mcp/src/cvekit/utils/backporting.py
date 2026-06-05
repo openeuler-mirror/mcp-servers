@@ -53,9 +53,9 @@ def _sync_remote_branch_and_rev_parse(
             origin_ref = f"origin/{target_release}"
             if origin_ref in [r.name for r in origin.refs]:
                 if target_release in [h.name for h in target_repo.heads]:
-                    target_repo.git.checkout(target_release)
+                    target_repo.git.checkout("-f", target_release)
                 else:
-                    target_repo.git.checkout("-b", target_release, origin_ref)
+                    target_repo.git.checkout("-f", "-B", target_release, origin_ref)
                 safe_git_reset_hard(target_repo)
                 target_repo.git.reset("--hard", origin_ref)
                 target_repo.git.clean("-fdx")
@@ -481,7 +481,7 @@ def load_config_from_dict(config_dict: dict):
                 safe_git_reset_hard(target_repo)
                 target_repo.git.clean("-fdx")
             if original_target_release in [h.name for h in target_repo.heads]:
-                target_repo.git.checkout(original_target_release)
+                target_repo.git.checkout("-f", original_target_release)
         except Exception as e:
             logger.debug(
                 "[load_config_from_dict] 本地分支切换失败，继续使用当前仓库状态: %s",

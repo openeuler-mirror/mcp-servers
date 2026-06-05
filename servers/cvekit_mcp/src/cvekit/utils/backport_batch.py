@@ -1055,7 +1055,7 @@ def _ensure_clean_and_checkout(repo: git.Repo, branch_name: str):
                 repo.remotes.origin.fetch()
                 origin_ref = f"origin/{branch_name}"
                 if origin_ref in [r.name for r in repo.remotes.origin.refs]:
-                    repo.git.checkout("-b", branch_name, origin_ref)
+                    repo.git.checkout('-f', '-B', branch_name, origin_ref)
                     return
         except Exception as fetch_error:
             raise ValueError(f"同步远程分支失败: {fetch_error}")
