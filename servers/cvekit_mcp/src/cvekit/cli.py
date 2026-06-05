@@ -208,6 +208,11 @@ def main():
         help='仅在 backport-batch 下使用：预览指定 --apply 条目的模板化 commit message，不修改仓库'
     )
     backport_group.add_argument(
+        '--stop-at-first-conflict',
+        action='store_true',
+        help='仅在 backport-batch 下使用：生成/续扫 report 时检测到第一条冲突后停止，后续条目标记为 pending'
+    )
+    backport_group.add_argument(
         '--commit-message-template',
         type=str,
         help='仅在 backport-batch 下使用：覆盖配置文件中的 commit message 模板'

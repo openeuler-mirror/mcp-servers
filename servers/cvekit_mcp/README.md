@@ -1,4 +1,4 @@
-# Gitee代码仓CVE补丁处理服务
+# Gitcode代码仓CVE补丁处理服务
 
 ## 安装指导
 1. 安装依赖
@@ -153,6 +153,8 @@ cvekit --action backport-batch --backport-excel ./950_commit.xlsx -o ./test.yml 
 
 raw 配置用于“批量检查 + 生成报告”，默认会对 commits 做排序、合入/冲突检测，并生成 `${backport-config}.report.yml`，**不会在目标仓直接落地回移植结果**（用于先摸底）。
 
+默认情况下会检查完整 commits 列表。若希望先推进到第一个阻塞冲突，可追加 `--stop-at-first-conflict`：cvekit 仍会先对全部 commits 完成排序，然后按排序结果逐条检测；检测到第一条冲突后停止，后续条目写入 report 并标记为 `status: pending`。
+
 示例（不要把 token / api_key 写进文件，建议用环境变量或命令行传参）：
 
 ```yaml
@@ -178,6 +180,9 @@ commits:
 # 通过已安装的入口（python setup.py install 后）
 cvekit --action backport-batch --backport-config /path/to/backport-batch.yml --debug --json
 
+# 全量排序后只检查到第一条冲突，后续条目保持 pending
+cvekit --action backport-batch --backport-config /path/to/backport-batch.yml --debug --json --stop-at-first-conflict
+
 # 或直接用模块运行（开发调试更直观）
 python -m cvekit.cli --action backport-batch --backport-config /path/to/backport-batch.yml --debug --json
 ```
@@ -190,6 +195,7 @@ report 配置用于“按报告执行”：
 - **merged_in_target=true**：跳过
 - **has_conflict=true**：触发回移植（调用 `backport` 流程/LLM）
 - **has_conflict=false**：直接在目标仓尝试 `cherry-pick` 应用
+- **status=pending**：尚未检查，可配合 `--stop-at-first-conflict` 从第一条 pending 继续检测；report 模式不会重新排序。
 
 运行（可选交互编辑）：
 
