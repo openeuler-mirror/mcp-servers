@@ -1,7 +1,12 @@
 FROM docker.io/library/openeuler-24.03-lts-sp1:latest
 
+ARG PIP_INDEX_URL=https://mirrors.huaweicloud.com/repository/pypi/simple
+ARG PIP_TRUSTED_HOST=mirrors.huaweicloud.com
+
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_INDEX_URL=${PIP_INDEX_URL} \
+    PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST} \
     APP_WORK_DIR=/root/mcp-servers \
     GITCODE_API_BASE=https://api.gitcode.com/api/v5
 
@@ -12,8 +17,8 @@ RUN rm -f /etc/yum.repos.d/*.repo
 COPY openEuler.repo /etc/yum.repos.d/openEuler.repo
 
 # 安装基础工具和 Python3 / pip
-RUN dnf -y update && \
-    dnf -y install python3 python3-pip git ca-certificates uv && \
+RUN dnf -y --setopt=max_parallel_downloads=10 --setopt=retries=10 --setopt=timeout=30 update && \
+    dnf -y --setopt=max_parallel_downloads=10 --setopt=retries=10 --setopt=timeout=30 install python3 python3-pip git ca-certificates uv && \
     ln -sf /usr/bin/python3 /usr/bin/python && \
     dnf clean all
 
@@ -21,7 +26,9 @@ RUN dnf -y update && \
 COPY . /root/mcp-servers/servers/cvekit_mcp/src
 
 # 安装 Python 依赖、编译语言包并安装 cvekit
-RUN python3 -m pip install setuptools babel requests flask a2a-sdk httpx -i https://mirrors.huaweicloud.com/repository/pypi/simple && \
+RUN python3 -m pip config set global.index-url "${PIP_INDEX_URL}" && \
+    python3 -m pip config set global.trusted-host "${PIP_TRUSTED_HOST}" && \
+    python3 -m pip install setuptools babel requests flask a2a-sdk httpx && \
     cd /root/mcp-servers/servers/cvekit_mcp/src && \
     pybabel extract -k i18n -o messages.pot . && \
     pybabel update -i messages.pot -d cvekit/locales && \

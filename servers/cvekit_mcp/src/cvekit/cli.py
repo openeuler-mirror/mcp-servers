@@ -59,9 +59,10 @@ def main():
                           'playwright',
                           'apply-patch-package',
                           'analyze-branch-package',
+                          'mystique',
                       ],
                       default='analyze-branches',
-                      help='''执行模式: 
+                      help='''执行模式:
                       parse-issue(解析issue),
                       get-commits(获取提交),
                       analyze-branches(分析分支,默认),
@@ -74,7 +75,8 @@ def main():
                       download-patch-package(下载软件包补丁),
                       playwright(运行playwright agent),
                       apply-patch-package(应用软件包补丁),
-                      analyze-branch-package(分析软件包分支)''')
+                      analyze-branch-package(分析软件包分支),
+                      mystique(补丁迁移)''')
 
 
     # 输入源参数组（互斥组：必须提供CVE ID或Issue URL）
@@ -224,6 +226,16 @@ def main():
         help='仅在 backport-batch 下使用：用于验证 upstream commit 的 Linux 仓库路径'
     )
     
+
+    # mystique 补丁迁移参数
+    mystique_group = parser.add_argument_group('mystique补丁迁移参数')
+    mystique_group.add_argument('--project-dir', type=str,
+                               help='源代码仓库路径（包含待迁移commit的仓库）')
+    mystique_group.add_argument('--target-path', type=str,
+                               help='目标代码仓库路径（补丁迁移的目标仓库）')
+    mystique_group.add_argument('--commit-id', type=str,
+                               help='待迁移的commit ID')
+
     # package相关参数
     package_group = parser.add_argument_group('软件包CVE适配参数')
     package_group.add_argument('--package-name', type=str, default=None,
@@ -273,12 +285,12 @@ def main():
     if not args.gitee_token and args.action in ['parse-issue', 'create-pr']:
         parser.error("必须提供Gitee访问令牌(通过--gitee-token参数或GITEE_TOKEN环境变量)")
 
-    # 检查必要的cve-id或issue-url（setup-env和backport-batch模式不需要）
-    if args.action not in ['setup-env', 'backport-batch'] and not (args.cve_id or args.issue_url):
+    # 检查必要的cve-id或issue-url（setup-env、backport-batch和mystique模式不需要强制提供）
+    if args.action not in ['setup-env', 'backport-batch', 'mystique'] and not (args.cve_id or args.issue_url):
         parser.error("非setup-env模式需提供--cve-id或--issue-url参数")
-    
+
     # 检查必要的clone-dir（某些action需要）
-    if not args.clone_dir and args.action in ['setup-env', 'analyze-branches', 'apply-patch', 'create-pr', 'backport', 'get-commits']:
+    if not args.clone_dir and args.action in ['setup-env', 'analyze-branches', 'apply-patch', 'create-pr', 'backport', 'get-commits', 'mystique']:
         parser.error("必须提供克隆目录(通过--clone-dir参数或CLONE_DIR环境变量)")
     
     # 检查必要的fork-repo-url（仅create-pr需要，其他action有默认值或可选）
@@ -391,7 +403,9 @@ def handle_action(args):
     if args.cve_id and not args.issue_url:
         args.issue_url = get_issue_url_from_cve_id(args.cve_id, args.gitee_token, package_name = args.package_name)
 
-    cve_id = args.cve_id if args.cve_id else fetch_cve_id(args.issue_url, args.gitee_token, not args.no_cache)
+    cve_id = args.cve_id
+    if not cve_id and args.issue_url:
+        cve_id = fetch_cve_id(args.issue_url, args.gitee_token, not args.no_cache)
 
     if args.action == 'parse-issue':
         logger.info(f"handle_action: parse_issue, issue_url={args.issue_url}")
@@ -408,7 +422,9 @@ def handle_action(args):
         return handle_apply_patch_to_package(args)
     elif args.action == 'analyze-branch-package':
         return handle_analyze_branch_package(args)
-    
+    elif args.action == 'mystique':
+        return handle_mystique(cve_id, args)
+
     else:
         raise RuntimeError("action not supported: %s", args.action)
 
@@ -549,6 +565,92 @@ def handle_backport(cve_id, args):
     if 'error' in backport_result:
         result['details']['error'] = backport_result['error']
     
+    return result
+
+def handle_mystique(cve_id, args):
+    """处理 mystique 补丁迁移逻辑，返回结构与 handle_backport 一致"""
+    import sys as _sys
+    _mystique_src = os.path.join(os.path.dirname(__file__), "utils", "mystique", "src")
+    if _mystique_src not in _sys.path:
+        _sys.path.insert(0, _mystique_src)
+    import main as mystique_main
+
+    # 获取修复提交：优先使用 --commit-id，否则从 CVE ID 自动获取
+    fixed_commit = args.commit_id or None
+    if not fixed_commit and cve_id:
+        commits = get_vulnerability_commits(
+            cve_id,
+            not args.no_cache,
+            clone_dir=args.clone_dir,
+        )
+        if commits and len(commits) == 2:
+            _, fixed_commit = commits
+    if not fixed_commit:
+        raise ValueError("mystique模式需要提供 --commit-id 或 --cve-id 参数来获取修复提交")
+
+    # 确定目标分支
+    target_release = args.branch
+    if not target_release:
+        if args.branches:
+            target_release = args.branches.split(',')[0].strip()
+        else:
+            raise ValueError("mystique模式需要指定目标分支，请使用--branch参数")
+
+    # 仓库路径：优先使用显式参数，否则从 clone_dir 推导
+    project_dir = args.project_dir or os.path.join(args.clone_dir, "linux-old1")
+    target_path = args.target_path or os.path.join(args.clone_dir, "test-kernel1")
+
+    results = mystique_main.main_from_repo(
+        project_dir=project_dir,
+        target_path=target_path,
+        new_patch=fixed_commit,
+        target_release=target_release,
+        signatures=None,
+        output=args.output,
+        cve_id=cve_id,
+    )
+
+    # 重构合并补丁路径（与 main_from_repo 中的命名逻辑一致）
+    result_dir = (
+        os.path.abspath(os.path.expanduser(args.output))
+        if args.output
+        else os.path.abspath(os.path.join(os.getcwd(), "patched_output"))
+    )
+    short_cve = f"_{cve_id}" if cve_id else ""
+    commit_short = fixed_commit[:12] if len(fixed_commit) >= 12 else fixed_commit
+    patch_filename = f"backported{short_cve}_{commit_short}.patch"
+    combined_patch_path = os.path.join(result_dir, patch_filename)
+    if not os.path.exists(combined_patch_path):
+        combined_patch_path = None
+
+    is_empty_patch = all(r.get("status") == "need_not_ported" for r in results)
+    status = "empty_patch" if is_empty_patch else "success"
+
+    result = {
+        i18n("补丁ID"): cve_id,
+        i18n("目标分支"): target_release,
+        i18n("是否受影响"): i18n("受影响"),
+        i18n("适配状态"): (
+            i18n("无需执行（补丁已存在）") if is_empty_patch else i18n("成功")
+        ),
+        i18n("冲突点"): "" if is_empty_patch else (combined_patch_path or ""),
+        i18n("建议调整文件"): "N/A" if is_empty_patch else (combined_patch_path or ""),
+    }
+
+    result["details"] = {
+        "action": "mystique",
+        "cve_id": cve_id,
+        "target_branch": target_release,
+        "fixed_commit": fixed_commit,
+        "original_patch_path": fixed_commit,
+        "backported_patch_path": combined_patch_path,
+        "diff_path": combined_patch_path,
+        "empty_patch": is_empty_patch,
+        "logfile": None,
+        "time_cost": None,
+        "status": status,
+    }
+
     return result
 
 def handle_parse_issue(args):

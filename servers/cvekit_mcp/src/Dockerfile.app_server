@@ -2,9 +2,13 @@ FROM docker.io/library/openeuler-24.03-lts-sp1:latest
  	 
 # 本地仓库挂载路径（用于设置 git safe.directory）
 ARG CLONE_PATH=/path/to/Image
+ARG PIP_INDEX_URL=https://mirrors.huaweicloud.com/repository/pypi/simple
+ARG PIP_TRUSTED_HOST=mirrors.huaweicloud.com
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_INDEX_URL=${PIP_INDEX_URL} \
+    PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST} \
     APP_WORK_DIR=/root/mcp-servers/servers/cvekit_mcp/src/cve_service \
     GITCODE_API_BASE=https://api.gitcode.com/api/v5
 
@@ -15,8 +19,8 @@ RUN rm -f /etc/yum.repos.d/*.repo
 COPY openEuler.repo /etc/yum.repos.d/openEuler.repo
 
 # 安装 Python3 / pip 等基础环境，oegitext==1.0.2, ctags==6.1
-RUN dnf -y update && \
-    dnf -y install python3 python3-pip git ca-certificates uv oegitext ctags && \
+RUN dnf -y --setopt=max_parallel_downloads=10 --setopt=retries=10 --setopt=timeout=30 update && \
+    dnf -y --setopt=max_parallel_downloads=10 --setopt=retries=10 --setopt=timeout=30 install python3 python3-pip git ca-certificates uv oegitext ctags && \
     ln -sf /usr/bin/python3 /usr/bin/python && \
     # 为挂载进来的仓库添加 git safe.directory，避免 "dubious ownership" 报错
     git config --system --add safe.directory "${CLONE_PATH}/kernel" && \
@@ -28,9 +32,11 @@ COPY . /root/mcp-servers/servers/cvekit_mcp/src
 
 
 # 安装 Python 依赖、编译语言包并安装 cvekit
-RUN python3 -m pip install setuptools babel -i https://mirrors.huaweicloud.com/repository/pypi/simple && \
+RUN python3 -m pip config set global.index-url "${PIP_INDEX_URL}" && \
+    python3 -m pip config set global.trusted-host "${PIP_TRUSTED_HOST}" && \
+    python3 -m pip install setuptools babel && \
     cd /root/mcp-servers/servers/cvekit_mcp/src && \
-    python3 -m pip install -r requirements.txt -i https://mirrors.huaweicloud.com/repository/pypi/simple && \
+    python3 -m pip install -r requirements.txt && \
     # 解压修改版 camel-ai 到 site-packages
     tar -xzf cve_service/camel.tar.gz -C /usr/local/lib/python3.11/site-packages/ && \
     pybabel extract -k i18n -o messages.pot . && \

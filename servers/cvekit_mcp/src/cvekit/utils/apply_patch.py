@@ -89,55 +89,95 @@ def get_commit_reference(commit_id, repo_path):
         #   "<hash> tags/v6.19-rc1~171^2~34"
         # 或者只有分支名等其他形式
         name_rev = repo.git.name_rev(commit_id)
+        logger.debug(
+            "get_commit_reference: commit_id=%s, name_rev=%r",
+            commit_id,
+            name_rev,
+        )
 
         # 只关心 tags/ 开头的引用，并且截断到 ~ 或 ^ 之前，避免把偏移也算进版本号
         # 例如：tags/v6.19-rc1~171^2~34 -> v6.19-rc1
         tag_match = re.search(r"(?:^|\s)tags/(v[^\s~^]+)", name_rev)
         if not tag_match:
+            logger.warning(
+                "get_commit_reference: commit_id=%s, name_rev=%r, 未找到 tags/ 引用，返回 unknown",
+                commit_id,
+                name_rev,
+            )
             # 没有 tag 信息，直接返回 unknown
             return "unknown", is_stable
 
         tag_name = tag_match.group(1)
+        logger.debug("get_commit_reference: 提取到 tag_name=%r", tag_name)
 
         # 带 rc 的认为是 mainline inclusion，其它形如 vX.Y.Z 的认为是 stable inclusion
         if "-rc" in tag_name:
             is_stable = False
+            logger.debug(
+                "get_commit_reference: tag_name=%r 含 -rc，判定为 mainline inclusion",
+                tag_name,
+            )
         else:
             # 简单校验一下版本号格式（允许 v5.10 或 v5.10.1）
             if re.match(r"v?\d+\.\d+(\.\d+)?", tag_name):
                 is_stable = True
+                logger.debug(
+                    "get_commit_reference: tag_name=%r 匹配版本号格式，判定为 stable inclusion",
+                    tag_name,
+                )
             else:
                 # 格式怪异的 tag，当作 mainline 处理，避免误判
                 is_stable = False
+                logger.warning(
+                    "get_commit_reference: tag_name=%r 格式异常，当作 mainline 处理",
+                    tag_name,
+                )
 
+        logger.info(
+            "get_commit_reference: commit_id=%s, tag_name=%r, is_stable=%s",
+            commit_id,
+            tag_name,
+            is_stable,
+        )
         return tag_name, is_stable
     except Exception as e:
         logger.error(f"获取提交引用失败: {e}")
         return "unknown", is_stable
 
 
-def generate_patch_header(commit_id, cve_id, bugzilla_url, repo_path):
+def generate_patch_header(commit_id, cve_id, bugzilla_url, repo_path, fixed_commit=None):
     """生成符合规范的补丁头
-    
+
     逻辑调整：
     - 不再直接从 kernel.org commit 页面抓 HTML 解析 subject/msg（容易被反爬、且与 patch 获取逻辑重复）
     - 统一通过本地/网络获取的 patch 文件来解析 subject 和 commit message
+    - 通过 fixed_commit 与 branch_commit 是否相等判断 mainline vs stable
     """
     logger.info(
         f"generate_patch_header: start, commit_id={commit_id}, cve_id={cve_id}, "
         f"bugzilla_url={bugzilla_url}, repo_path={repo_path}"
     )
-    ref_version, is_stable = get_commit_reference(commit_id, repo_path)
+
+    # fixed_commit == branch_commit 说明就是原始 mainline 提交，否则是 stable backport
+    ref_version, _ = get_commit_reference(commit_id, repo_path)
+    if fixed_commit is not None and fixed_commit == commit_id:
+        is_stable = False
+        from_line = "from mainline" if ref_version == "unknown" else f"from mainline-{ref_version}"
+        patch_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id={commit_id}"
+        logger.info(
+            "generate_patch_header: fixed_commit == branch_commit, 判定为 mainline inclusion, ref_version=%s",
+            ref_version,
+        )
+    else:
+        is_stable = True
+        from_line = "from stable" if ref_version == "unknown" else f"from stable-{ref_version}"
+        patch_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id={commit_id}"
+        logger.info(
+            "generate_patch_header: fixed_commit != branch_commit, 判定为 stable inclusion, ref_version=%s",
+            ref_version,
+        )
 
     inclusion_type = "stable inclusion" if is_stable else "mainline inclusion"
-    if ref_version == "unknown":
-        from_line = f"from mainline" if not is_stable else f"from stable"
-    else:
-        from_line = f"from mainline-{ref_version}" if not is_stable else f"from stable-{ref_version}"
-    if is_stable:
-        patch_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id={commit_id}"
-    else:
-        patch_url = f"https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id={commit_id}"
 
     logger.info(
         f"generate_patch_header: ref_version={ref_version}, is_stable={is_stable}, "
@@ -226,13 +266,13 @@ Reference: {patch_url}
     return header, headers 
 
 
-def generate_commit_message(cve_id, issue_url, repo_path, branch_commit):
+def generate_commit_message(cve_id, issue_url, repo_path, branch_commit, fixed_commit):
     """生成commit信息"""
     logger.info(
         f"generate_commit_message: cve_id={cve_id}, issue_url={issue_url}, repo_path={repo_path}"
     )
     message, headers = generate_patch_header(
-        branch_commit, cve_id, issue_url, repo_path=repo_path
+        branch_commit, cve_id, issue_url, repo_path=repo_path, fixed_commit=fixed_commit
     )
     logger.debug(
         "generate_commit_message: message_preview=%r",
@@ -709,6 +749,7 @@ def apply_patch(
             issue_url,
             repo_path=linux_repo_path,
             branch_commit=branch_commit,
+            fixed_commit=fixed_commit,
         )
     except Exception as e:
         logger.error(f"生成commit信息失败: {str(e)}")
@@ -761,33 +802,17 @@ def apply_patch(
     try:
         if branch in branches:
             logger.info(f"检出已存在分支: {branch}")
-            repo.git.checkout(branch)
-            # 尝试同步远程分支，失败时继续使用本地分支
-            try:
-                logger.info(f"同步远程分支: origin/{branch} (--rebase)")
-                repo.git.pull("origin", branch, "--rebase")
-            except Exception as pull_error:
-                logger.warning(f"同步远程分支失败，继续使用本地分支: {str(pull_error)}")
+            repo.git.checkout("-f", branch)
         else:
             logger.info(f"本地不存在分支 {branch}，从 origin/{branch} 创建")
-            repo.git.checkout('-b', branch, f'origin/{branch}')
-
-        # 处理修复分支
+            repo.git.checkout('-f', '-B', branch, f'origin/{branch}')
+        logger.info(f"同步远程分支: origin/{branch} (--rebase)")
+        repo.git.pull("origin", branch, "--rebase")
         if fix_branch in branches:
-            if fix_branch_specified:
-                # 用户明确指定了 fix_branch，不删除，直接切换（累积提交模式）
-                logger.info(f"修复分支已存在，切换到: {fix_branch}（累积提交模式）")
-                repo.git.checkout(fix_branch)
-            else:
-                # 自动生成的 fix_branch，删除重建
-                logger.info(f"删除已存在的修复分支: {fix_branch}")
-                repo.git.branch('-D', fix_branch)
-                logger.info(f"创建并切换到修复分支: {fix_branch}")
-                repo.git.checkout('-b', fix_branch)
-        else:
-            # 分支不存在，创建新分支
-            logger.info(f"创建并切换到修复分支: {fix_branch}")
-            repo.git.checkout('-b', fix_branch)
+            logger.info(f"删除已存在的修复分支: {fix_branch}")
+            repo.git.branch('-D', fix_branch)
+        logger.info(f"创建并切换到修复分支: {fix_branch}")
+        repo.git.checkout('-f', '-B', fix_branch)
     except Exception as e:
         logger.error(f"切换分支失败: {str(e)}")
         return {
