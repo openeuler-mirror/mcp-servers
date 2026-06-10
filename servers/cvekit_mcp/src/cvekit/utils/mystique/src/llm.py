@@ -11,7 +11,8 @@ from langchain_core.tools import tool
 import config
 from ast_parser import ASTParser
 from common import Language
-from config import LLM_API_URL, PROMPT_TEMPLATE
+from config import PROMPT_TEMPLATE
+from semantic_sanitizer import unescaped_newlines_in_strings
 
 
 @tool
@@ -38,10 +39,17 @@ def compile_check(code: str, language: str = "C") -> str:
             cleaned = match.group(1)
 
     try:
+        literal_newlines = unescaped_newlines_in_strings(cleaned)
+        if literal_newlines:
+            return (
+                "Syntax error: unescaped newline in string literal at line(s) "
+                + ", ".join(str(line) for line in literal_newlines)
+            )
+
         parser = ASTParser(cleaned, Language.C)
         # tree-sitter returns error nodes for syntax issues
         errors = []
-        _collect_errors(parser.root_node, errors)
+        _collect_errors(parser.root, errors)
         if errors:
             return "; ".join(errors)[:2000]
         return ""
@@ -110,10 +118,10 @@ def validate_formatting(original_code: str, formatted_code: str) -> str:
         }
         orig_counts = {}
         new_counts = {}
-        for node in orig_parser.root_node.descendants():
+        for node in orig_parser.traverse_tree():
             if node.type in ctrl_types:
                 orig_counts[node.type] = orig_counts.get(node.type, 0) + 1
-        for node in new_parser.root_node.descendants():
+        for node in new_parser.traverse_tree():
             if node.type in ctrl_types:
                 new_counts[node.type] = new_counts.get(node.type, 0) + 1
 
@@ -169,7 +177,7 @@ def llm_generate(
     # If tools provided, use LangChain agent
     if tools:
         api_key = config.LLM_API_KEY or config.GPT_API_KEY or "EMPTY_KEY"
-        base_url = LLM_API_URL.replace("/chat/completions", "")
+        base_url = config.LLM_API_URL.replace("/chat/completions", "")
 
         llm = ChatOpenAI(
             model=config.LLM_MODEL,
@@ -246,7 +254,7 @@ def llm_generate(
         }
 
     try:
-        response = requests.post(LLM_API_URL, headers=headers, json=data, verify=False, timeout=120)
+        response = requests.post(config.LLM_API_URL, headers=headers, json=data, verify=False, timeout=120)
         if response.status_code != 200:
             logging.error(f"❌ LLM通用请求失败: {response.status_code} - {response.text}")
             return None
@@ -322,7 +330,7 @@ def codellama_fix(patch: str, vulcode: str, language: Language) -> None | str:
     logging.info(f"📋 生成的提示词长度: {len(prompt)} 字符")
     logging.info(f"📋 提示词预览: {prompt[:300]}...")
     
-    logging.info(f"🌐 发送请求到: {LLM_API_URL}")
+    logging.info(f"🌐 发送请求到: {config.LLM_API_URL}")
     result = llm_generate(prompt, temperature=0)
     if result is None:
         logging.error("❌ LLM修复请求失败")
@@ -416,7 +424,7 @@ Function After R2:
 
 """
     logging.debug(f"🤖 GPT 补丁适配输入: {content[:200]}...")
-    logging.info(f"🌐 发送请求到: {LLM_API_URL}")
+    logging.info(f"🌐 发送请求到: {config.LLM_API_URL}")
     
     result = llm_generate(content, temperature=0.5)
     if result is None:

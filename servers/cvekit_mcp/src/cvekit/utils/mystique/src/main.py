@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Iterable
 
@@ -30,6 +31,8 @@ from cross_method import (
     solve_cluster_jointly,
 )
 from project import Project
+from semantic_sanitizer import repair_broken_string_newlines
+from signature_modifiers import restore_target_signature_modifiers
 
 # Ensure the cvekit package root (4 levels up) is importable from this file.
 # main.py → cvekit/utils/mystique/src/ → ../../../../ → cvekit_mcp/src/
@@ -214,9 +217,36 @@ def _build_c_signature_line_map(target_code: str, target_filename: str) -> dict[
 
     funcs = parse_functions(target_code)
     signature_map: dict[str, tuple[int, int]] = {}
+    confirmed_ranges: list[tuple[int, int]] = []
     for func in funcs:
         signature = f"{target_filename}#{func.name}"
         signature_map[signature] = (func.start_line, func.end_line)
+        confirmed_ranges.append((func.start_line, func.end_line))
+
+    # 正则结果优先；Tree-sitter 只补充正则遗漏的函数行号。
+    parser = ASTParser(target_code, Language.C)
+    method_nodes = sorted(
+        parser.query_all(ast_parser.TS_C_METHOD),
+        key=lambda node: (node.start_point[0], -node.end_point[0]),
+    )
+    for method_node in method_nodes:
+        name = _extract_c_method_name(method_node)
+        if name is None:
+            continue
+        signature = f"{target_filename}#{name}"
+        if signature in signature_map:
+            continue
+        start_line = method_node.start_point[0] + 1
+        end_line = method_node.end_point[0] + 1
+        if any(
+            confirmed_start <= start_line
+            and end_line <= confirmed_end
+            and (confirmed_start < start_line or end_line < confirmed_end)
+            for confirmed_start, confirmed_end in confirmed_ranges
+        ):
+            continue
+        signature_map[signature] = (start_line, end_line)
+        confirmed_ranges.append((start_line, end_line))
     return signature_map
 
 
@@ -812,6 +842,50 @@ def _git_checkout(repo_path: str, ref: str) -> bool:
         return False
 
 
+def _build_backported_patch_path(
+    result_dir: str,
+    cve_id: str | None,
+    commit: str,
+    timestamp: str,
+) -> str:
+    """Build a timestamped patch path."""
+    short_cve = f"_{cve_id}" if cve_id else ""
+    commit_short = commit[:12] if len(commit) >= 12 else commit
+    stem = f"backported{short_cve}_{commit_short}_{timestamp}"
+    return os.path.join(result_dir, f"{stem}.patch")
+
+
+def _save_original_patch(
+    project_dir: str,
+    result_dir: str,
+    commit: str,
+) -> tuple[str | None, str | None]:
+    """Save the source commit patch and return its content and path."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", project_dir, "format-patch", "-1", commit, "--stdout"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        logging.warning("无法生成原始补丁文件: %s", exc.stderr.strip())
+        return None, None
+
+    original_patch_path = os.path.join(result_dir, f"original_{commit}.patch")
+    with open(original_patch_path, "w") as f:
+        f.write(result.stdout)
+    logging.info(f"原始补丁文件已保存: {original_patch_path}")
+    return result.stdout, original_patch_path
+
+
+def _build_mystique_log_path(cve_id: str | None, timestamp: str) -> str:
+    """Build the logfile path for one Mystique backport run."""
+    log_dir = os.path.join(os.path.expanduser("~"), ".cvekit", "mystique_logs")
+    tag = cve_id or "unknown"
+    return os.path.join(log_dir, f"backport_{tag}_{timestamp}.log")
+
+
 def _git_find_file_in_target(target_path: str, target_ref: str, source_file_path: str) -> str | None:
     content = _git_get_file_content(target_path, target_ref, source_file_path)
     if content is not None:
@@ -933,6 +1007,9 @@ def _normalize_patched_formatting(
     target_content: str,
     language: Language,
     file_signatures: list[str] | None = None,
+    target_path: str | None = None,
+    target_file_path: str | None = None,
+    file_patch: str | None = None,
 ) -> str:
     """Normalize patched code formatting to match target style, function by function.
 
@@ -943,6 +1020,29 @@ def _normalize_patched_formatting(
     if language != Language.C:
         logging.info("Skipping format normalization for non-C language: %s", language.value)
         return patched_code
+
+    if config.FORMAT_NORMALIZATION_MODE == "changed_regions":
+        from changed_region_formatter import (
+            apply_repo_clang_format,
+            normalize_changed_regions,
+            restore_patch_added_blank_lines,
+        )
+
+        logging.info("Using changed-region LLM format normalization")
+        normalized = normalize_changed_regions(
+            patched_code,
+            target_content,
+            file_signatures,
+        )
+        if target_path and target_file_path:
+            normalized = apply_repo_clang_format(
+                normalized,
+                target_content,
+                target_path,
+                target_file_path,
+            )
+        normalized = restore_patch_added_blank_lines(normalized, file_patch)
+        return normalized
 
     logging.info(
         "Starting format normalization: patched=%d chars, target=%d chars",
@@ -962,83 +1062,14 @@ def _normalize_patched_formatting(
     def _extract_functions(code: str) -> list:
         funcs: list[tuple[str, int, int, list[str]]] = []
         lines = code.split("\n")
+        from func_parser import parse_functions_with_tree_sitter
 
-        if language == Language.C:
-            from func_parser import parse_functions
-
-            for func in parse_functions(code):
-                s = func.start_line
-                e = func.end_line
-                text = lines[s - 1 : e]
-                funcs.append((func.name, s, e, text))
-            return funcs
-
-        try:
-            parser_obj = ast_parser.ASTParser(code, language)
-        except Exception as e:
-            logging.warning("tree-sitter parse failed: %s", e)
-            return []
-
-        for node in parser_obj.query_all(ast_parser.TS_C_METHOD):
-            # Skip abnormally large functions (tree-sitter parse error)
-            span = node.end_point[0] - node.start_point[0]
-            if span > 300:
-                continue
-            name_node = node.child_by_field_name("declarator")
-            while name_node is not None and name_node.type != "identifier":
-                nd = name_node.child_by_field_name("declarator")
-                if nd is not None:
-                    name_node = nd
-                else:
-                    for ch in name_node.named_children:
-                        if ch.type == "identifier":
-                            name_node = ch
-                            break
-                    else:
-                        break
-            if name_node is not None and name_node.type == "identifier":
-                name = name_node.text.decode()
-                s = node.start_point[0] + 1
-                e = node.end_point[0] + 1
-                text = lines[s - 1:e]
-                if text[0].lstrip().startswith(".") and "=" in text[0].split("{")[0]:
-                    continue
-                funcs.append((name, s, e, text))
-
-        for node in parser_obj.query_all(ast_parser.TS_C_FUNC_DECL):
-            # Skip abnormally large functions (tree-sitter parse error)
-            span = node.end_point[0] - node.start_point[0]
-            if span > 300:
-                continue
-            declarator = node.child_by_field_name("declarator")
-            name_node = declarator
-            while name_node is not None and name_node.type != "identifier":
-                nd = name_node.child_by_field_name("declarator")
-                if nd is not None:
-                    name_node = nd
-                else:
-                    for ch in name_node.named_children:
-                        if ch.type == "identifier":
-                            name_node = ch
-                            break
-                    else:
-                        break
-            if name_node is not None and name_node.type == "identifier":
-                name = name_node.text.decode()
-                s = node.start_point[0] + 1
-                e = node.end_point[0] + 1
-                text = lines[s - 1:e]
-                funcs.append((name, s, e, text))
-
-        # Deduplicate: TS_C_METHOD and TS_C_FUNC_DECL can both match the same definition
-        seen: set[tuple[str, int, int]] = set()
-        deduped: list[tuple[str, int, int, list[str]]] = []
-        for name, s, e, text in funcs:
-            key = (name, s, e)
-            if key not in seen:
-                seen.add(key)
-                deduped.append((name, s, e, text))
-        return deduped
+        for func in parse_functions_with_tree_sitter(code):
+            s = func.start_line
+            e = func.end_line
+            text = lines[s - 1 : e]
+            funcs.append((func.name, s, e, text))
+        return funcs
 
     def _process_one_pass(current_code: str, target_code: str) -> tuple[str, int]:
         """Do one pass of format normalization. Returns (new_code, fixes_count)."""
@@ -1435,16 +1466,29 @@ def _try_apply_patch(repo_path: str, file_patch: str, file_path: str) -> bool:
 
 
 _mystique_env_initialized = False
+_mystique_logfile: str | None = None
 
 
-def _init_mystique_env(debug: bool = False):
-    global _mystique_env_initialized
+def _init_mystique_env(
+    debug: bool = False,
+    cve_id: str | None = None,
+    timestamp: str | None = None,
+) -> str | None:
+    global _mystique_env_initialized, _mystique_logfile
     if _mystique_env_initialized:
-        return
+        return _mystique_logfile
     log_level = logging.DEBUG if debug else logging.INFO
     joern.set_joern_env(config.JOERN_PATH)
-    log.init_logger(logging.getLogger(), log_level, "log")
+    timestamp = timestamp or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    _mystique_logfile = _build_mystique_log_path(cve_id, timestamp)
+    log.init_logger(
+        logging.getLogger(),
+        log_level,
+        _mystique_logfile,
+        exact_path=True,
+    )
     _mystique_env_initialized = True
+    return _mystique_logfile
 
 
 def main_from_repo(
@@ -1456,8 +1500,10 @@ def main_from_repo(
     output: str | None = None,
     cve_id: str | None = None,
     skip_cherry_pick: bool = False,
+    debug: bool = False,
 ) -> list[dict]:
-    _init_mystique_env()
+    run_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    logfile = _init_mystique_env(debug=debug, cve_id=cve_id, timestamp=run_timestamp)
     project_dir = os.path.abspath(os.path.expanduser(project_dir))
     target_path = os.path.abspath(os.path.expanduser(target_path))
 
@@ -1482,6 +1528,15 @@ def main_from_repo(
         if not target_ref:
             raise ValueError(f"目标仓库中无法解析 HEAD")
 
+    if output:
+        result_dir = os.path.abspath(os.path.expanduser(output))
+    else:
+        result_dir = os.path.abspath(os.path.join(os.getcwd(), "patched_output"))
+    os.makedirs(result_dir, exist_ok=True)
+    patch_text, original_patch_path = _save_original_patch(
+        project_dir, result_dir, commit_hash
+    )
+
     # ── Fast path: git cherry-pick before the per-file LLM pipeline ──
     if not skip_cherry_pick:
         from cvekit.utils.tools.project import Project as CvekitProject, safe_git_reset_hard
@@ -1502,16 +1557,20 @@ def main_from_repo(
         cherry_ok, cherry_patch = _try_cherry_pick_backport(_cp_project, _cp_data)
         if cherry_ok and cherry_patch:
             logging.info("cherry-pick 成功，跳过 mystique 流程")
-            _cp_out = os.path.abspath(os.path.expanduser(output)) if output else os.path.abspath(os.path.join(os.getcwd(), "patched_output"))
-            os.makedirs(_cp_out, exist_ok=True)
-            _cp_name = f"{cve_id or ''}_" if cve_id else ""
-            _cp_short = new_patch[:12] if len(new_patch) >= 12 else new_patch
-            patch_filename = f"backported_{_cp_name}{_cp_short}.patch"
-            patch_path = os.path.join(_cp_out, patch_filename)
+            patch_path = _build_backported_patch_path(
+                result_dir, cve_id, commit_hash, run_timestamp
+            )
             with open(patch_path, "w") as f:
                 f.write(cherry_patch)
             logging.info(f"补丁文件已生成: {patch_path}")
-            return [{"status": "cherry_pick_success", "source_file": new_patch, "patched_file": patch_path}]
+            return [{
+                "status": "cherry_pick_success",
+                "source_file": new_patch,
+                "patched_file": patch_path,
+                "original_patch_path": original_patch_path,
+                "backported_patch_path": patch_path,
+                "logfile": logfile,
+            }]
         else:
             logging.info("cherry-pick 冲突，继续 mystique 逐文件迁移流程")
 
@@ -1528,21 +1587,12 @@ def main_from_repo(
     # then use tree-sitter to map those lines to actual function names.
     file_hunk_ranges: dict[str, tuple[set[int], set[int]]] = {}
     file_hunks: dict[str, list[PatchHunk]] = {}
-    if signatures is None:
+    if signatures is None and patch_text:
         try:
-            import git
-            repo_linux = git.Repo(project_dir)
-            patch_text = repo_linux.git.format_patch("-1", commit_hash, stdout=True)
             file_hunk_ranges = _parse_patch_hunk_ranges(patch_text)
             file_hunks = _parse_patch_hunks(patch_text)
         except Exception as e:
             logging.warning(f"解析 git format-patch 失败，回退到 detect_modified_methods: {e}")
-
-    if output:
-        result_dir = os.path.abspath(os.path.expanduser(output))
-    else:
-        result_dir = os.path.abspath(os.path.join(os.getcwd(), "patched_output"))
-    os.makedirs(result_dir, exist_ok=True)
 
     all_patch_parts: list[str] = []
     results = []
@@ -1575,9 +1625,10 @@ def main_from_repo(
             logging.warning(f"无法获取目标仓库文件内容: {target_file_path}，跳过")
             continue
 
+        file_patch = _extract_file_patch(patch_text, source_path) if patch_text else None
+
         # ── Fast path: try git apply --check with the original file patch ──
         if patch_text:
-            file_patch = _extract_file_patch(patch_text, source_path)
             if file_patch and _try_apply_patch(target_path, file_patch, source_path):
                 all_patch_parts.append(file_patch)
                 results.append({
@@ -1690,6 +1741,12 @@ def main_from_repo(
             continue
 
         # 1. Save raw LLM output (before any formatting)
+        patched_code = restore_target_signature_modifiers(
+            patched_code, target_content, file_signatures
+        )
+        # Repair the common LLM error that turns an escaped "\n" into a real newline.
+        patched_code = repair_broken_string_newlines(patched_code)
+
         raw_path = os.path.join(result_dir, f"0_raw_{safe_name}{file_ext}")
         with open(raw_path, "w") as f:
             f.write(patched_code)
@@ -1701,7 +1758,13 @@ def main_from_repo(
 
         # 2.5. Normalize formatting to match target style via LLM
         patched_code = _normalize_patched_formatting(
-            patched_code, target_content, language, file_signatures
+            patched_code,
+            target_content,
+            language,
+            file_signatures,
+            target_path,
+            target_file_path,
+            file_patch,
         )
 
         # 2.6. Save normalized patched file (for verification)
@@ -1714,6 +1777,63 @@ def main_from_repo(
             target_path, target_ref, target_file_path, patched_code,
             simplified_target=target_content,
         )
+
+        # 4.  checkpatch.pl检测patch，提取可通过空白调整修复的问题,将诊断反馈给现有 changed-region 格式器
+        checkpatch_path = os.path.join(target_path, "scripts", "checkpatch.pl")
+        if (
+            patch_diff
+            and config.FORMAT_NORMALIZATION_MODE == "changed_regions"
+            and os.path.isfile(checkpatch_path)
+        ):
+            from checkpatch_formatter import (
+                parse_code_style_diagnostics,
+                refine_with_checkpatch_feedback,
+                run_checkpatch,
+            )
+
+            _, checkpatch_output = run_checkpatch(checkpatch_path, patch_diff)
+            diagnostics = parse_code_style_diagnostics(
+                checkpatch_output, target_file_path
+            )
+            if diagnostics:
+                refined_code = refine_with_checkpatch_feedback(
+                    target_content,
+                    patched_code,
+                    target_file_path,
+                    file_signatures,
+                    diagnostics,
+                )
+                refined_diff = _generate_unified_patch(
+                    target_path,
+                    target_ref,
+                    target_file_path,
+                    refined_code,
+                    simplified_target=target_content,
+                )
+                if refined_diff:
+                    _, refined_checkpatch_output = run_checkpatch(
+                        checkpatch_path, refined_diff
+                    )
+                    refined_diagnostics = parse_code_style_diagnostics(
+                        refined_checkpatch_output, target_file_path
+                    )
+                    if len(refined_diagnostics) < len(diagnostics):
+                        logging.info(
+                            "Checkpatch-guided formatting reduced %s issues from %d to %d",
+                            target_file_path,
+                            len(diagnostics),
+                            len(refined_diagnostics),
+                        )
+                        patched_code = refined_code
+                        patch_diff = refined_diff
+                        with open(normalized_path, "w") as f:
+                            f.write(patched_code)
+                    else:
+                        logging.info(
+                            "Checkpatch-guided formatting did not reduce issues for %s; "
+                            "keeping previous formatting",
+                            target_file_path,
+                        )
         if patch_diff:
             all_patch_parts.append(patch_diff)
             logging.info(f"文件 {source_path} 迁移完成，已生成 diff")
@@ -1730,14 +1850,32 @@ def main_from_repo(
         })
 
     if all_patch_parts:
-        # Build patch filename: backported_CVE-xxxx-yyyy_commit-id.patch
-        short_cve = f"_{cve_id}" if cve_id else ""
-        commit_short = new_patch[:12] if len(new_patch) >= 12 else new_patch
-        patch_filename = f"backported{short_cve}_{commit_short}.patch"
-        combined_patch_path = os.path.join(result_dir, patch_filename)
+        combined_patch_path = _build_backported_patch_path(
+            result_dir, cve_id, commit_hash, run_timestamp
+        )
         with open(combined_patch_path, "w") as f:
             f.write("\n".join(all_patch_parts))
+        for result in results:
+            result["backported_patch_path"] = combined_patch_path
         logging.info(f"统一补丁文件已生成: {combined_patch_path}")
+        checkpatch_path = os.path.join(target_path, "scripts", "checkpatch.pl")
+        if os.path.isfile(checkpatch_path):
+            try:
+                checkpatch = subprocess.run(
+                    [checkpatch_path, "--no-tree", "--strict", combined_patch_path],
+                    capture_output=True,
+                    text=True,
+                )
+                checkpatch_output = (checkpatch.stdout + checkpatch.stderr).strip()
+                if checkpatch.returncode == 0:
+                    logging.info("Target repository checkpatch.pl passed")
+                else:
+                    logging.warning(
+                        "Target repository checkpatch.pl reported style issues:\n%s",
+                        checkpatch_output[-4000:],
+                    )
+            except OSError as exc:
+                logging.warning("Could not run target repository checkpatch.pl: %s", exc)
         logging.info(f"可通过以下命令应用到目标仓库:")
         logging.info(f"  git -C {target_path} apply --check {combined_patch_path}")
         logging.info(f"  git -C {target_path} apply {combined_patch_path}")
@@ -1746,6 +1884,10 @@ def main_from_repo(
             "✅ 所有文件均无需移植 (need not ported) — "
             "补丁改动已存在于目标代码中"
         )
+
+    for result in results:
+        result.setdefault("original_patch_path", original_patch_path)
+        result.setdefault("logfile", logfile)
 
     return results
 
@@ -1834,7 +1976,16 @@ def cli():
         default=False,
         help="启用调试模式，输出详细的调试日志",
     )
+    parser.add_argument(
+        "--format-mode",
+        choices=["full", "changed"],
+        default=None,
+        help=(
+            "格式调整模式：full为整函数格式化；changed仅格式化变化区域"
+        ),
+    )
     args = parser.parse_args()
+    config.configure_format_normalization(args.format_mode)
 
     is_repo_mode = all([args.project_dir, args.target_path, args.new_patch, args.target_release])
     is_file_mode = all([args.pre, args.post, args.target])
@@ -1864,6 +2015,7 @@ def cli():
             output=args.output,
             cve_id=args.cve_id,
             skip_cherry_pick=args.skip_cherry_pick,
+            debug=args.debug,
         )
         if not results:
             logging.warning("没有文件被成功迁移")
@@ -1873,6 +2025,7 @@ def cli():
                 logging.info(f"  {r['source_file']} -> {r['patched_file']}")
         return results
     else:
+        _init_mystique_env(debug=args.debug, cve_id=args.cve_id)
         result = main(args.pre, args.post, args.target, args.signature)
         result_path = _write_result_file(result, args.target, args.output)
         logging.info(f"Patched code has been written to file: {result_path}")
@@ -1882,5 +2035,4 @@ def cli():
 if __name__ == "__main__":
     import sys
 
-    _init_mystique_env(debug="--debug" in sys.argv)
     cli()

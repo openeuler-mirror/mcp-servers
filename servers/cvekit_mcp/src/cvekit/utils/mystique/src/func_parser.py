@@ -11,6 +11,7 @@ This parser handles the common kernel code patterns:
 - Complex return types (const struct foo *, unsigned long, etc.)
 """
 
+import logging
 import re
 from dataclasses import dataclass
 
@@ -244,4 +245,73 @@ def parse_functions(source: str) -> list[FuncInfo]:
 
         i = brace_line + 1
 
+    return functions
+
+
+def parse_functions_with_tree_sitter(source: str) -> list[FuncInfo]:
+    """使用正则主解析器，并通过 Tree-sitter 补充遗漏的 C 函数定义。"""
+    functions = parse_functions(source)
+    confirmed_ranges = [
+        (function.start_line, function.end_line)
+        for function in functions
+    ]
+    known_names = {function.name for function in functions}
+
+    try:
+        import ast_parser
+        from common import Language
+
+        parser = ast_parser.ASTParser(source, Language.C)
+    except Exception as exc:
+        logging.warning("tree-sitter parse failed: %s", exc)
+        return functions
+
+    candidates: list[FuncInfo] = []
+    for node in parser.query_all(ast_parser.TS_C_METHOD):
+        if node.end_point[0] - node.start_point[0] > 300:
+            continue
+
+        name_node = node.child_by_field_name("declarator")
+        while name_node is not None and name_node.type != "identifier":
+            nested_declarator = name_node.child_by_field_name("declarator")
+            if nested_declarator is not None:
+                name_node = nested_declarator
+                continue
+            name_node = next(
+                (child for child in name_node.named_children if child.type == "identifier"),
+                None,
+            )
+
+        if name_node is None or name_node.type != "identifier":
+            continue
+
+        text = node.text.decode()
+        if text.lstrip().startswith(".") and "=" in text.split("{", 1)[0]:
+            continue
+
+        candidates.append(
+            FuncInfo(
+                name=name_node.text.decode(),
+                start_line=node.start_point[0] + 1,
+                end_line=node.end_point[0] + 1,
+            )
+        )
+
+    # 外层函数先处理，避免把未展开宏产生的内部候选当成真实函数。
+    candidates.sort(key=lambda function: (function.start_line, -function.end_line))
+    for candidate in candidates:
+        if candidate.name in known_names:
+            continue
+        if any(
+            start <= candidate.start_line
+            and candidate.end_line <= end
+            and (start < candidate.start_line or candidate.end_line < end)
+            for start, end in confirmed_ranges
+        ):
+            continue
+        functions.append(candidate)
+        confirmed_ranges.append((candidate.start_line, candidate.end_line))
+        known_names.add(candidate.name)
+
+    functions.sort(key=lambda function: function.start_line)
     return functions

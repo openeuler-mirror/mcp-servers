@@ -5,7 +5,7 @@ def _join_url(base: str, path: str) -> str:
     return base.rstrip("/") + "/" + path.lstrip("/")
 
 
-JOERN_PATH = os.getenv("JOERN_PATH", "/opt/joern/joern-cli")
+JOERN_PATH = os.getenv("JOERN_PATH", os.path.expanduser("~/.local/joern/joern-cli"))
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "minimax")
 BASE_URL = os.getenv("BASE_URL", "").strip()
 
@@ -15,6 +15,12 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", os.getenv("API_KEY", ""))
 default_style = "openai_chat"
 LLM_API_STYLE = os.getenv("LLM_API_STYLE", default_style)
 LLM_MODEL = os.getenv("LLM_MODEL", os.getenv("MODEL_NAME", "MiniMax-M2.7-highspeed"))
+_FORMAT_MODE_ALIASES = {
+    "full": "full_function",
+    "changed": "changed_regions",
+}
+_format_mode_env = os.getenv("MYSTIQUE_FORMAT_MODE", "full").strip().lower()
+FORMAT_NORMALIZATION_MODE = _FORMAT_MODE_ALIASES.get(_format_mode_env, _format_mode_env)
 
 if os.getenv("LLM_API_URL"):
     LLM_API_URL = os.getenv("LLM_API_URL", "").strip()
@@ -66,3 +72,37 @@ PROMPT_TEMPLATE = {
 PROMPT_TEMPLATE_DICT = {
     "trans_patch": PROMPT_TEMPLATE,
 }
+
+
+def configure_llm(
+    *,
+    provider: str | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    model_name: str | None = None,
+) -> None:
+    global LLM_PROVIDER, GPT_API_KEY, LLM_API_KEY, BASE_URL, LLM_MODEL, LLM_API_URL
+    if provider is not None:
+        LLM_PROVIDER = provider
+    if api_key is not None:
+        LLM_API_KEY = api_key
+        GPT_API_KEY = api_key
+    if base_url is not None:
+        BASE_URL = base_url
+        LLM_API_URL = _join_url(base_url, "/chat/completions")
+    if model_name is not None:
+        LLM_MODEL = model_name
+
+
+def configure_format_normalization(mode: str | None = None) -> None:
+    """Select full-function or changed-region LLM formatting."""
+    global FORMAT_NORMALIZATION_MODE
+    if mode is None:
+        return
+    normalized = _FORMAT_MODE_ALIASES.get(mode.strip().lower(), mode.strip().lower())
+    if normalized not in {"full_function", "changed_regions"}:
+        raise ValueError(
+            "Unsupported format normalization mode: "
+            f"{mode!r}; expected 'full' or 'changed'"
+        )
+    FORMAT_NORMALIZATION_MODE = normalized

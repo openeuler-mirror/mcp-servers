@@ -4,6 +4,8 @@ import logging
 import os
 import copy
 import re
+import sys
+import time
 
 import git
 import yaml
@@ -32,6 +34,20 @@ def _resolve_commit_message_source(args, item_config: dict, base_config: dict) -
         or str(base_config.get("commit_message_source") or "").strip()
         or "auto"
     )
+
+
+def _resolve_backport_engine(args, item_config: dict, base_config: dict) -> str:
+    engine = (
+        str(item_config.get("backport_engine") or "").strip().lower()
+        or str(getattr(args, "backport_engine", "") or "").strip().lower()
+        or str(base_config.get("backport_engine") or "").strip().lower()
+        or "portgpt"
+    )
+    if engine not in {"portgpt", "mystique"}:
+        raise ValueError(
+            f"不支持的 backport_engine: {engine!r}，请选择 portgpt 或 mystique"
+        )
+    return engine
 
 
 @dataclass
@@ -224,6 +240,7 @@ def handle_backport_batch(args):
         llm_provider=args.llm_provider,
         llm_base_url=getattr(args, 'llm_base_url', None),
         llm_model_name=getattr(args, 'llm_model_name', None),
+        backport_engine=_resolve_backport_engine(args, {}, base_config),
         report_items=report_items,
     )
     _write_backport_batch_report(report_output_path, is_report_config, report)
@@ -1306,7 +1323,7 @@ def _append_remaining_pending_items(
         remaining_status = "pending"
         if is_report_config and remaining_item_config.get("status"):
             remaining_status = remaining_item_config.get("status")
-        report_items.append({
+        pending_item = {
             "commit": remaining_commit_id,
             "input_commit": remaining_input_commit,
             "commit_title": remaining_commit_title,
@@ -1324,7 +1341,10 @@ def _append_remaining_pending_items(
             "backported_patch_path": None,
             "patch_path": remaining_original_patch_path,
             "error": None,
-        })
+        }
+        if remaining_item_config.get("backport_engine"):
+            pending_item["backport_engine"] = remaining_item_config["backport_engine"]
+        report_items.append(pending_item)
 
 
 def _build_batch_summary_result(
@@ -1638,6 +1658,13 @@ def _build_backport_runtime_config(
             or DEFAULT_LINUX_REPO_PATH
         ),
         "commit_message_source": _resolve_commit_message_source(args, item_config, base_config),
+        "backport_engine": _resolve_backport_engine(args, item_config, base_config),
+        "format_mode": (
+            item_config.get("format_mode")
+            or base_config.get("format_mode")
+            or getattr(args, "format_mode", None)
+            or "full"
+        ),
     }
     if item_config.get("error_message") or base_config.get("error_message") or args.error_message:
         config_dict["error_message"] = (
@@ -1646,6 +1673,76 @@ def _build_backport_runtime_config(
     if item_config.get("sanitizer") or base_config.get("sanitizer") or args.sanitizer:
         config_dict["sanitizer"] = item_config.get("sanitizer") or base_config.get("sanitizer") or args.sanitizer
     return config_dict
+
+
+def _run_mystique_from_config(config_dict: dict, debug_mode: bool = False) -> dict:
+    """运行 Mystique，并转换为 backport-batch 统一使用的结果结构。"""
+    mystique_src = os.path.join(os.path.dirname(__file__), "mystique", "src")
+    if mystique_src not in sys.path:
+        sys.path.insert(0, mystique_src)
+    import config as mystique_config
+    import main as mystique_main
+
+    mystique_config.configure_llm(
+        provider=config_dict.get("llm_provider"),
+        api_key=config_dict.get("openai_key"),
+        base_url=config_dict.get("llm_base_url"),
+        model_name=config_dict.get("llm_model_name"),
+    )
+    mystique_config.configure_format_normalization(config_dict.get("format_mode"))
+
+    start_time = time.time()
+    results = mystique_main.main_from_repo(
+        project_dir=config_dict["project_dir"],
+        target_path=config_dict["target_path"],
+        new_patch=config_dict["new_patch"],
+        target_release=config_dict["target_release"],
+        signatures=None,
+        output=config_dict.get("patch_dataset_dir"),
+        cve_id=str(config_dict.get("tag") or config_dict["new_patch"]),
+        skip_cherry_pick=bool(config_dict.get("skip_cherry_pick", False)),
+        debug=debug_mode,
+    )
+    original_patch_path = next(
+        (item.get("original_patch_path") for item in results if item.get("original_patch_path")),
+        None,
+    )
+    backported_patch_path = next(
+        (item.get("backported_patch_path") for item in results if item.get("backported_patch_path")),
+        None,
+    )
+    logfile = next(
+        (item.get("logfile") for item in results if item.get("logfile")),
+        None,
+    )
+    empty_patch = bool(results) and all(
+        item.get("status") == "need_not_ported" for item in results
+    )
+    status = "success" if backported_patch_path or empty_patch else "failed"
+    result = {
+        "status": status,
+        "original_patch_path": original_patch_path,
+        "backported_patch_path": backported_patch_path,
+        "diff_path": backported_patch_path,
+        "empty_patch": empty_patch,
+        "equivalent_exists": empty_patch,
+        "logfile": logfile,
+        "time_cost": int(time.time() - start_time),
+    }
+    if status == "failed":
+        result["error"] = "Mystique 未生成回移植补丁"
+    return result
+
+
+def _run_selected_backport_engine(config_dict: dict, debug_mode: bool = False) -> dict:
+    """根据 batch 配置选择 PortGPT 或 Mystique，并返回统一结果。"""
+    engine = str(config_dict.get("backport_engine") or "portgpt").strip().lower()
+    logger.info("[backport-batch] 使用回移植引擎: %s", engine)
+    if engine == "portgpt":
+        return run_backport_from_config(config_dict, debug_mode=debug_mode)
+    if engine == "mystique":
+        return _run_mystique_from_config(config_dict, debug_mode=debug_mode)
+    raise ValueError(f"不支持的 backport_engine: {engine!r}")
 
 
 def _execute_backport_batch_action(
@@ -1855,7 +1952,7 @@ def _execute_backport_batch_action(
             )
             logger.info("[backport-batch] 回移植配置: %s", config_dict)
             did_backport = True
-            return run_backport_from_config(config_dict, debug_mode=args.debug), did_backport, refreshed_status
+            return _run_selected_backport_engine(config_dict, debug_mode=args.debug), did_backport, refreshed_status
 
         logger.info(
             "[backport-batch] 无冲突，直接应用补丁: tag=%s, commit=%s, target_branch=%s",
@@ -1995,6 +2092,7 @@ def _build_backport_batch_report_item(
         "committed_datetime": committed_datetime,
         "git_describe": git_describe,
         "target_branch": target_branch,
+        "backport_engine": _resolve_backport_engine(args, item_config, base_config),
         "status": backport_result.get("status"),
         "merged_in_target": effective_merged_in_target,
         "merged_check_error": merged_check_error,
@@ -2261,6 +2359,7 @@ def _build_backport_batch_report(
     llm_provider,
     llm_base_url,
     llm_model_name,
+    backport_engine,
     report_items,
 ):
     # 计算有效值
@@ -2280,6 +2379,7 @@ def _build_backport_batch_report(
         ),
         "patch_dataset_dir": base_config.get("patch_dataset_dir"),
         "llm_provider": effective_provider,
+        "backport_engine": backport_engine,
         "commit_message_template": base_config.get("commit_message_template") or DEFAULT_COMMIT_MESSAGE_TEMPLATE,
         "linux_repo_path": base_config.get("linux_repo_path") or DEFAULT_LINUX_REPO_PATH,
     }
