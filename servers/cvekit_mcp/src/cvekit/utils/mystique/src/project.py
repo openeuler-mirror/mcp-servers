@@ -250,17 +250,6 @@ class File:
             # Parse from formatted code (same as what Joern receives via
             # create_code_tree) so Method.start_line matches PDG line numbers.
             funcs = parse_functions(self.code)
-            if not funcs:
-                # Fallback to tree-sitter with span guard for edge cases
-                logging.warning("Regex parser found no functions, falling back to tree-sitter")
-                methods: list[Method] = []
-                for method_node in self.parser.query_all(ast_parser.TS_C_METHOD):
-                    span = method_node.end_point[0] - method_node.start_point[0]
-                    if span > 300:
-                        continue
-                    methods.append(Method(method_node, None, self, self.language))
-                return methods
-
             methods = [
                 Method(
                     node=None,
@@ -274,6 +263,42 @@ class File:
                 )
                 for func in funcs
             ]
+
+            # __releases()、__acquires() 等内核注解可能位于函数声明和左花括号之间。
+            # 正则解析器会保守地跳过这类语法，因此使用 tree-sitter 补充正则遗漏的函数。
+            known_names = {method.name for method in methods}
+            tree_sitter_methods: list[Method] = []
+            for method_node in self.parser.query_all(ast_parser.TS_C_METHOD):
+                span = method_node.end_point[0] - method_node.start_point[0]
+                if span > 300:
+                    continue
+                try:
+                    method = Method(method_node, None, self, self.language)
+                except AssertionError:
+                    continue
+                tree_sitter_methods.append(method)
+
+            # 外层函数必须先于其内部的伪函数候选处理。例如未展开的内核宏
+            # fsnotify_foreach_obj_type(type) 会被 tree-sitter 误判为名为 type 的函数。
+            tree_sitter_methods.sort(key=lambda method: (method.start_line, -method.end_line))
+            for method in tree_sitter_methods:
+                if method.name in known_names:
+                    continue
+                if any(
+                    confirmed.start_line <= method.start_line
+                    and method.end_line <= confirmed.end_line
+                    and (
+                        confirmed.start_line < method.start_line
+                        or method.end_line < confirmed.end_line
+                    )
+                    for confirmed in methods
+                ):
+                    continue
+                methods.append(method)
+                known_names.add(method.name)
+
+            methods.sort(key=lambda method: method.start_line)
+            # Tree-sitter 补充的函数虽然先追加到 methods 尾部，但随后会根据函数在源码中的起始行 start_line 重新排序，恢复源码顺序
             return methods
         else:
             return []
@@ -424,6 +449,121 @@ class Method:
         self.counterpart: Method | None = None
         self.method_dir: str | None = None
         self._external_diff_lines: set[int] | None = None
+
+        self._restore_modifiers()
+
+    def _restore_modifiers(self):
+        """
+        从 file.raw_code 中恢复被 del_macros() 删除的重要修饰符
+
+        当前恢复的修饰符：
+        - __init: Linux 内核函数修饰符，标记函数在内核初始化阶段执行
+        - __exit: Linux 内核函数修饰符，标记函数在内核退出阶段执行
+        - __user: Linux 内核指针修饰符，标记指针来自用户空间
+        """
+        if self.language != Language.C:
+            return
+
+        if self.file.raw_code is None:
+            return
+
+        if "__init" not in self.file.raw_code and "__exit" not in self.file.raw_code and "__user" not in self.file.raw_code:
+            return
+
+        restored_code = self._restore_init_exit_user_modifiers(
+            self.code,
+            self.file.raw_code,
+            self.name,
+            self.start_line
+        )
+
+        if restored_code != self.code:
+            logging.info(f"恢复修饰符: {self.name}")
+            self.code = restored_code
+            self.lines = {i + self.start_line: line for i, line in enumerate(self.code.split("\n"))}
+
+    @staticmethod
+    def _restore_init_exit_user_modifiers(code: str, raw_code: str, function_name: str, start_line: int) -> str:
+        """
+        从 raw_code 中恢复 __init、__exit 和 __user 修饰符
+
+        Args:
+            code: 当前代码（可能丢失修饰符）
+            raw_code: 原始代码（包含修饰符）
+            function_name: 函数名
+            start_line: 函数起始行号（1-based）
+
+        Returns:
+            恢复后的代码
+        """
+        signature = Method._extract_function_signature_from_raw_code(raw_code, function_name, start_line)
+        if signature is None:
+            return code
+
+        if "__init" not in signature and "__exit" not in signature and "__user" not in signature:
+            return code
+
+        code_lines = code.split("\n")
+        if not code_lines:
+            return code
+
+        current_signature = code_lines[0]
+
+        if "__init" in current_signature and "__exit" in current_signature and "__user" in current_signature:
+            return code
+
+        modifiers = []
+        if "__init" in signature:
+            modifiers.append("__init")
+        if "__exit" in signature:
+            modifiers.append("__exit")
+        if "__user" in signature:
+            modifiers.append("__user")
+
+        function_name_pos = current_signature.find(function_name)
+        if function_name_pos == -1:
+            return code
+
+        restored_signature = current_signature[:function_name_pos] + " ".join(modifiers) + " " + current_signature[function_name_pos:]
+        code_lines[0] = restored_signature
+
+        return "\n".join(code_lines)
+
+    @staticmethod
+    def _extract_function_signature_from_raw_code(raw_code: str, function_name: str, start_line: int) -> str | None:
+        """
+        从 raw_code 中提取函数签名
+
+        Args:
+            raw_code: 原始代码
+            function_name: 函数名
+            start_line: 函数起始行号（1-based）
+
+        Returns:
+            函数签名，如果找不到则返回 None
+        """
+        lines = raw_code.split("\n")
+
+        for i in range(max(0, start_line - 6), start_line):
+            line = lines[i].strip()
+
+            if function_name in line:
+                function_name_pos = line.find(function_name)
+                if function_name_pos == -1:
+                    continue
+
+                signature = line[:function_name_pos + len(function_name)]
+
+                if signature.startswith("{"):
+                    for j in range(i - 1, max(0, i - 6), -1):
+                        prev_line = lines[j].strip()
+                        if prev_line and not prev_line.startswith("#"):
+                            signature = prev_line
+                            break
+
+                return signature
+
+        return None
 
     @staticmethod
     def _extract_c_method_name_node(node: Node) -> Node | None:
@@ -671,7 +811,7 @@ class Method:
         print("=" * 80)
         print("🔍 PATCH_HUNKS 属性调试信息")
         print("=" * 80)
-        
+
         print(f"📥 输入信息:")
         print(f"  method.name: {self.name}")
         print(f"  method.start_line: {self.start_line}")
@@ -680,12 +820,12 @@ class Method:
         print(f"  self.file.code 长度: {len(self.file.code)} 字符")
         print(f"  counterpart.file.code 长度: {len(self.counterpart.file.code) if self.counterpart else 0} 字符")
         print()
-        
+
         assert self.counterpart is not None
         print(f"🔍 调用 get_patch_hunks 获取原始 hunks:")
         print(f"  输入文件1 (self): {self.file.path}")
         print(f"  输入文件2 (counterpart): {self.counterpart.file.path}")
-        
+
         hunks = get_patch_hunks(self.file.code, self.counterpart.file.code, self.file_suffix)
         # get_patch_hunks 接收文件级代码，返回的 hunk 行号已经是文件绝对行号，
         # 直接与 self.lines、header_lines、end_line 在同一坐标系，无需偏移。
@@ -770,7 +910,7 @@ class Method:
                     print(f"    ✅ 保留 (在方法范围内)")
             else:
                 print(f"    ⚠️ 未知类型，保留")
-        
+
         filtered_count = len(hunks)
         print(f"  过滤前: {original_count} 个 hunks")
         print(f"  过滤后: {filtered_count} 个 hunks")
@@ -784,7 +924,7 @@ class Method:
                 return hunk.a_startline
             else:
                 return 0
-        
+
         hunks.sort(key=sort_key)
         print(f"  排序后的 hunks:")
         for i, hunk in enumerate(hunks):
@@ -794,13 +934,13 @@ class Method:
             elif isinstance(hunk, ModHunk) or isinstance(hunk, DelHunk):
                 print(f"      排序键: a_startline = {hunk.a_startline}")
         print()
-        
+
         print(f"📤 最终 patch_hunks: {len(hunks)} 个")
         print("=" * 80)
         print("✅ PATCH_HUNKS 属性获取完成")
         print("=" * 80)
         print()
-        
+
         return hunks
 
     @property
@@ -956,7 +1096,7 @@ class Method:
         logging.info("REDUCED_HUNKS[%s]: placeholder_lines (sorted)=%s", self.name, sorted(placeholder_lines))
         print(f"  placeholder_lines: {sorted(placeholder_lines)}")
         print()
-        
+
         print(f"🔍 调用 self.code_hunks(placeholder_lines):")
         print(f"  输入 placeholder_lines: {sorted(placeholder_lines)}")
         result = self.code_hunks(placeholder_lines)
@@ -964,31 +1104,31 @@ class Method:
         for i, hunk in enumerate(result):
             print(f"    hunk[{i}]: {repr(hunk[:100])}{'...' if len(hunk) > 100 else ''}")
         print()
-        
+
         print("=" * 80)
         print("✅ REDUCED_HUNKS 函数执行完成")
         print("=" * 80)
         print()
-        
+
         return result
 
     def code_hunks(self, lines: set[int]) -> list[str]:
         print("=" * 80)
         print("🔍 CODE_HUNKS 函数调试信息")
         print("=" * 80)
-        
+
         print(f"📥 输入参数:")
         print(f"  method.name: {self.name}")
         print(f"  lines: {sorted(lines)}")
         print()
-        
+
         print(f"🔍 调用 utils.group_consecutive_ints:")
         lines_list = list(lines)
         print(f"  输入 lines_list: {lines_list}")
         lineg = utils.group_consecutive_ints(lines_list)
         print(f"  输出 lineg: {lineg}")
         print()
-        
+
         print(f"🔧 处理每个连续行组:")
         hunks: list[str] = []
         for i, g in enumerate(lineg):
@@ -997,32 +1137,32 @@ class Method:
             hunks.append(hunk)
             print(f"    生成的 hunk: {repr(hunk[:100])}{'...' if len(hunk) > 100 else ''}")
         print()
-        
+
         print(f"📤 最终结果:")
         print(f"  hunks 数量: {len(hunks)}")
         for i, hunk in enumerate(hunks):
             print(f"    hunk[{i}]: {repr(hunk[:100])}{'...' if len(hunk) > 100 else ''}")
         print()
-        
+
         print("=" * 80)
         print("✅ CODE_HUNKS 函数执行完成")
         print("=" * 80)
         print()
-        
+
         return hunks
 
     def recover_placeholder(self, code: str, slice_lines: set[int], placeholder: str) -> str | None:
         print("=" * 80)
         print("🔍 RECOVER_PLACEHOLDER 函数调试信息")
         print("=" * 80)
-        
+
         print(f"📥 输入参数:")
         print(f"  method.name: {self.name}")
         print(f"  code 长度: {len(code)} 字符")
         print(f"  slice_lines: {sorted(slice_lines)}")
         print(f"  placeholder: {repr(placeholder)}")
         print()
-        
+
         print(f"🔍 调用 self.reduced_hunks(slice_lines):")
         print(f"  输入 slice_lines: {sorted(slice_lines)}")
         placeholder_hunks = self.reduced_hunks(slice_lines)
@@ -1033,7 +1173,7 @@ class Method:
         for i, hunk in enumerate(placeholder_hunks):
             print(f"    hunk[{i}]: {repr(hunk[:100])}{'...' if len(hunk) > 100 else ''}")
         print()
-        
+
         print(f"🔍 分析输入代码中的占位符:")
         code_lines = code.split("\n")
         print(f"  code 行数: {len(code_lines)}")
@@ -1043,7 +1183,7 @@ class Method:
         if len(code_lines) > 10:
             print(f"    ... (还有 {len(code_lines)-10} 行)")
         print()
-        
+
         print(f"🔍 统计占位符数量:")
         placeholder_text = placeholder.strip()
         placeholder_count = sum(1 for line in code_lines if line.strip() == placeholder_text)
@@ -1064,7 +1204,7 @@ class Method:
                 print(f"    第{i+1}行: {repr(line)}")
         print(f"  找到占位符行数: {len(placeholder_lines)}")
         print()
-        
+
         # 检查占位符数量是否一致
         print(f"🔍 检查占位符数量一致性:")
         if placeholder_count != hunks_count:
@@ -1100,7 +1240,7 @@ class Method:
                 result += line + "\n"
                 print(f"    ➡️ 保持原样")
         print()
-        
+
         print(f"📤 最终结果:")
         print(f"  result 长度: {len(result)} 字符")
         print(f"  result 内容预览:")
@@ -1110,12 +1250,12 @@ class Method:
         if len(result_lines) > 10:
             print(f"    ... (还有 {len(result_lines)-10} 行)")
         print()
-        
+
         print("=" * 80)
         print("✅ RECOVER_PLACEHOLDER 函数执行完成")
         print("=" * 80)
         print()
-        
+
         return result
 
     def code_by_exclude_lines(self, lines: set[int], *, placeholder: str | None) -> str:

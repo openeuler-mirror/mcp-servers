@@ -295,7 +295,9 @@ def _find_functions_containing_lines(code: str, lines: set[int], language: Langu
         from func_parser import parse_functions
 
         # First try func_parser for function definitions
+        confirmed_ranges: list[tuple[int, int]] = []
         for func in parse_functions(code):
+            confirmed_ranges.append((func.start_line, func.end_line))
             for ln in lines:
                 if func.start_line <= ln <= func.end_line:
                     func_names.add(func.name)
@@ -306,7 +308,11 @@ def _find_functions_containing_lines(code: str, lines: set[int], language: Langu
         parser = ast_parser.ASTParser(code, language)
 
         # Find function definitions
-        for func_node in parser.query_all(ast_parser.TS_C_METHOD):
+        func_nodes = sorted(
+            parser.query_all(ast_parser.TS_C_METHOD),
+            key=lambda node: (node.start_point[0], -node.end_point[0]),
+        )
+        for func_node in func_nodes:
             name_node = func_node.child_by_field_name("declarator")
             while name_node is not None and name_node.type != "identifier":
                 next_decl = name_node.child_by_field_name("declarator")
@@ -326,6 +332,14 @@ def _find_functions_containing_lines(code: str, lines: set[int], language: Langu
                 func_text = func_node.text.decode()
                 if func_text.lstrip().startswith(".") and "=" in func_text.split("{")[0]:
                     continue
+                if any(
+                    confirmed_start <= func_start
+                    and func_end <= confirmed_end
+                    and (confirmed_start < func_start or func_end < confirmed_end)
+                    for confirmed_start, confirmed_end in confirmed_ranges
+                ):
+                    continue
+                confirmed_ranges.append((func_start, func_end))
                 # Check if any changed line falls within this function
                 for ln in lines:
                     if func_start <= ln <= func_end:
@@ -1409,5 +1423,4 @@ def _parse_joint_llm_json_fallback(raw_text: str, signatures: Iterable[str], all
     if not allow_partial and len(result) != len(signatures_set):
         return {}
     return result
-
 

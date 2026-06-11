@@ -157,6 +157,20 @@ def main():
         type=str,
         help='LLM 模型名称 (例如: gpt-4o-mini)，可覆盖默认配置',
     )
+    backport_group.add_argument(
+        '--format-mode',
+        choices=['full', 'changed'],
+        default=None,
+        help=(
+            '格式调整模式：full为整函数格式化；changed仅格式化变化区域'
+        ),
+    )
+    backport_group.add_argument(
+        '--backport-engine',
+        choices=['portgpt', 'mystique'],
+        default=None,
+        help='仅在 backport-batch 下使用：选择回移植引擎；默认读取配置，未配置时使用 portgpt',
+    )
     backport_group.add_argument('--patch-dataset-dir', type=str,
                                help='补丁数据集目录 (也可通过PATCH_DATASET_DIR环境变量设置)')
     backport_group.add_argument('--error-message', type=str,
@@ -578,7 +592,18 @@ def handle_mystique(cve_id, args):
     _mystique_src = os.path.join(os.path.dirname(__file__), "utils", "mystique", "src")
     if _mystique_src not in _sys.path:
         _sys.path.insert(0, _mystique_src)
+    import config as mystique_config
     import main as mystique_main
+
+    mystique_config.configure_llm(
+        provider=args.llm_provider,
+        api_key=args.api_key,
+        base_url=args.llm_base_url,
+        model_name=args.llm_model_name,
+    )
+    mystique_config.configure_format_normalization(
+        getattr(args, "format_mode", None)
+    )
 
     # 获取修复提交：优先使用 --commit-id，否则从 CVE ID 自动获取
     fixed_commit = args.commit_id or None
@@ -602,8 +627,8 @@ def handle_mystique(cve_id, args):
             raise ValueError("mystique模式需要指定目标分支，请使用--branch参数")
 
     # 仓库路径：优先使用显式参数，否则从 clone_dir 推导
-    project_dir = args.project_dir or os.path.join(args.clone_dir, "linux-old1")
-    target_path = args.target_path or os.path.join(args.clone_dir, "test-kernel1")
+    project_dir = args.project_dir or os.path.join(args.clone_dir, "linux")
+    target_path = args.target_path or os.path.join(args.clone_dir, "kernel")
 
     results = mystique_main.main_from_repo(
         project_dir=project_dir,
@@ -613,20 +638,31 @@ def handle_mystique(cve_id, args):
         signatures=None,
         output=args.output,
         cve_id=cve_id,
+        debug=args.debug,
     )
 
-    # 重构合并补丁路径（与 main_from_repo 中的命名逻辑一致）
-    result_dir = (
-        os.path.abspath(os.path.expanduser(args.output))
-        if args.output
-        else os.path.abspath(os.path.join(os.getcwd(), "patched_output"))
+    # Use the path produced by this run. Do not guess a filename and
+    # accidentally return an older patch from a previous run.
+    combined_patch_path = next(
+        (
+            item.get("backported_patch_path")
+            for item in results
+            if item.get("backported_patch_path")
+        ),
+        None,
     )
-    short_cve = f"_{cve_id}" if cve_id else ""
-    commit_short = fixed_commit[:12] if len(fixed_commit) >= 12 else fixed_commit
-    patch_filename = f"backported{short_cve}_{commit_short}.patch"
-    combined_patch_path = os.path.join(result_dir, patch_filename)
-    if not os.path.exists(combined_patch_path):
-        combined_patch_path = None
+    logfile = next(
+        (item.get("logfile") for item in results if item.get("logfile")),
+        None,
+    )
+    original_patch_path = next(
+        (
+            item.get("original_patch_path")
+            for item in results
+            if item.get("original_patch_path")
+        ),
+        None,
+    )
 
     is_empty_patch = all(r.get("status") == "need_not_ported" for r in results)
     status = "empty_patch" if is_empty_patch else "success"
@@ -647,11 +683,11 @@ def handle_mystique(cve_id, args):
         "cve_id": cve_id,
         "target_branch": target_release,
         "fixed_commit": fixed_commit,
-        "original_patch_path": fixed_commit,
+        "original_patch_path": original_patch_path,
         "backported_patch_path": combined_patch_path,
         "diff_path": combined_patch_path,
         "empty_patch": is_empty_patch,
-        "logfile": None,
+        "logfile": logfile,
         "time_cost": None,
         "status": status,
     }

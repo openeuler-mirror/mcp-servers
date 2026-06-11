@@ -18,7 +18,9 @@ import re
 from datetime import datetime
 
 
-_DATE_TIME_LOG_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}\.log$")
+_DATE_TIME_LOG_PATTERN = re.compile(
+    r"^(?:\d{4}-\d{2}-\d{2}_\d{2}-\d{2}|backport_.+_\d{8}_\d{6})\.log$"
+)
 
 
 def _build_runtime_log_path(log_file_path: str) -> str:
@@ -33,7 +35,7 @@ def _cleanup_old_logs(log_dir: str, keep_count: int = 30):
         for filename in os.listdir(log_dir)
         if _DATE_TIME_LOG_PATTERN.match(filename)
     ]
-    candidates.sort()
+    candidates.sort(key=os.path.getmtime)
     if len(candidates) <= keep_count:
         return
     for old_file in candidates[: len(candidates) - keep_count]:
@@ -43,7 +45,13 @@ def _cleanup_old_logs(log_dir: str, keep_count: int = 30):
             pass
 
 
-def init_logger(logger: logging.Logger, log_level: int, log_file_path: str | None = None):
+def init_logger(
+    logger: logging.Logger,
+    log_level: int,
+    log_file_path: str | None = None,
+    *,
+    exact_path: bool = False,
+):
     logger.setLevel(logging.DEBUG)
 
     shell_formatter = logging.Formatter(
@@ -61,7 +69,7 @@ def init_logger(logger: logging.Logger, log_level: int, log_file_path: str | Non
     file_formatter = logging.Formatter(
         "[%(asctime)s][%(levelname)s]: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
-    runtime_log_path = _build_runtime_log_path(log_file_path)
+    runtime_log_path = log_file_path if exact_path else _build_runtime_log_path(log_file_path)
     log_dir = os.path.dirname(runtime_log_path) or "."
     os.makedirs(log_dir, exist_ok=True)
     _cleanup_old_logs(log_dir, keep_count=30)

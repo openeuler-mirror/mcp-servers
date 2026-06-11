@@ -26,6 +26,7 @@ from typing import Any
 import networkx as nx
 
 from common import Language
+import config
 
 
 def _run_cmd_or_raise(cmd: list[str], cwd: str):
@@ -103,6 +104,7 @@ def set_joern_env(joern_path: str):
 
 
 def export(code_path: str, output_path: str, language: Language, overwrite: bool = False):
+    set_joern_env(config.JOERN_PATH)
     pdg_dir = os.path.join(output_path, 'pdg')
     cfg_dir = os.path.join(output_path, 'cfg')
     cpg_dir = os.path.join(output_path, 'cpg')
@@ -166,6 +168,37 @@ def joern_script_run(cpgFile: str, script_path: str, output_path: str):
                    cwd=os.path.dirname(cpgFile))
 
 
+def _parse_joern_label(label: str) -> tuple[str, str, str]:
+    import re
+    node_type = ''
+    code = ''
+    line_number = ''
+    if not label:
+        return node_type, code, line_number
+    if '<SUB>' in label:
+        m = re.match(r'^\(([^,)]+)', label)
+        if m:
+            node_type = m.group(1)
+        if ',' in label:
+            first_comma = label.index(',')
+            rest = label[first_comma + 1:]
+            sub_match = re.search(r'\)<SUB>(\d+)</SUB>', rest)
+            if sub_match:
+                code = rest[:sub_match.start()]
+                line_number = sub_match.group(1)
+            else:
+                close_paren = rest.rfind(')')
+                if close_paren >= 0:
+                    code = rest[:close_paren]
+                else:
+                    code = rest
+    else:
+        node_type = label
+    node_type = node_type.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&').replace('&quot;', '"')
+    code = code.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&').replace('&quot;', '"')
+    return node_type, code, line_number
+
+
 def preprocess(pdg_dir: str, cfg_dir: str, cpg_dir: str, need_cdg: bool):
     cpg = nx.nx_agraph.read_dot(os.path.join(cpg_dir, 'export.dot'))
     for pdg_file in os.listdir(pdg_dir):
@@ -200,7 +233,20 @@ def preprocess(pdg_dir: str, cfg_dir: str, cpg_dir: str, need_cdg: bool):
         for node in pdg.nodes:
             for key, value in cpg.nodes[node].items():
                 pdg.nodes[node][key] = value
-            pdg.nodes[node]['NODE_TYPE'] = pdg.nodes[node]['label']
+
+            raw_label = pdg.nodes[node].get('label', '')
+            if 'NODE_TYPE' not in pdg.nodes[node] or not pdg.nodes[node]['NODE_TYPE']:
+                if 'NODE_TYPE' in cpg.nodes[node] and cpg.nodes[node]['NODE_TYPE']:
+                    pdg.nodes[node]['NODE_TYPE'] = cpg.nodes[node]['NODE_TYPE']
+                elif raw_label:
+                    parsed_type, parsed_code, parsed_line = _parse_joern_label(raw_label)
+                    if parsed_type:
+                        pdg.nodes[node]['NODE_TYPE'] = parsed_type
+                    if 'CODE' not in pdg.nodes[node] or not pdg.nodes[node]['CODE']:
+                        pdg.nodes[node]['CODE'] = parsed_code
+                    if 'LINE_NUMBER' not in pdg.nodes[node] or not pdg.nodes[node]['LINE_NUMBER']:
+                        pdg.nodes[node]['LINE_NUMBER'] = parsed_line
+
             node_type = pdg.nodes[node]['NODE_TYPE']
             if node_type == 'METHOD':
                 method_node = node
