@@ -1,14 +1,18 @@
 """Migrate file-level C nodes outside Mystique's function pipeline.
 
-This module owns includes, object-like and function-like defines, and
-file-level function prototypes. Function definitions remain owned by the
-existing Mystique Joern and LLM pipeline.
+This module owns includes, object-like and function-like defines, file-level
+function prototypes, named struct definitions, and conservative single-variable
+global declarations. Function definitions remain owned by the existing
+Mystique Joern and LLM pipeline.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
+import re
 
+import llm
 from scubatrace.cpp.parser import CParser
 
 
@@ -18,6 +22,7 @@ EXTERNAL_QUERY = """
   (preproc_def)
   (preproc_function_def)
   (declaration)
+  (struct_specifier)
 ] @node
 """
 
@@ -70,6 +75,9 @@ class ExternalMigrationResult:
     unresolved: list[UnresolvedChange]
 
 
+DELETE_MARKER = "<<<DELETE>>>"
+
+
 def _node_text(node) -> str:
     return node.text.decode("utf-8", errors="replace")
 
@@ -108,6 +116,48 @@ def _inside_function(node) -> bool:
     return False
 
 
+def _declaration_declarators(node) -> list:
+    return [
+        child
+        for child in node.named_children
+        if child.type
+        in {
+            "identifier",
+            "init_declarator",
+            "pointer_declarator",
+            "array_declarator",
+            "function_declarator",
+        }
+    ]
+
+
+def _has_storage_class(node, storage_class: str) -> bool:
+    return any(
+        child.type == "storage_class_specifier"
+        and _node_text(child).strip() == storage_class
+        for child in node.named_children
+    )
+
+
+def _struct_definition_span(code: str, node) -> tuple[int, int] | None:
+    name = node.child_by_field_name("name")
+    body = node.child_by_field_name("body")
+    if name is None or body is None:
+        return None
+
+    parent = node.parent
+    if parent is None or parent.type not in GUARD_TYPES | {"translation_unit"}:
+        return None
+
+    encoded = code.encode("utf-8")
+    end = node.end_byte
+    while end < len(encoded) and encoded[end : end + 1] in b" \t\r\n":
+        end += 1
+    if encoded[end : end + 1] != b";":
+        return None
+    return node.start_byte, end + 1
+
+
 def extract_external_nodes(code: str) -> list[ExternalNode]:
     """Extract file-level nodes owned by the external migration pipeline."""
     parser = CParser()
@@ -128,11 +178,37 @@ def extract_external_nodes(code: str) -> list[ExternalNode]:
             kind = "define"
             name = node.child_by_field_name("name")
             key = _node_text(name).strip() if name is not None else None
-        elif node.type == "declaration":
-            declarator = node.child_by_field_name("declarator")
-            if declarator is None or declarator.type != "function_declarator":
+        elif node.type == "struct_specifier":
+            span = _struct_definition_span(code, node)
+            if span is None:
                 continue
-            kind = "prototype"
+            kind = "struct"
+            name = node.child_by_field_name("name")
+            key = _node_text(name).strip() if name is not None else None
+            start_byte, end_byte = span
+            text = code.encode("utf-8")[start_byte:end_byte].decode("utf-8")
+            nodes.append(
+                ExternalNode(
+                    kind=kind,
+                    key=key,
+                    text=text,
+                    start_byte=start_byte,
+                    end_byte=end_byte,
+                    guard_context=_guard_context(node),
+                )
+            )
+            continue
+        elif node.type == "declaration":
+            declarators = _declaration_declarators(node)
+            if len(declarators) != 1:
+                continue
+            declarator = declarators[0]
+            if declarator.type == "function_declarator":
+                kind = "prototype"
+            else:
+                if _has_storage_class(node, "extern"):
+                    continue
+                kind = "global"
             key = _declarator_name(declarator)
         else:
             continue
@@ -182,8 +258,14 @@ def _detect_changes(pre_code: str, post_code: str) -> tuple[list[ExternalChange]
     return sorted(changes, key=sort_key), post_nodes
 
 
-def _ensure_insert_text(text: str) -> str:
-    return text if text.endswith("\n") else text + "\n"
+def _prepare_insert_text(code: str, position: int, text: str) -> str:
+    encoded = code.encode("utf-8")
+    prepared = text
+    if position > 0 and encoded[position - 1 : position] != b"\n":
+        prepared = "\n" + prepared
+    if position < len(encoded) and encoded[position : position + 1] == b"\n":
+        return prepared
+    return prepared if prepared.endswith("\n") else prepared + "\n"
 
 
 def _find_add_position(
@@ -240,8 +322,97 @@ def _replace_bytes(code: str, start: int, end: int, replacement: str) -> str:
     return (encoded[:start] + replacement.encode("utf-8") + encoded[end:]).decode("utf-8")
 
 
+def _delete_end(code: str, node: ExternalNode) -> int:
+    encoded = code.encode("utf-8")
+    end = node.end_byte
+    if end < len(encoded) and encoded[end : end + 1] == b"\n":
+        return end + 1
+    return end
+
+
+def _clean_llm_node_output(output: str) -> str:
+    cleaned = output.strip()
+    fenced = re.search(r"```(?:c|C)?\s*\n(.*?)```", cleaned, re.DOTALL)
+    if fenced is not None:
+        cleaned = fenced.group(1).strip()
+    return cleaned
+
+
+def _validate_llm_node(
+    candidate: str,
+    expected: ExternalNode,
+) -> str | None:
+    if candidate == DELETE_MARKER:
+        return candidate
+
+    syntax_error = llm.compile_check.invoke({"code": candidate, "language": "C"})
+    if syntax_error:
+        logging.warning("⚠️ 函数外冲突 LLM 结果语法校验失败: %s", syntax_error)
+        return None
+
+    candidate_nodes = extract_external_nodes(candidate)
+    matching = [
+        node
+        for node in candidate_nodes
+        if node.kind == expected.kind and node.key == expected.key
+    ]
+    if len(matching) != 1 or len(candidate_nodes) != 1:
+        logging.warning(
+            "⚠️ 函数外冲突 LLM 结果身份校验失败: expected=(%s, %s), nodes=%s",
+            expected.kind,
+            expected.key,
+            [(node.kind, node.key) for node in candidate_nodes],
+        )
+        return None
+    return matching[0].text
+
+
+def _resolve_conflict_with_llm(
+    change: ExternalChange,
+    target_node: ExternalNode,
+) -> str | None:
+    pre_text = change.pre_node.text if change.pre_node is not None else "<ABSENT>"
+    post_text = change.post_node.text if change.post_node is not None else "<ABSENT>"
+    expected = change.post_node or change.pre_node
+    assert expected is not None
+
+    prompt = f"""\
+You are resolving one conflicting file-level C node during a three-way backport.
+
+Node kind: {expected.kind}
+Node name: {expected.key}
+Patch action: {change.action}
+
+[PRE]
+{pre_text}
+
+[POST]
+{post_text}
+
+[TARGET]
+{target_node.text}
+
+Merge the semantic intent of POST into TARGET while preserving TARGET-only
+adaptations that do not conflict with the patch. This result will be reviewed
+manually, but it must still be syntactically valid.
+
+Output exactly one complete C node with the same kind and name. Do not output
+markdown or explanations. If the correct merged result is deletion, output
+exactly {DELETE_MARKER}.
+"""
+    logging.info(
+        "🤖 函数外节点冲突交给 LLM 合并: action=%s identity=%s",
+        change.action,
+        change.identity,
+    )
+    output = llm.llm_generate(prompt, temperature=0)
+    if output is None:
+        return None
+    return _validate_llm_node(_clean_llm_node_output(output), expected)
+
+
 def migrate_external_changes(pre_code: str, post_code: str, target_code: str) -> ExternalMigrationResult:
-    """Migrate include, define and prototype changes with conservative three-way rules."""
+    """Migrate supported file-level changes with conservative three-way rules."""
     changes, post_nodes = _detect_changes(pre_code, post_code)
     current = target_code
     applied: list[ExternalChange] = []
@@ -257,13 +428,36 @@ def migrate_external_changes(pre_code: str, post_code: str, target_code: str) ->
             if target_node is not None:
                 if _normalized(target_node.text) == _normalized(change.post_node.text):
                     continue
-                unresolved.append(UnresolvedChange(change, "target already has a different node"))
+                merged = _resolve_conflict_with_llm(change, target_node)
+                if merged is None:
+                    unresolved.append(UnresolvedChange(change, "LLM failed to merge conflicting target node"))
+                    continue
+                if merged == DELETE_MARKER:
+                    current = _replace_bytes(
+                        current,
+                        target_node.start_byte,
+                        _delete_end(current, target_node),
+                        "",
+                    )
+                else:
+                    current = _replace_bytes(
+                        current,
+                        target_node.start_byte,
+                        target_node.end_byte,
+                        merged,
+                    )
+                applied.append(change)
                 continue
             position = _find_add_position(current, change.post_node, post_nodes, target_nodes)
             if position is None:
                 unresolved.append(UnresolvedChange(change, "target guard context is missing"))
                 continue
-            current = _replace_bytes(current, position, position, _ensure_insert_text(change.post_node.text))
+            current = _replace_bytes(
+                current,
+                position,
+                position,
+                _prepare_insert_text(current, position, change.post_node.text),
+            )
             applied.append(change)
             continue
 
@@ -276,9 +470,32 @@ def migrate_external_changes(pre_code: str, post_code: str, target_code: str) ->
 
         if change.action == "delete":
             if _normalized(target_node.text) != _normalized(change.pre_node.text):
-                unresolved.append(UnresolvedChange(change, "target node diverged from pre"))
+                merged = _resolve_conflict_with_llm(change, target_node)
+                if merged is None:
+                    unresolved.append(UnresolvedChange(change, "LLM failed to merge delete conflict"))
+                    continue
+                if merged == DELETE_MARKER:
+                    current = _replace_bytes(
+                        current,
+                        target_node.start_byte,
+                        _delete_end(current, target_node),
+                        "",
+                    )
+                else:
+                    current = _replace_bytes(
+                        current,
+                        target_node.start_byte,
+                        target_node.end_byte,
+                        merged,
+                    )
+                applied.append(change)
                 continue
-            current = _replace_bytes(current, target_node.start_byte, target_node.end_byte, "")
+            current = _replace_bytes(
+                current,
+                target_node.start_byte,
+                _delete_end(current, target_node),
+                "",
+            )
             applied.append(change)
             continue
 
@@ -286,7 +503,25 @@ def migrate_external_changes(pre_code: str, post_code: str, target_code: str) ->
         if _normalized(target_node.text) == _normalized(change.post_node.text):
             continue
         if _normalized(target_node.text) != _normalized(change.pre_node.text):
-            unresolved.append(UnresolvedChange(change, "target node diverged from pre and post"))
+            merged = _resolve_conflict_with_llm(change, target_node)
+            if merged is None:
+                unresolved.append(UnresolvedChange(change, "LLM failed to merge target diverged from pre and post"))
+                continue
+            if merged == DELETE_MARKER:
+                current = _replace_bytes(
+                    current,
+                    target_node.start_byte,
+                    _delete_end(current, target_node),
+                    "",
+                )
+            else:
+                current = _replace_bytes(
+                    current,
+                    target_node.start_byte,
+                    target_node.end_byte,
+                    merged,
+                )
+            applied.append(change)
             continue
         current = _replace_bytes(
             current,
