@@ -44,6 +44,7 @@ from cross_method import (
     extract_new_defines,
     solve_cluster_jointly,
 )
+from external_migration import migrate_external_changes
 from project import Project
 from semantic_sanitizer import repair_broken_string_newlines
 from signature_modifiers import restore_target_signature_modifiers
@@ -432,36 +433,20 @@ def _apply_method_replacements(
     return "".join(lines)
 
 
-def _insert_new_defines(code: str, new_defines: list[str]) -> str:
-    import re
-
-    lines = code.splitlines(keepends=True)
-    last_define_idx = -1
-    for i, line in enumerate(lines):
-        if re.match(r"^\s*#\s*define\s+", line):
-            last_define_idx = i
-
-    existing_defines = set()
-    for line in lines:
-        m = re.match(r"^\s*#\s*define\s+(\w+)", line)
-        if m:
-            existing_defines.add(m.group(1))
-
-    defines_to_insert = [d for d in new_defines if d.strip() and re.match(r"#\s*define\s+(\w+)", d.strip())]
-    defines_to_insert = [d for d in defines_to_insert if re.match(r"#\s*define\s+(\w+)", d.strip()).group(1) not in existing_defines]
-
-    if not defines_to_insert:
-        return code
-
-    insert_lines = [d.strip() + "\n" for d in defines_to_insert]
-    if last_define_idx >= 0:
-        insert_pos = last_define_idx + 1
-    else:
-        insert_pos = 0
-
-    for j, insert_line in enumerate(insert_lines):
-        lines.insert(insert_pos + j, insert_line)
-    return "".join(lines)
+def _log_external_migration_result(result, message: str = "函数外迁移完成") -> None:
+    logging.info(
+        "📋 %s: detected=%d, applied=%d, unresolved=%d",
+        message,
+        len(result.detected),
+        len(result.applied),
+        len(result.unresolved),
+    )
+    for unresolved in result.unresolved:
+        logging.warning(
+            "⚠️ 函数外修改未解决: identity=%s, reason=%s",
+            unresolved.change.identity,
+            unresolved.reason,
+        )
 
 
 def _resolve_input_path(path: str) -> str:
@@ -652,6 +637,14 @@ def patchbp(
         logging.info(f"  输出: {selected_signatures}")
 
     if not selected_signatures:
+        if language == Language.C:
+            external_result = migrate_external_changes(
+                pre_method_code,
+                post_method_code,
+                target_method_code,
+            )
+            _log_external_migration_result(external_result)
+            return external_result.code
         logging.warning("⚠️ 未检测到可迁移的修改函数，直接返回原始 target")
         return target_method_code
 
@@ -705,10 +698,32 @@ def patchbp(
                 )
                 if decl_replacement:
                     logging.info("函数声明处理成功")
+                    if language == Language.C:
+                        external_result = migrate_external_changes(
+                            pre_method_code,
+                            post_method_code,
+                            decl_replacement,
+                        )
+                        _log_external_migration_result(
+                            external_result,
+                            "函数声明回退后的函数外迁移完成",
+                        )
+                        return external_result.code
                     return decl_replacement
             except Exception as e:
                 logging.warning(f"函数声明处理失败: {e}")
 
+        if language == Language.C:
+            external_result = migrate_external_changes(
+                pre_method_code,
+                post_method_code,
+                target_method_code,
+            )
+            _log_external_migration_result(
+                external_result,
+                "函数迁移失败后的函数外迁移完成",
+            )
+            return external_result.code
         logging.warning("❌ 所有函数迁移失败，返回原始 target")
         return target_method_code
 
@@ -722,9 +737,14 @@ def patchbp(
     )
     logging.info(f"  输出: patched_code={len(patched_code)} chars")
 
-    if new_defines and language == Language.C:
-        patched_code = _insert_new_defines(patched_code, new_defines)
-        logging.info(f"  插入新增宏定义后: patched_code={len(patched_code)} chars")
+    if language == Language.C:
+        external_result = migrate_external_changes(
+            pre_method_code,
+            post_method_code,
+            patched_code,
+        )
+        patched_code = external_result.code
+        _log_external_migration_result(external_result)
 
     failed_signatures = sorted(set(prepare_failed_signatures + solve_failed_signatures))
     return patched_code

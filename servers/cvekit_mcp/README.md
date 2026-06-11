@@ -119,6 +119,90 @@ cvekit --action create-pr --cve-id ${CVE_ID} --branch ${BRANCH_NAME}
 cvekit --action backport --cve-id ${CVE_ID} --branch ${BRANCH_NAME} --api-key ${API_KEY} --llm-provider ${LLM_PROVIDER}
 ```
 
+### 选择解冲突方法
+
+cvekit 支持以下解冲突方法：
+
+- `portgpt`：默认方法，对应 `cvekit --action backport`。
+- `mystique`：可选方法，对应 `cvekit --action mystique`。
+
+单次回移植可直接通过 action 选择方法：
+
+```bash
+# 默认 PortGPT 流程
+cvekit --action backport --cve-id ${CVE_ID} --branch ${BRANCH_NAME}
+
+# Mystique 流程
+cvekit --action mystique --cve-id ${CVE_ID} --branch ${BRANCH_NAME}
+```
+
+启动 MCP 服务时，可通过 `--backport-engine` 指定 `analyze_branches`
+自动处理冲突补丁时使用的方法：
+
+```bash
+cd servers/cvekit_mcp/src
+python server.py --backport-engine mystique
+```
+
+MCP 服务默认使用 `portgpt`。修改启动参数后需要重启服务。
+
+### Mystique 依赖与格式配置
+
+Mystique 使用 Joern 进行代码分析。安装后通过 `JOERN_PATH` 指定
+`joern-cli` 路径；未设置时默认使用 `~/.local/joern/joern-cli`。
+
+```bash
+curl -fSL https://github.com/joernio/joern/releases/latest/download/joern-install.sh \
+  -o joern-install.sh
+chmod +x joern-install.sh
+./joern-install.sh --install-dir=~/.local/joern
+
+export JOERN_PATH=~/.local/joern/joern-cli
+```
+
+Mystique模式下，解冲突之后对生成的代码进行格式调整，存在以下两种方式：
+
+- `full`：对完整函数进行 LLM 格式调整，是默认模式。
+- `changed`：保留目标函数中未变化的代码，仅对新增或替换区域进行 LLM
+  格式调整，适合尽量减少无关格式变化。
+
+使用 `changed` 模式时，若目标仓库存在 `.clang-format` 且系统能找到
+`clang-format`，Mystique 还会使用目标仓库的格式规则处理变化行。
+
+```bash
+# 安装方式按系统选择，例如：
+yum install clang-tools-extra
+command -v clang-format
+
+cvekit --action mystique --cve-id ${CVE_ID} --branch ${BRANCH_NAME} \
+  --format-mode changed
+```
+
+也可以通过环境变量设置默认格式模式：
+
+```bash
+export MYSTIQUE_FORMAT_MODE=changed
+```
+
+在 MCP 配置中使用 Mystique 时，可将相关环境变量放入 `env`：
+
+```json
+{
+  "cvekit_mcp": {
+    "command": "python",
+    "args": ["/path/to/cvekit_mcp/src/server.py", "--backport-engine", "mystique"],
+    "env": {
+      "JOERN_PATH": "/home/user/.local/joern/joern-cli",
+      "MYSTIQUE_FORMAT_MODE": "changed"
+    }
+  }
+}
+```
+
+`clang-format` 不属于必需依赖；未安装或目标仓库没有 `.clang-format` 时，
+Mystique 会跳过局部 clang-format，继续生成补丁。通过 MCP 运行时，还需
+确保 MCP 服务进程的 `PATH` 中包含 `clang-format` 所在目录。
+
 使用完全自定义 LLM（任意 OpenAI 兼容服务）：
 ```bash
 # --llm-provider 支持任意值，配合 --llm-base-url 和 --llm-model-name 使用
@@ -167,11 +251,13 @@ target_release: openEuler-24.03-LTS-SP1-patchpool
 patch_dataset_dir: /path/to/patch_dataset
 llm_provider: minimax               # 可选：report 模式回移植时使用
 api_key: ${API_KEY}                 # 建议通过环境变量或命令行 --api-key
+backport_engine: portgpt            # 可选：portgpt（默认）或 mystique
 commits:
 - commit: 2d1a8bfb61ec
   commit_title: 'etm4x: Fix etm4_count race by moving cpuhp callbacks to init'
 - commit: 16a0cbac6609
   commit_title: 'drivers: arch_topology: Refactor do-while loops'
+  backport_engine: mystique         # 可选：仅覆盖当前 commit
 ```
 
 运行：
@@ -183,9 +269,23 @@ cvekit --action backport-batch --backport-config /path/to/backport-batch.yml --d
 # 全量排序后只检查到第一条冲突，后续条目保持 pending
 cvekit --action backport-batch --backport-config /path/to/backport-batch.yml --debug --json --stop-at-first-conflict
 
+# 通过命令行指定本次批处理使用 Mystique
+cvekit --action backport-batch --backport-config /path/to/backport-batch.yml --backport-engine mystique --debug --json
+
 # 或直接用模块运行（开发调试更直观）
 python -m cvekit.cli --action backport-batch --backport-config /path/to/backport-batch.yml --debug --json
 ```
+
+批处理的方法选择优先级为：
+
+```text
+单条 commit 的 backport_engine
+  > 命令行 --backport-engine
+  > YAML 顶层 backport_engine
+  > portgpt
+```
+
+只支持 `portgpt` 和 `mystique`。最终使用的方法会写入 report。
 
 ### 报告文件（report 模式）
 
@@ -193,7 +293,7 @@ python -m cvekit.cli --action backport-batch --backport-config /path/to/backport
 
 report 配置用于“按报告执行”：
 - **merged_in_target=true**：跳过
-- **has_conflict=true**：触发回移植（调用 `backport` 流程/LLM）
+- **has_conflict=true**：使用配置的 `backport_engine` 触发回移植
 - **has_conflict=false**：直接在目标仓尝试 `cherry-pick` 应用
 - **status=pending**：尚未检查，可配合 `--stop-at-first-conflict` 从第一条 pending 继续检测；report 模式不会重新排序。
 
