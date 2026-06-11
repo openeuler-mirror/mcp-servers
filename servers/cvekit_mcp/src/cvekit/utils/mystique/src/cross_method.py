@@ -95,7 +95,18 @@ def _build_added_method_artifact(
 ) -> MethodPatchArtifacts | None:
     post_raw_code = post_method.file.raw_code
     post_raw_parser = ast_parser.ASTParser(post_raw_code, language)
-    if post_method.body_node is not None:
+    if post_method.is_func_decl:
+        post_decl_start, post_decl_end = _find_func_decl_lines(post_raw_parser, post_method.name)
+        if post_decl_start is None:
+            logging.warning(f"❌ 新增函数声明行号解析失败: {signature}")
+            return None
+        post_raw_lines = post_raw_code.splitlines()
+        added_code = "\n".join(post_raw_lines[post_decl_start - 1:post_decl_end])
+    elif post_method.node is None:
+        # Regex-parsed C definitions have no tree-sitter node, but already
+        # contain the complete function body.
+        added_code = post_method.code
+    else:
         func_start, func_end = None, None
         for method_node in post_raw_parser.query_all(ast_parser.TS_C_METHOD):
             name_node = method_node.child_by_field_name("declarator")
@@ -119,13 +130,6 @@ def _build_added_method_artifact(
             return None
         post_raw_lines = post_raw_code.splitlines()
         added_code = "\n".join(post_raw_lines[func_start - 1:func_end])
-    else:
-        post_decl_start, post_decl_end = _find_func_decl_lines(post_raw_parser, post_method.name)
-        if post_decl_start is None:
-            logging.warning(f"❌ 新增函数声明行号解析失败: {signature}")
-            return None
-        post_raw_lines = post_raw_code.splitlines()
-        added_code = "\n".join(post_raw_lines[post_decl_start - 1:post_decl_end])
 
     target_file = target_project.files[0] if target_project.files else None
     if target_file is None:
@@ -1423,4 +1427,3 @@ def _parse_joint_llm_json_fallback(raw_text: str, signatures: Iterable[str], all
     if not allow_partial and len(result) != len(signatures_set):
         return {}
     return result
-

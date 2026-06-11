@@ -300,6 +300,32 @@ def _build_commit_message_report_fields(
         }
 
 
+def _resolve_commit_message_fields(
+    *,
+    patch_path: str,
+    openeuler_commit_id: str,
+    item_config: dict,
+    base_config: dict,
+    args,
+) -> dict:
+    existing_preview = str(item_config.get("commit_message_preview") or "").strip()
+    if existing_preview:
+        return {
+            "commit_message": existing_preview,
+            "commit_message_preview": existing_preview,
+            "commit_message_context": item_config.get("commit_message_context") or {},
+            "source_detection": item_config.get("source_detection") or {},
+            "commit_message_warnings": item_config.get("commit_message_warnings") or [],
+        }
+    return _build_commit_message_report_fields(
+        patch_path=patch_path,
+        openeuler_commit_id=openeuler_commit_id,
+        item_config=item_config,
+        base_config=base_config,
+        args=args,
+    )
+
+
 def _looks_like_patch_path(value: str) -> bool:
     if not isinstance(value, str):
         return False
@@ -386,22 +412,12 @@ def _handle_preview_commit_message(args):
     commit_message_source = original_patch_path or patch_path
     if not commit_message_source:
         raise ValueError(f"未找到可预览的补丁路径: commit={commit_id}")
-    preview = build_commit_message_preview(
+    preview = _resolve_commit_message_fields(
         patch_path=commit_message_source,
         openeuler_commit_id=commit_id,
-        template=(
-            str(getattr(args, "commit_message_template", "") or "").strip()
-            or str(item_config.get("commit_message_template") or "").strip()
-            or str(context.base_config.get("commit_message_template") or "").strip()
-            or DEFAULT_COMMIT_MESSAGE_TEMPLATE
-        ),
-        linux_repo_path=(
-            str(getattr(args, "linux_repo_path", "") or "").strip()
-            or str(item_config.get("linux_repo_path") or "").strip()
-            or str(context.base_config.get("linux_repo_path") or "").strip()
-            or DEFAULT_LINUX_REPO_PATH
-        ),
-        commit_message_source=_resolve_commit_message_source(args, item_config, context.base_config),
+        item_config=item_config,
+        base_config=context.base_config,
+        args=args,
     )
     return {
         "action": "backport-batch-preview-commit-message",
@@ -551,22 +567,12 @@ def _handle_direct_apply_backported_patch(args):
         item_config=item_config,
     )
     commit_message_source = original_patch_path or patch_path
-    commit_message_preview = build_commit_message_preview(
+    commit_message_preview = _resolve_commit_message_fields(
         patch_path=commit_message_source,
         openeuler_commit_id=str(commit_id or ""),
-        template=(
-            str(getattr(args, "commit_message_template", "") or "").strip()
-            or str(item_config.get("commit_message_template") or "").strip()
-            or str(context.base_config.get("commit_message_template") or "").strip()
-            or DEFAULT_COMMIT_MESSAGE_TEMPLATE
-        ),
-        linux_repo_path=(
-            str(getattr(args, "linux_repo_path", "") or "").strip()
-            or str(item_config.get("linux_repo_path") or "").strip()
-            or str(context.base_config.get("linux_repo_path") or "").strip()
-            or DEFAULT_LINUX_REPO_PATH
-        ),
-        commit_message_source=_resolve_commit_message_source(args, item_config, context.base_config),
+        item_config=item_config,
+        base_config=context.base_config,
+        args=args,
     )
     commit_message = commit_message_preview["commit_message"]
     apply_result = _apply_patch_file_to_target_repo(
@@ -1129,6 +1135,30 @@ def _reset_hard_and_clean(repo: git.Repo, head_sha: str | None = None) -> None:
         pass
 
 
+def _ensure_commit_available_for_cherry_pick(
+    target_repo: git.Repo,
+    project_dir: str,
+    commit_sha: str,
+) -> None:
+    if os.path.abspath(target_repo.working_dir.rstrip("/")) == os.path.abspath(project_dir.rstrip("/")):
+        return
+    try:
+        target_repo.commit(commit_sha)
+        return
+    except Exception:
+        pass
+
+    upstream_url = os.path.abspath(project_dir.rstrip("/"))
+    remote_name = "upstream"
+    upstream_remote = next(
+        (remote for remote in target_repo.remotes if remote.name == remote_name),
+        None,
+    )
+    if upstream_remote is None:
+        upstream_remote = target_repo.create_remote(remote_name, upstream_url)
+    upstream_remote.fetch(commit_sha)
+
+
 def _is_commit_merged_in_target(target_path: str, target_branch: str, commit_sha: str):
     try:
         target_repo = git.Repo(target_path)
@@ -1179,13 +1209,7 @@ def _check_conflict_with_apply_or_cherrypick(
     # 再尝试 cherry-pick
     original_head = target_repo.head.commit.hexsha
     try:
-        if os.path.abspath(target_repo.working_dir.rstrip("/")) != os.path.abspath(project_dir.rstrip("/")):
-            upstream_url = os.path.abspath(project_dir.rstrip("/"))
-            remote_name = "upstream"
-            if remote_name not in [r.name for r in target_repo.remotes]:
-                target_repo.create_remote(remote_name, upstream_url)
-            target_repo.remotes[remote_name].fetch()
-
+        _ensure_commit_available_for_cherry_pick(target_repo, project_dir, commit_sha)
         target_repo.git.cherry_pick(commit_sha)
         _reset_hard_and_clean(target_repo, original_head)
         return False, "cherry-pick", None
@@ -1220,12 +1244,7 @@ def _apply_patch_to_target_repo(
         is_merge_commit = len(commit_obj.parents) > 1
         if is_merge_commit:
             return {"status": "skipped", "error": "merge commit 已跳过"}
-        if os.path.abspath(target_repo.working_dir.rstrip("/")) != os.path.abspath(project_dir.rstrip("/")):
-            upstream_url = os.path.abspath(project_dir.rstrip("/"))
-            remote_name = "upstream"
-            if remote_name not in [r.name for r in target_repo.remotes]:
-                target_repo.create_remote(remote_name, upstream_url)
-            target_repo.remotes[remote_name].fetch()
+        _ensure_commit_available_for_cherry_pick(target_repo, project_dir, commit_sha)
         target_repo.git.cherry_pick("--no-commit", commit_sha)
         if not target_repo.is_dirty(index=True, working_tree=True, untracked_files=False):
             return {"status": "skipped", "error": "补丁未产生变更（可能已等效存在）"}
@@ -1570,7 +1589,9 @@ def _resolve_merge_and_conflict_status(
                 merged_check_error,
             )
 
-    if (not is_report_config) and (not merged_in_target):
+    # Raw configs need an initial conflict check. Report configs only recheck
+    # when the caller explicitly enters stop-at-first-conflict detection mode.
+    if ((not is_report_config) or force_recheck) and (not merged_in_target):
         has_conflict, conflict_check_method, conflict_check_error = _check_conflict_with_apply_or_cherrypick(
             base_target_path,
             target_branch,
@@ -1585,7 +1606,7 @@ def _resolve_merge_and_conflict_status(
             conflict_check_method,
             conflict_check_error,
         )
-    elif not is_report_config:
+    elif (not is_report_config) or force_recheck:
         logger.info(
             "[backport-batch] 已判定目标分支包含补丁，跳过二次冲突检测: tag=%s, commit=%s, branch=%s",
             tag or commit_id,
@@ -1902,22 +1923,12 @@ def _execute_backport_batch_action(
                     target_branch,
                 )
                 commit_message_source = _infer_original_patch_path(item_config) or patch_path
-                commit_message_preview = build_commit_message_preview(
+                commit_message_preview = _resolve_commit_message_fields(
                     patch_path=commit_message_source,
                     openeuler_commit_id=str(commit_id or fixed_commit or ""),
-                    template=(
-                        str(getattr(args, "commit_message_template", "") or "").strip()
-                        or str(item_config.get("commit_message_template") or "").strip()
-                        or str(config_dict.get("commit_message_template") or "").strip()
-                        or DEFAULT_COMMIT_MESSAGE_TEMPLATE
-                    ),
-                    linux_repo_path=(
-                        str(getattr(args, "linux_repo_path", "") or "").strip()
-                        or str(item_config.get("linux_repo_path") or "").strip()
-                        or str(config_dict.get("linux_repo_path") or "").strip()
-                        or DEFAULT_LINUX_REPO_PATH
-                    ),
-                    commit_message_source=_resolve_commit_message_source(args, item_config, config_dict),
+                    item_config=item_config,
+                    base_config=config_dict,
+                    args=args,
                 )
                 apply_result = _apply_patch_to_target_repo(
                     base_target_path,
@@ -1972,22 +1983,12 @@ def _execute_backport_batch_action(
                 "error": "缺少 patch_path，无法应用补丁",
             }, did_backport, refreshed_status
         commit_message_source = _infer_original_patch_path(item_config) or patch_path
-        commit_message_preview = build_commit_message_preview(
+        commit_message_preview = _resolve_commit_message_fields(
             patch_path=commit_message_source,
             openeuler_commit_id=str(commit_id or fixed_commit or ""),
-            template=(
-                str(getattr(args, "commit_message_template", "") or "").strip()
-                or str(item_config.get("commit_message_template") or "").strip()
-                or str(config_dict.get("commit_message_template") or "").strip()
-                or DEFAULT_COMMIT_MESSAGE_TEMPLATE
-            ),
-            linux_repo_path=(
-                str(getattr(args, "linux_repo_path", "") or "").strip()
-                or str(item_config.get("linux_repo_path") or "").strip()
-                or str(config_dict.get("linux_repo_path") or "").strip()
-                or DEFAULT_LINUX_REPO_PATH
-            ),
-            commit_message_source=_resolve_commit_message_source(args, item_config, config_dict),
+            item_config=item_config,
+            base_config=config_dict,
+            args=args,
         )
         apply_result = _apply_patch_to_target_repo(
             base_target_path,
@@ -2072,10 +2073,26 @@ def _build_backport_batch_report_item(
         else (resolved_backported_patch if effective_has_conflict else resolved_original_patch)
     )
     message_fields = {
-        "commit_message_preview": backport_result.get("commit_message_preview", ""),
-        "commit_message_context": backport_result.get("commit_message_context", {}),
-        "source_detection": backport_result.get("source_detection", {}),
-        "commit_message_warnings": backport_result.get("commit_message_warnings", []),
+        "commit_message_preview": (
+            backport_result.get("commit_message_preview")
+            or item_config.get("commit_message_preview")
+            or ""
+        ),
+        "commit_message_context": (
+            backport_result.get("commit_message_context")
+            or item_config.get("commit_message_context")
+            or {}
+        ),
+        "source_detection": (
+            backport_result.get("source_detection")
+            or item_config.get("source_detection")
+            or {}
+        ),
+        "commit_message_warnings": (
+            backport_result.get("commit_message_warnings")
+            or item_config.get("commit_message_warnings")
+            or []
+        ),
     }
     if not message_fields["commit_message_preview"] and resolved_original_patch:
         message_fields = _build_commit_message_report_fields(
