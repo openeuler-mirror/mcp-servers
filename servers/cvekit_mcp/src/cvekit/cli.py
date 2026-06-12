@@ -6,6 +6,7 @@ import json
 import multiprocessing
 import asyncio
 import git
+from datetime import datetime
 
 from typing import Optional, Tuple, List, Dict
 from tabulate import tabulate
@@ -28,6 +29,58 @@ from .utils.package.source_repo import get_spec_version_from_branch, sync_rpmbui
 logger = logging.getLogger(__name__)
 apply_patch_lock = multiprocessing.Lock()
 create_pr_lock = multiprocessing.Lock()
+
+
+def _build_log_formatter():
+    return logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+
+def _setup_logging(args):
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+
+    formatter = _build_log_formatter()
+    debug_enabled = bool(getattr(args, "debug", False))
+
+    if debug_enabled:
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.DEBUG)
+        console_handler.setFormatter(formatter)
+        root_logger.addHandler(console_handler)
+    else:
+        log_dir = os.path.expanduser('~/.cvekit')
+        os.makedirs(log_dir, exist_ok=True)
+        if args.cve_id:
+            log_file = os.path.join(log_dir, f'cvekit-{args.cve_id}.log')
+        else:
+            log_file = os.path.join(log_dir, 'cvekit.log')
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+
+    if args.action == 'backport-batch':
+        backport_log_dir = os.path.expanduser('~/.backport')
+        os.makedirs(backport_log_dir, exist_ok=True)
+        timestamp = datetime.utcnow().strftime('%Y-%m-%d-%H-%M')
+        backport_log_file = os.path.join(backport_log_dir, f'{timestamp}.log')
+
+        if not debug_enabled:
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(logging.INFO)
+            console_handler.setFormatter(formatter)
+            root_logger.addHandler(console_handler)
+
+        backport_file_handler = logging.FileHandler(backport_log_file)
+        backport_file_handler.setLevel(logging.DEBUG if debug_enabled else logging.INFO)
+        backport_file_handler.setFormatter(formatter)
+        root_logger.addHandler(backport_file_handler)
+
+        args.backport_log_file = backport_log_file
+        logger.info("backport-batch 日志文件: %s", backport_log_file)
 
 class IssueInfo:
     def __init__(self, issue_id, cve_id, org_name, repo_name, affected_versions, issue_url):
@@ -327,34 +380,7 @@ def main():
     if not args.branch and args.action in ['apply-patch', 'create-pr', 'backport']:
         parser.error(f"{args.action} 模式需要指定目标分支，请使用 --branch 参数")
 
-    # 配置根logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG)
-    
-    # 清除现有处理器
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
-    
-    if args.debug:
-        # 调试模式：添加控制台处理器
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.DEBUG)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        console_handler.setFormatter(formatter)
-        root_logger.addHandler(console_handler)
-    else:
-        # 非调试模式：添加文件处理器
-        log_dir = os.path.expanduser('~/.cvekit')
-        os.makedirs(log_dir, exist_ok=True)  # 确保目录存在
-        if args.cve_id:
-            log_file = os.path.join(log_dir, f'cvekit-{args.cve_id}.log')
-        else:
-            log_file = os.path.join(log_dir, 'cvekit.log')
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(formatter)
-        root_logger.addHandler(file_handler)
+    _setup_logging(args)
 
     try:
         result = handle_action(args)
@@ -386,6 +412,15 @@ def handle_action(args):
             'repo_path': repo_path
         }
     if args.action == 'backport-batch':
+        logger.info(
+            "开始执行 backport-batch: config=%s, excel=%s, execute=%s, apply=%s, preview=%s, interactive=%s",
+            getattr(args, 'backport_config', None),
+            getattr(args, 'backport_excel', None),
+            getattr(args, 'execute', False),
+            getattr(args, 'apply', None),
+            getattr(args, 'preview_commit_message', False),
+            getattr(args, 'interactive', False),
+        )
         if args.backport_excel:
             return generate_backport_batch_config_from_excel(
                 excel_path=args.backport_excel,

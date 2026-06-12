@@ -70,6 +70,13 @@ def generate_backport_batch_config_from_excel(
     sheet_name: str | None = None,
 ):
     """根据 Excel 生成 backport-batch 原始配置文件。"""
+    logger.info(
+        "[backport-batch] 从 Excel 生成配置: excel=%s, output=%s, template=%s, sheet=%s",
+        excel_path,
+        output_path,
+        template_config_path,
+        sheet_name,
+    )
     if not excel_path:
         raise ValueError("请提供 Excel 文件路径")
     if not os.path.exists(excel_path):
@@ -132,6 +139,12 @@ def generate_backport_batch_config_from_excel(
     base_config["commits"] = commits
     with open(output_path, "w", encoding="utf-8") as file:
         yaml.safe_dump(base_config, file, allow_unicode=True, sort_keys=False)
+    logger.info(
+        "[backport-batch] Excel 配置生成完成: output=%s, sheet=%s, commit_count=%d",
+        output_path,
+        worksheet.title,
+        len(commits),
+    )
 
     return {
         "status": "success",
@@ -219,6 +232,15 @@ def handle_backport_batch(args):
     sorted_items = context.sorted_items
     sort_errors = context.sort_errors
     report_output_path = context.report_output_path or args.backport_config
+    logger.info(
+        "[backport-batch] 上下文准备完成: config_type=%s, sorted_items=%d, sort_errors=%d, project_dir=%s, target_path=%s, report_output=%s",
+        "report" if is_report_config else "raw",
+        len(sorted_items),
+        len(sort_errors),
+        base_project_dir,
+        base_target_path,
+        report_output_path,
+    )
 
     default_target_branch = args.branch
     results, report_items = _execute_backport_batch_items(
@@ -244,6 +266,18 @@ def handle_backport_batch(args):
         report_items=report_items,
     )
     _write_backport_batch_report(report_output_path, is_report_config, report)
+    if getattr(args, "backport_log_file", None):
+        for result in results:
+            details = result.get("details")
+            if isinstance(details, dict):
+                details.setdefault("batch_logfile", args.backport_log_file)
+    logger.info(
+        "[backport-batch] 处理完成: results=%d, report_items=%d, report_path=%s, log_path=%s",
+        len(results),
+        len(report_items),
+        report_output_path if is_report_config else report_output_path + ".report.yml",
+        getattr(args, "backport_log_file", ""),
+    )
     return results
 
 
@@ -2416,6 +2450,7 @@ def _write_backport_batch_report(config_path, is_report_config, report):
     report_path = config_path if is_report_config else config_path + ".report.yml"
     with open(report_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(report, f, allow_unicode=True, sort_keys=False)
+    logger.info("[backport-batch] report 已写入: %s", report_path)
 
 
 def _prepare_backport_batch_context(args):
@@ -2455,6 +2490,12 @@ def _prepare_backport_batch_context(args):
         base_config,
         args,
     )
+    logger.info(
+        "[backport-batch] 排序完成: total_items=%d, sorted_items=%d, sort_errors=%d",
+        len(commit_items),
+        len(sorted_items),
+        len(sort_errors),
+    )
     return BackportBatchContext(
         config=config,
         is_report_config=is_report_config,
@@ -2481,6 +2522,13 @@ def _execute_backport_batch_items(
     report_items = []
     stop_at_first_conflict = bool(getattr(args, "stop_at_first_conflict", False))
     start_index = 0
+    logger.info(
+        "[backport-batch] 开始批量处理: sorted_items=%d, sort_errors=%d, stop_at_first_conflict=%s, is_report_config=%s",
+        len(sorted_items),
+        len(sort_errors),
+        stop_at_first_conflict,
+        is_report_config,
+    )
 
     if stop_at_first_conflict and is_report_config:
         pending_indexes = [
@@ -2510,6 +2558,7 @@ def _execute_backport_batch_items(
             args=args,
         )
         if processed.get("skip"):
+            logger.info("[backport-batch] 条目跳过: index=%d", idx)
             continue
         if processed.get("result"):
             results.append(processed["result"])
@@ -2537,4 +2586,9 @@ def _execute_backport_batch_items(
                 default_target_branch=default_target_branch,
             )
             break
+    logger.info(
+        "[backport-batch] 批量处理结束: results=%d, report_items=%d",
+        len(results),
+        len(report_items),
+    )
     return results, report_items
