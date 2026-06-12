@@ -1530,7 +1530,7 @@ def _resolve_merge_and_conflict_status(
             None,
         )
 
-    use_config_merged = is_report_config and merged_in_target is not None and not force_recheck
+    use_config_merged = is_report_config and merged_in_target is True and not force_recheck
     if use_config_merged:
         logger.info(
             "[backport-batch] 使用 report 配置中的 merged_in_target: tag=%s, merged_in_target=%s",
