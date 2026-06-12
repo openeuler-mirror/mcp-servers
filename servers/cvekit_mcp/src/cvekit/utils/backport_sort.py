@@ -66,7 +66,7 @@ def resolve_sorted_backport_items(
     sorted_items, sort_errors = sort_commit_items(
         commit_items,
         base_project_dir,
-        "master",
+        base_config.get("source_branch") or "master",
         commit_sort,
         None,
     )
@@ -113,9 +113,9 @@ def _looks_like_commit_sha(value: str) -> bool:
     return all(ch in "0123456789abcdef" for ch in candidate)
 
 
-def _build_commit_subject_index(repo: git.Repo):
+def _build_commit_subject_index(repo: git.Repo, source_ref: str):
     try:
-        log_output = repo.git.log("--all", "--format=%H%x00%s")
+        log_output = repo.git.log(source_ref, "--no-merges", "--format=%H%x00%s")
     except Exception as exc:
         return None, f"读取提交日志失败: {exc}"
     index = []
@@ -153,25 +153,6 @@ def _resolve_commit_id_by_title(repo: git.Repo, commit_title: str, commit_index=
             hint = [f"{sha}:{subject}" for sha, subject in contains_matches[:5]]
             return None, f"commit title 包含匹配到多个候选: {normalized_title}, candidates={hint}"
         return contains_matches[0][0], None
-    if len(matches) > 1:
-        non_merge = []
-        for sha in matches:
-            try:
-                commit_obj = repo.commit(sha)
-                if len(commit_obj.parents) <= 1:
-                    non_merge.append(sha)
-            except Exception:
-                continue
-        matches = non_merge or matches
-        if len(matches) > 1:
-            hint = []
-            for sha in matches[:5]:
-                try:
-                    subject = repo.commit(sha).summary.strip()
-                except Exception:
-                    subject = ""
-                hint.append(f"{sha}:{subject}")
-            return None, f"commit title 匹配到多个提交: {normalized_title}, candidates={hint}"
     return matches[0], None
 
 
@@ -205,7 +186,17 @@ def _parse_commit_items(
         try:
             commit_obj = None
             commit_error = None
-            if commit_id:
+            if normalized_title:
+                if commit_index is None:
+                    commit_index, index_error = _build_commit_subject_index(repo, upstream_ref)
+                    if index_error:
+                        raise ValueError(index_error)
+                resolved_sha, _ = _resolve_commit_id_by_title(repo, normalized_title, commit_index)
+                if resolved_sha:
+                    commit_obj = repo.commit(resolved_sha)
+                    commit_id = commit_obj.hexsha
+
+            if commit_obj is None and commit_id:
                 try:
                     commit_obj = repo.commit(commit_id)
                 except Exception as exc:
@@ -222,17 +213,8 @@ def _parse_commit_items(
                     )
                 normalized_title = actual_title
             elif normalized_title:
-                if commit_index is None:
-                    commit_index, index_error = _build_commit_subject_index(repo)
-                    if index_error:
-                        raise ValueError(index_error)
-                resolved_sha, resolve_error = _resolve_commit_id_by_title(repo, normalized_title, commit_index)
-                if not resolved_sha:
-                    errors.append((idx, item, f"无法根据 commit title 找到提交: {resolve_error}"))
-                    continue
-                commit_obj = repo.commit(resolved_sha)
-                commit_id = commit_obj.hexsha
-                normalized_title = commit_obj.summary.strip()
+                errors.append((idx, item, f"无法根据 commit title 找到提交，且无法解析 commit: {input_commit}, error={commit_error}"))
+                continue
             elif commit_id:
                 errors.append((idx, item, f"无法解析 commit: {commit_id}, error={commit_error}"))
                 continue
