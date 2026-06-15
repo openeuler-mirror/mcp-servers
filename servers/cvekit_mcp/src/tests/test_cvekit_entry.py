@@ -1,6 +1,7 @@
 import sys
 import runpy
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -308,6 +309,45 @@ def test_handle_action_backport_builds_config_and_calls_run_backport(monkeypatch
     assert result["适配状态"] == "成功"
     assert result["details"]["fixed_commit"] == "commit-fixed"
     assert result["details"]["status"] == "success"
+
+
+def test_handle_mystique_returns_original_patch_file_path():
+    from cvekit import cli
+
+    args = _make_args(
+        action="mystique",
+        branch="OLK-6.6",
+        commit_id="fixed-commit",
+        project_dir="/tmp/linux",
+        target_path="/tmp/kernel",
+        output="/tmp/output",
+        api_key="test-key",
+        llm_base_url=None,
+        llm_model_name=None,
+        format_mode="changed",
+    )
+    fake_config = SimpleNamespace(
+        configure_llm=mock.Mock(),
+        configure_format_normalization=mock.Mock(),
+    )
+    fake_main = SimpleNamespace(
+        main_from_repo=mock.Mock(return_value=[{
+            "status": "ported",
+            "original_patch_path": "/tmp/output/original_fixed-commit.patch",
+            "backported_patch_path": "/tmp/output/backported.patch",
+            "logfile": "/tmp/mystique.log",
+        }])
+    )
+
+    with mock.patch.dict(sys.modules, {"config": fake_config, "main": fake_main}), \
+            mock.patch.object(cli, "i18n", side_effect=lambda value: value):
+        result = cli.handle_mystique("CVE-TEST-MYSTIQUE", args)
+
+    assert result["details"]["fixed_commit"] == "fixed-commit"
+    assert (
+        result["details"]["original_patch_path"]
+        == "/tmp/output/original_fixed-commit.patch"
+    )
 
 
 def test_handle_action_invalid_action_raises_runtime_error():
