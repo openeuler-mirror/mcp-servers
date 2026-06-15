@@ -1872,6 +1872,24 @@ def main_from_repo(
             all_patch_parts.append(patch_diff)
             logging.info(f"文件 {source_path} 迁移完成，已生成 diff")
         else:
+            # If Mystique produced code that normalizes back to the current
+            # target content, this file is effectively already ported. Report
+            # it as need_not_ported instead of a synthetic "ported" result
+            # without a patch, otherwise the batch adapter will misclassify the
+            # whole case as failed.
+            if format.normalize(patched_code) == format.normalize(target_content):
+                logging.info(
+                    "文件 %s 迁移后与目标代码等价，无需导出 diff (need not ported)",
+                    source_path,
+                )
+                results.append({
+                    "source_file": source_path,
+                    "target_file": target_file_path,
+                    "patched_file": None,
+                    "language": language.value,
+                    "status": "need_not_ported",
+                })
+                continue
             logging.warning(f"文件 {source_path} 迁移完成，但无法生成 diff")
 
         logging.info(f"文件 {source_path} 迁移完成，结果写入: {result_path}")
