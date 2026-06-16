@@ -4,6 +4,9 @@
 """
 
 import re
+import logging
+
+import pytest
 
 def extract_function_signature_from_raw_code(raw_code: str, function_name: str, start_line: int) -> str | None:
     """
@@ -190,6 +193,7 @@ test_cases = [
     },
 ]
 
+@pytest.mark.parametrize("test_case", test_cases, ids=lambda case: case["name"])
 def test_restore_init_exit_modifiers(test_case: dict):
     print(f"\n{'='*80}")
     print(f"测试用例: {test_case['name']}")
@@ -223,14 +227,14 @@ def test_restore_init_exit_modifiers(test_case: dict):
         else:
             print(f"✗ __exit 修饰符恢复失败")
 
-# 运行所有测试用例
-print(f"\n{'#'*80}")
-print(f"恢复 __init/__exit 修饰符测试")
-print(f"{'#'*80}")
+if __name__ == "__main__":
+    print(f"\n{'#'*80}")
+    print(f"恢复 __init/__exit 修饰符测试")
+    print(f"{'#'*80}")
 
-for test_case in test_cases:
-    test_restore_init_exit_modifiers(test_case)
+    for test_case in test_cases:
+        test_restore_init_exit_modifiers(test_case)
 
-print(f"\n{'#'*80}")
-print(f"测试完成")
-print(f"{'#'*80}")
+    print(f"\n{'#'*80}")
+    print(f"测试完成")
+    print(f"{'#'*80}")

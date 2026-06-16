@@ -1,5 +1,6 @@
 import sys
 import runpy
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -24,11 +25,17 @@ def test_bin_cvekit_calls_cli_main():
     """
     script_path = _bin_script_path()
 
-    with mock.patch("cvekit.cli.main") as mock_main:
-        # 使用 runpy 以 __main__ 方式执行脚本，模拟命令行调用
-        runpy.run_path(script_path, run_name="__main__")
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"urllib3 .* doesn't match a supported version!",
+            category=Warning,
+        )
+        with mock.patch("cvekit.cli.main") as mock_main:
+            # 使用 runpy 以 __main__ 方式执行脚本，模拟命令行调用
+            runpy.run_path(script_path, run_name="__main__")
 
-        mock_main.assert_called_once()
+            mock_main.assert_called_once()
 
 
 def test_main_setup_env_calls_setup_repository_and_format_output(monkeypatch):
@@ -123,7 +130,10 @@ def _make_args(**overrides):
         signer_name=None,
         signer_email=None,
         openai_key="",
+        api_key="fake-key",
         llm_provider="openai",
+        llm_base_url=None,
+        llm_model_name=None,
         patch_dataset_dir="/tmp/patch-dataset",
         patch_path=None,
         json=False,
@@ -163,7 +173,7 @@ def test_handle_action_get_commits_calls_handle_get_commits(monkeypatch):
     """
     from cvekit import cli
 
-    args = _make_args(action="get-commits", cve_id=None)
+    args = _make_args(action="get-commits", cve_id="CVE-TEST-2")
 
     fake_result = {
         "action": "get-commits",
@@ -172,13 +182,10 @@ def test_handle_action_get_commits_calls_handle_get_commits(monkeypatch):
         "fixed": "efgh",
     }
 
-    with mock.patch.object(cli, "fetch_cve_id", return_value="CVE-TEST-2") as mock_fetch, \
-            mock.patch.object(cli, "handle_get_commits", return_value=fake_result) as mock_handle:
-
+    with mock.patch.object(cli, "handle_get_commits", return_value=fake_result) as mock_handle:
         result = cli.handle_action(args)
 
-    mock_fetch.assert_called_once()
-    mock_handle.assert_called_once_with("CVE-TEST-2", True)
+    mock_handle.assert_called_once_with("CVE-TEST-2", True, "/tmp/clone-dir")
     assert result == fake_result
 
 
@@ -196,12 +203,9 @@ def test_handle_action_analyze_branches_calls_handle_analyze_branches(monkeypatc
 
     fake_result = [{"branch": "OLK-6.6"}]
 
-    with mock.patch.object(cli, "fetch_cve_id", return_value="CVE-TEST-4") as mock_fetch, \
-            mock.patch.object(cli, "handle_analyze_branches", return_value=fake_result) as mock_handle:
-
+    with mock.patch.object(cli, "handle_analyze_branches", return_value=fake_result) as mock_handle:
         result = cli.handle_action(args)
 
-    mock_fetch.assert_called_once()
     mock_handle.assert_called_once_with(args)
     assert result == fake_result
 
@@ -273,6 +277,7 @@ def test_handle_action_backport_builds_config_and_calls_run_backport(monkeypatch
         clone_dir="/tmp/clone-dir",
         patch_dataset_dir="/tmp/custom-dataset",
         debug=True,
+        api_key="fake-key",
     )
 
     # fake commits: (introduced_commit, fixed_commit)
@@ -284,12 +289,13 @@ def test_handle_action_backport_builds_config_and_calls_run_backport(monkeypatch
     }
 
     with mock.patch.object(cli, "get_vulnerability_commits", return_value=fake_commits) as mock_commits, \
+            mock.patch.object(cli, "branch_commit_from_upstream", return_value=None), \
             mock.patch.object(cli, "run_backport_from_config", return_value=fake_backport_result) as mock_run, \
             mock.patch.object(cli, "i18n", side_effect=lambda x: x):
 
         result = cli.handle_action(args)
 
-    mock_commits.assert_called_once_with("CVE-TEST-3", True)
+    mock_commits.assert_called_once_with("CVE-TEST-3", True, clone_dir="/tmp/clone-dir")
 
     # run_backport_from_config 应该收到构造好的 config_dict
     mock_run.assert_called_once()
@@ -448,6 +454,12 @@ def test_main_backport_calls_handle_action_and_format_output(monkeypatch):
             "CVE-TEST-MAIN",
             "--gitee-token",
             "fake-token",
+            "--clone-dir",
+            "/tmp/clone-dir",
+            "--branch",
+            "OLK-6.6",
+            "--api-key",
+            "fake-key",
         ]
 
         with mock.patch.object(cli, "handle_action", return_value=fake_result) as mock_handle, \
