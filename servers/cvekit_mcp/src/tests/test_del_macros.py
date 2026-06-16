@@ -6,6 +6,8 @@
 import sys
 sys.path.insert(0, '/home/dev/mcp-servers/servers/cvekit_mcp/src/cvekit/utils/mystique/src')
 
+import pytest
+
 from format import del_macros
 
 # 测试用例
@@ -51,7 +53,10 @@ test_cases = [
     },
 ]
 
-def test_del_macros(code: str, test_name: str):
+@pytest.mark.parametrize("test_case", test_cases, ids=lambda case: case["name"])
+def test_del_macros(test_case: dict):
+    code = test_case["code"]
+    test_name = test_case["name"]
     print(f"\n{'='*80}")
     print(f"测试用例: {test_name}")
     print(f"{'='*80}")
@@ -87,14 +92,14 @@ def test_del_macros(code: str, test_name: str):
     else:
         print(f"✗ 处理后代码中不包含 '__exit' 修饰符")
 
-# 运行所有测试用例
-print(f"\n{'#'*80}")
-print(f"del_macros() 函数测试")
-print(f"{'#'*80}")
+if __name__ == "__main__":
+    print(f"\n{'#'*80}")
+    print(f"del_macros() 函数测试")
+    print(f"{'#'*80}")
 
-for test_case in test_cases:
-    test_del_macros(test_case["code"], test_case["name"])
+    for test_case in test_cases:
+        test_del_macros(test_case)
 
-print(f"\n{'#'*80}")
-print(f"测试完成")
-print(f"{'#'*80}")
+    print(f"\n{'#'*80}")
+    print(f"测试完成")
+    print(f"{'#'*80}")

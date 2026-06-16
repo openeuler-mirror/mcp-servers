@@ -1,5 +1,6 @@
 import sys
 import runpy
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -24,11 +25,17 @@ def test_bin_cvekit_calls_cli_main():
     """
     script_path = _bin_script_path()
 
-    with mock.patch("cvekit.cli.main") as mock_main:
-        # 使用 runpy 以 __main__ 方式执行脚本，模拟命令行调用
-        runpy.run_path(script_path, run_name="__main__")
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"urllib3 .* doesn't match a supported version!",
+            category=Warning,
+        )
+        with mock.patch("cvekit.cli.main") as mock_main:
+            # 使用 runpy 以 __main__ 方式执行脚本，模拟命令行调用
+            runpy.run_path(script_path, run_name="__main__")
 
-        mock_main.assert_called_once()
+            mock_main.assert_called_once()
 
 
 def test_main_setup_env_calls_setup_repository_and_format_output(monkeypatch):

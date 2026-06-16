@@ -4,11 +4,18 @@
 """
 
 import tree_sitter_c as tsc
+import warnings
 from tree_sitter import Language, Parser
 
 # 加载 C 语言解析器
 try:
-    C_LANGUAGE = Language(tsc.language())
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="int argument support is deprecated",
+            category=DeprecationWarning,
+        )
+        C_LANGUAGE = Language(tsc.language())
     print("✓ 成功加载 C 语言解析器")
 except Exception as e:
     print(f"✗ 加载 C 语言解析器失败: {e}")

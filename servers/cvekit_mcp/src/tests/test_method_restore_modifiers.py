@@ -6,6 +6,8 @@
 import sys
 sys.path.insert(0, '/home/dev/mcp-servers/servers/cvekit_mcp/src/cvekit/utils/mystique/src')
 
+import pytest
+
 from project import Method
 from common import Language
 from codefile import CodeFile
@@ -63,6 +65,7 @@ test_cases = [
     },
 ]
 
+@pytest.mark.parametrize("test_case", test_cases, ids=lambda case: case["name"])
 def test_restore_modifiers(test_case):
     print(f"\n{'='*80}")
     print(f"测试用例: {test_case['name']}")
@@ -115,14 +118,14 @@ def test_restore_modifiers(test_case):
         else:
             print(f"✗ __exit 修饰符恢复失败")
 
-# 运行所有测试用例
-print(f"\n{'#'*80}")
-print(f"Method._restore_modifiers() 测试")
-print(f"{'#'*80}")
+if __name__ == "__main__":
+    print(f"\n{'#'*80}")
+    print(f"Method._restore_modifiers() 测试")
+    print(f"{'#'*80}")
 
-for test_case in test_cases:
-    test_restore_modifiers(test_case)
+    for test_case in test_cases:
+        test_restore_modifiers(test_case)
 
-print(f"\n{'#'*80}")
-print(f"测试完成")
-print(f"{'#'*80}")
+    print(f"\n{'#'*80}")
+    print(f"测试完成")
+    print(f"{'#'*80}")
