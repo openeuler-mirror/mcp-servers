@@ -1,0 +1,4 @@
+interface:
+  display_name: "Patch Similarity Evaluator Skill"
+  short_description: "Evaluate AI backport patches against manual patches"
+  default_prompt: "Use $patch-similarity-evaluator-skill to assess Mystique AI backport patches against manual patches."

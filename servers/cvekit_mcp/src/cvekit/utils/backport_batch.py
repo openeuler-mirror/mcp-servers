@@ -1231,6 +1231,7 @@ def _apply_patch_to_target_repo(
     target_branch: str,
     commit_sha: str,
     project_dir: str,
+    patch_path: str,
     commit_message: str,
     signer_name: str = "",
     signer_email: str = "",
@@ -1243,11 +1244,8 @@ def _apply_patch_to_target_repo(
         commit_obj = upstream_repo.commit(commit_sha)
         is_merge_commit = len(commit_obj.parents) > 1
         if is_merge_commit:
-            return {"status": "skipped", "error": "merge commit 已跳过"}
+            return {"status": "skipped", "error": "merge commit 已跳过", "apply_method": "skipped"}
         _ensure_commit_available_for_cherry_pick(target_repo, project_dir, commit_sha)
-        target_repo.git.cherry_pick("--no-commit", commit_sha)
-        if not target_repo.is_dirty(index=True, working_tree=True, untracked_files=False):
-            return {"status": "skipped", "error": "补丁未产生变更（可能已等效存在）"}
         commit_args = ["-m", commit_message, "-s"]
         use_signer_identity = bool(signer_name and signer_email)
         git_env = {
@@ -1257,13 +1255,68 @@ def _apply_patch_to_target_repo(
         if use_signer_identity:
             git_env["GIT_COMMITTER_NAME"] = signer_name
             git_env["GIT_COMMITTER_EMAIL"] = signer_email
-        with target_repo.git.custom_environment(**git_env):
-            target_repo.git.commit(*commit_args)
-        return {"status": "success", "commit": target_repo.head.commit.hexsha}
+
+        try:
+            target_repo.git.cherry_pick("--no-commit", commit_sha)
+            if not target_repo.is_dirty(index=True, working_tree=True, untracked_files=False):
+                return {
+                    "status": "skipped",
+                    "error": "补丁未产生变更（可能已等效存在）",
+                    "apply_method": "skipped",
+                }
+            with target_repo.git.custom_environment(**git_env):
+                target_repo.git.commit(*commit_args)
+            return {
+                "status": "success",
+                "commit": target_repo.head.commit.hexsha,
+                "apply_method": "cherry-pick",
+                "fallback_error": "",
+            }
+        except Exception as cherry_pick_error:
+            _abort_cherry_pick(target_repo)
+            _reset_hard_and_clean(target_repo, original_head)
+            if not patch_path or not os.path.exists(patch_path):
+                return {
+                    "status": "failed",
+                    "error": str(cherry_pick_error),
+                    "apply_method": "cherry-pick",
+                    "fallback_error": str(cherry_pick_error),
+                }
+            try:
+                target_repo.git.apply("--index", patch_path)
+                if not target_repo.is_dirty(index=True, working_tree=True, untracked_files=False):
+                    _reset_hard_and_clean(target_repo, original_head)
+                    return {
+                        "status": "skipped",
+                        "error": "补丁未产生变更（可能已等效存在）",
+                        "apply_method": "equivalent",
+                        "fallback_error": str(cherry_pick_error),
+                        "warning": "cherry-pick failed; patch already equivalent in target",
+                    }
+                with target_repo.git.custom_environment(**git_env):
+                    target_repo.git.commit(*commit_args)
+                return {
+                    "status": "success",
+                    "commit": target_repo.head.commit.hexsha,
+                    "apply_method": "patch-apply",
+                    "fallback_error": str(cherry_pick_error),
+                    "warning": "cherry-pick failed; fell back to patch apply successfully",
+                }
+            except Exception as apply_error:
+                _reset_hard_and_clean(target_repo, original_head)
+                return {
+                    "status": "failed",
+                    "error": (
+                        f"cherry-pick failed: {cherry_pick_error}; "
+                        f"patch apply fallback failed: {apply_error}"
+                    ),
+                    "apply_method": "patch-apply",
+                    "fallback_error": str(cherry_pick_error),
+                }
     except Exception as e:
         _abort_cherry_pick(target_repo)
         _reset_hard_and_clean(target_repo, original_head)
-        return {"status": "failed", "error": str(e)}
+        return {"status": "failed", "error": str(e), "apply_method": "failed"}
 
 def _resolve_sorted_backport_items(commit_items, is_report_config, base_project_dir, base_config, args):
     try:
@@ -1935,6 +1988,7 @@ def _execute_backport_batch_action(
                     target_branch,
                     fixed_commit,
                     base_project_dir,
+                    patch_path,
                     commit_message_preview["commit_message"],
                     signer_name=str(getattr(args, "signer_name", "") or config_dict.get("signer_name") or "").strip(),
                     signer_email=str(getattr(args, "signer_email", "") or config_dict.get("signer_email") or "").strip(),
@@ -1950,6 +2004,9 @@ def _execute_backport_batch_action(
                     "commit_message_context": commit_message_preview.get("commit_message_context", {}),
                     "source_detection": commit_message_preview.get("source_detection", {}),
                     "commit_message_warnings": commit_message_preview.get("commit_message_warnings", []),
+                    "apply_method": apply_result.get("apply_method", ""),
+                    "fallback_error": apply_result.get("fallback_error", ""),
+                    "warning": apply_result.get("warning", ""),
                 }
                 if apply_result.get("error"):
                     result["error"] = apply_result["error"]
@@ -1995,6 +2052,7 @@ def _execute_backport_batch_action(
             target_branch,
             fixed_commit,
             base_project_dir,
+            patch_path,
             commit_message_preview["commit_message"],
             signer_name=str(getattr(args, "signer_name", "") or config_dict.get("signer_name") or "").strip(),
             signer_email=str(getattr(args, "signer_email", "") or config_dict.get("signer_email") or "").strip(),
@@ -2011,6 +2069,9 @@ def _execute_backport_batch_action(
             "commit_message_context": commit_message_preview.get("commit_message_context", {}),
             "source_detection": commit_message_preview.get("source_detection", {}),
             "commit_message_warnings": commit_message_preview.get("commit_message_warnings", []),
+            "apply_method": apply_result.get("apply_method", ""),
+            "fallback_error": apply_result.get("fallback_error", ""),
+            "warning": apply_result.get("warning", ""),
         }
         if apply_result.get("error"):
             result["error"] = apply_result["error"]
@@ -2123,6 +2184,10 @@ def _build_backport_batch_report_item(
         "original_patch_path": resolved_original_patch,
         "backported_patch_path": resolved_backported_patch,
         "patch_path": effective_patch_path,
+        "logfile": backport_result.get("logfile") or item_config.get("logfile", ""),
+        "apply_method": backport_result.get("apply_method") or item_config.get("apply_method", ""),
+        "fallback_error": backport_result.get("fallback_error") or item_config.get("fallback_error", ""),
+        "warning": backport_result.get("warning") or item_config.get("warning", ""),
         **message_fields,
     }
 
