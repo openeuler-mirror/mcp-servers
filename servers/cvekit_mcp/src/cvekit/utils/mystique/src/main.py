@@ -1634,12 +1634,20 @@ def main_from_repo(
         source_path = file_info["new_path"]
         status = file_info["status"]
 
-        if status == "D":
-            logging.info(f"跳过已删除的文件: {source_path}")
-            continue
-
-        if status == "A":
-            logging.info(f"跳过新增的文件（源仓库中无 pre 版本）: {source_path}")
+        if status in ("A", "D"):
+            file_patch = _extract_file_patch(patch_text, source_path) if patch_text else None
+            if file_patch and _try_apply_patch(target_path, file_patch, source_path):
+                all_patch_parts.append(file_patch)
+                action = "新增" if status == "A" else "删除"
+                results.append({
+                    "source_file": source_path,
+                    "target_file": source_path,
+                    "patched_file": f"(原始{action}文件补丁直接应用)",
+                    "language": detect_language(source_path).value,
+                })
+            else:
+                action = "新增" if status == "A" else "删除"
+                logging.warning(f"无法应用{action}文件的补丁: {source_path}，跳过")
             continue
 
         pre_content = _git_get_file_content(project_dir, parent_hash, source_path)
