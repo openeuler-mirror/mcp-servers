@@ -1193,15 +1193,78 @@ def _ensure_commit_available_for_cherry_pick(
     upstream_remote.fetch(commit_sha)
 
 
-def _is_commit_merged_in_target(target_path: str, target_branch: str, commit_sha: str):
+def _find_commit_title_in_target(target_repo: git.Repo, target_branch: str, commit_title: str):
+    title = str(commit_title or "").strip()
+    if not title:
+        return None
+    try:
+        log_output = target_repo.git.log(
+            target_branch,
+            "--fixed-strings",
+            f"--grep={title}",
+            "--format=%H%x00%s",
+        )
+    except Exception:
+        return None
+    for line in log_output.splitlines():
+        if "\x00" not in line:
+            continue
+        sha, subject = line.split("\x00", 1)
+        if subject.strip() == title:
+            return sha
+    return None
+
+
+def _resolve_commit_title_for_merge_check(
+    target_repo: git.Repo,
+    source_path: str,
+    commit_sha: str,
+    commit_title: str | None = None,
+):
+    title = str(commit_title or "").strip()
+    if title:
+        return title
+    if source_path:
+        try:
+            return git.Repo(source_path).commit(commit_sha).summary.strip()
+        except Exception:
+            pass
+    try:
+        return target_repo.commit(commit_sha).summary.strip()
+    except Exception:
+        return ""
+
+
+def _is_commit_merged_in_target(
+    target_path: str,
+    target_branch: str,
+    commit_sha: str,
+    source_path: str = "",
+    commit_title: str | None = None,
+):
     try:
         target_repo = git.Repo(target_path)
         _ensure_clean_and_checkout(target_repo, target_branch)
         target_repo.git.merge_base("--is-ancestor", commit_sha, target_branch)
         return True, None
     except git.exc.GitCommandError as e:
-        # 非祖先或分支不存在都会抛错，按未合入处理
-        return False, str(e)
+        # 源仓提交迁移到目标仓后可能会生成新的 commit id。SHA 祖先关系
+        # 不成立时，再用 commit title 在目标分支历史中做精确匹配。
+        merge_base_error = str(e)
+        try:
+            title = _resolve_commit_title_for_merge_check(
+                target_repo,
+                source_path,
+                commit_sha,
+                commit_title,
+            )
+            matched_sha = _find_commit_title_in_target(target_repo, target_branch, title)
+            if matched_sha:
+                return True, f"matched by commit title: {matched_sha}"
+        except Exception as title_error:
+            return False, f"{merge_base_error}; title-check: {title_error}"
+        # 非祖先且同标题未命中，按未合入处理
+        return False, merge_base_error
     except Exception as e:
         return False, str(e)
 
@@ -1585,6 +1648,7 @@ def _resolve_merge_and_conflict_status(
     patch_path,
     base_project_dir,
     is_merge_commit,
+    commit_title,
     tag,
     commit_id,
     merged_in_target,
@@ -1635,7 +1699,11 @@ def _resolve_merge_and_conflict_status(
         )
 
     merged_in_target, merged_check_error = _is_commit_merged_in_target(
-        base_target_path, target_branch, fixed_commit
+        base_target_path,
+        target_branch,
+        fixed_commit,
+        source_path=base_project_dir,
+        commit_title=commit_title,
     )
     if merged_in_target:
         logger.info(
@@ -1864,6 +1932,7 @@ def _execute_backport_batch_action(
     item_config,
     tag,
     commit_id,
+    commit_title,
     target_branch,
     fixed_commit,
     patch_path,
@@ -1927,7 +1996,11 @@ def _execute_backport_batch_action(
         if has_conflict:
             # report 场景下，冲突可能因前置补丁已应用而发生变化，进入回移植前先实时复检一次
             latest_merged_in_target, latest_merged_check_error = _is_commit_merged_in_target(
-                base_target_path, target_branch, fixed_commit
+                base_target_path,
+                target_branch,
+                fixed_commit,
+                source_path=base_project_dir,
+                commit_title=commit_title,
             )
             latest_has_conflict = has_conflict
             latest_conflict_check_method = conflict_check_method
@@ -2327,6 +2400,7 @@ def _process_backport_batch_item(
         patch_path=patch_path,
         base_project_dir=base_project_dir,
         is_merge_commit=is_merge_commit,
+        commit_title=commit_title,
         tag=tag,
         commit_id=commit_id,
         merged_in_target=merged_in_target,
@@ -2361,6 +2435,7 @@ def _process_backport_batch_item(
             item_config=item_config,
             tag=tag,
             commit_id=commit_id,
+            commit_title=commit_title,
             target_branch=target_branch,
             fixed_commit=fixed_commit,
             patch_path=patch_path,
