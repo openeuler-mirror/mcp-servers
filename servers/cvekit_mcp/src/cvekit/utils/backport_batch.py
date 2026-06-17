@@ -515,27 +515,41 @@ def _apply_patch_file_to_target_repo(
     signer_email: str = "",
 ):
     if not patch_path or not os.path.exists(patch_path):
+        logger.warning("[backport-batch] 补丁文件不存在: path=%s", patch_path)
         return {"status": "failed", "error": f"补丁文件不存在: {patch_path}"}
 
+    logger.info(
+        "[backport-batch] 开始应用补丁: patch=%s, target=%s, branch=%s",
+        patch_path, target_path, target_branch,
+    )
     target_repo = git.Repo(target_path)
     _ensure_clean_and_checkout(target_repo, target_branch)
     original_head = target_repo.head.commit.hexsha
+    logger.info("[backport-batch] 当前 HEAD: commit=%s", original_head[:12])
 
     try:
         already_applied, reverse_check_error = _is_patch_applied_in_target(
             target_path, target_branch, patch_path
         )
         if already_applied:
+            logger.info("[backport-batch] 补丁已存在于目标分支，跳过: patch=%s", patch_path)
             return {"status": "skipped", "error": "目标分支已包含该补丁"}
 
+        logger.info("[backport-batch] 执行 git apply: patch=%s", patch_path)
         target_repo.git.apply(patch_path)
         target_repo.git.add("--all")
         if not target_repo.is_dirty(index=True, working_tree=True, untracked_files=False):
+            logger.info("[backport-batch] 补丁未产生变更，跳过: patch=%s", patch_path)
             return {"status": "skipped", "error": "补丁未产生变更（可能已等效存在）"}
 
         commit_args = ["-m", commit_message, "-s"]
         use_signer_identity = bool(signer_name and signer_email)
         author_name, author_email = _parse_patch_author(patch_path)
+        logger.info(
+            "[backport-batch] 补丁作者: author=%s <%s>, signer=%s <%s>",
+            author_name or "(未解析)", author_email or "",
+            signer_name or "(未指定)", signer_email or "",
+        )
         git_env = {}
         if author_name and author_email:
             git_env["GIT_AUTHOR_NAME"] = author_name
@@ -544,15 +558,22 @@ def _apply_patch_file_to_target_repo(
             git_env["GIT_COMMITTER_NAME"] = signer_name
             git_env["GIT_COMMITTER_EMAIL"] = signer_email
         if git_env:
+            logger.info("[backport-batch] 使用自定义环境变量提交: env=%s", list(git_env.keys()))
             with target_repo.git.custom_environment(**git_env):
                 target_repo.git.commit(*commit_args)
         else:
             target_repo.git.commit(*commit_args)
+        new_commit = target_repo.head.commit.hexsha
+        logger.info("[backport-batch] 补丁应用成功: commit=%s", new_commit[:12])
         return {
             "status": "success",
-            "commit": target_repo.head.commit.hexsha,
+            "commit": new_commit,
         }
     except Exception as e:
+        logger.warning(
+            "[backport-batch] 应用补丁失败: patch=%s, error=%s, reverse_check_error=%s",
+            patch_path, e, reverse_check_error,
+        )
         _reset_hard_and_clean(target_repo, original_head)
         if reverse_check_error:
             return {"status": "failed", "error": f"{e}; reverse-check={reverse_check_error}"}
@@ -576,14 +597,17 @@ def _handle_direct_apply_backported_patch(args):
     )
     item_config = _resolve_item_config(item, context.is_report_config)
     commit_id = item.get("commit") or item.get("input_commit") or ""
+    logger.info("[backport-batch] 选中条目: commit=%s, input_commit=%s", commit_id, item.get("input_commit", ""))
     target_branch = _resolve_target_branch(item_config, context.base_config, args.branch)
     if not target_branch:
         raise ValueError("未找到目标分支，请在配置中设置 target_release/target_branch 或传入 --branch")
+    logger.info("[backport-batch] 目标分支: branch=%s", target_branch)
 
     apply_value = str(args.apply).strip()
     apply_by_path = _looks_like_patch_path(apply_value)
     if apply_by_path:
         patch_path = os.path.abspath(os.path.expanduser(apply_value))
+        logger.info("[backport-batch] 通过路径匹配补丁: path=%s", patch_path)
     else:
         patch_path = (
             item_config.get("backported_patch_path")
@@ -591,16 +615,21 @@ def _handle_direct_apply_backported_patch(args):
             or item_config.get("original_patch_path")
             or ""
         )
+        logger.info("[backport-batch] 通过配置解析补丁: path=%s", patch_path or "(空)")
 
     if not patch_path:
+        logger.warning("[backport-batch] 未找到可应用的补丁路径: commit=%s", commit_id)
         raise ValueError(f"未找到可应用的补丁路径: commit={commit_id}")
     if not os.path.exists(patch_path):
+        logger.warning("[backport-batch] 补丁文件不存在: path=%s", patch_path)
         raise ValueError(f"补丁文件不存在: {patch_path}")
 
     original_patch_path = _infer_original_patch_path(
         item_config=item_config,
     )
+    logger.info("[backport-batch] 原始补丁路径: path=%s", original_patch_path or "(未推断)")
     commit_message_source = original_patch_path or patch_path
+    logger.info("[backport-batch] 解析 commit message: source=%s", commit_message_source)
     commit_message_preview = _resolve_commit_message_fields(
         patch_path=commit_message_source,
         openeuler_commit_id=str(commit_id or ""),
@@ -609,15 +638,34 @@ def _handle_direct_apply_backported_patch(args):
         args=args,
     )
     commit_message = commit_message_preview["commit_message"]
+    logger.info(
+        "[backport-batch] commit message 解析完成: preview=%s",
+        commit_message_preview.get("commit_message_preview", "")[:120],
+    )
+    if commit_message_preview.get("commit_message_warnings"):
+        logger.warning(
+            "[backport-batch] commit message 警告: warnings=%s",
+            commit_message_preview["commit_message_warnings"],
+        )
+    signer_name = str(getattr(args, "signer_name", "") or context.base_config.get("signer_name") or "").strip()
+    signer_email = str(getattr(args, "signer_email", "") or context.base_config.get("signer_email") or "").strip()
+    logger.info("[backport-batch] 签名者: name=%s, email=%s", signer_name or "(未指定)", signer_email or "(未指定)")
     apply_result = _apply_patch_file_to_target_repo(
         target_path=context.base_target_path,
         target_branch=target_branch,
         patch_path=patch_path,
         commit_message=commit_message,
-        signer_name=str(getattr(args, "signer_name", "") or context.base_config.get("signer_name") or "").strip(),
-        signer_email=str(getattr(args, "signer_email", "") or context.base_config.get("signer_email") or "").strip(),
+        signer_name=signer_name,
+        signer_email=signer_email,
+    )
+    logger.info(
+        "[backport-batch] apply 结果: status=%s, commit=%s, error=%s",
+        apply_result.get("status"),
+        (apply_result.get("commit") or "")[:12] if apply_result.get("commit") else "(无)",
+        apply_result.get("error") or "(无)",
     )
     if apply_result.get("status") == "success":
+        logger.info("[backport-batch] 写入 apply 状态到配置: config=%s", args.backport_config)
         _write_apply_status_to_report_config(
             config_path=args.backport_config,
             config=context.config,
@@ -658,11 +706,17 @@ def _write_apply_status_to_report_config(
     applied_commit: str | None,
 ):
     if not isinstance(config, dict):
+        logger.debug("[backport-batch] 配置不是 dict 类型，跳过写入 apply 状态")
         return
     commit_items = config.get("commits")
     if not isinstance(commit_items, list):
+        logger.debug("[backport-batch] commits 不是 list 类型，跳过写入 apply 状态")
         return
 
+    logger.info(
+        "[backport-batch] 开始写入 apply 状态到配置: commit=%s, patch=%s, branch=%s",
+        selected_commit_id[:12], applied_patch_path, target_branch,
+    )
     selected_input_commit = str(selected_item.get("input_commit") or "").strip()
     selected_paths = set()
     for path_value in [
@@ -674,6 +728,7 @@ def _write_apply_status_to_report_config(
         if not path_value:
             continue
         selected_paths.add(os.path.abspath(os.path.expanduser(str(path_value))))
+    logger.info("[backport-batch] 候选匹配路径 (%d): %s", len(selected_paths), sorted(selected_paths))
 
     matched_index = None
     for idx, item in enumerate(commit_items):
@@ -684,10 +739,13 @@ def _write_apply_status_to_report_config(
         commit_matched = False
         if selected_commit_id and item_commit and item_commit.lower().startswith(selected_commit_id.lower()):
             commit_matched = True
+            logger.info("[backport-batch] commit 前缀匹配: selected=%s, item=%s", selected_commit_id[:12], item_commit[:12])
         elif selected_commit_id and selected_commit_id.lower().startswith(item_commit.lower()) and item_commit:
             commit_matched = True
+            logger.info("[backport-batch] commit 反向前缀匹配: selected=%s, item=%s", selected_commit_id[:12], item_commit[:12])
         elif selected_input_commit and item_input_commit and item_input_commit.lower() == selected_input_commit.lower():
             commit_matched = True
+            logger.info("[backport-batch] input_commit 精确匹配: selected=%s, item=%s", selected_input_commit, item_input_commit)
 
         path_matched = False
         for candidate in [
@@ -700,16 +758,23 @@ def _write_apply_status_to_report_config(
             normalized = os.path.abspath(os.path.expanduser(str(candidate)))
             if normalized in selected_paths:
                 path_matched = True
+                logger.info("[backport-batch] 路径匹配: candidate=%s", normalized)
                 break
 
         if commit_matched or path_matched:
             matched_index = idx
+            logger.info("[backport-batch] 匹配成功: index=%d, commit=%s", idx, item_commit or "(无)")
             break
 
     if matched_index is None:
+        logger.warning(
+            "[backport-batch] 未在配置中找到匹配条目: commit=%s, paths=%s",
+            selected_commit_id[:12], sorted(selected_paths),
+        )
         return
 
     matched_item = commit_items[matched_index]
+    logger.info("[backport-batch] 更新匹配条目字段: index=%d", matched_index)
     matched_item["merged_in_target"] = True
     matched_item["merged_check_error"] = None
     matched_item["has_conflict"] = False
@@ -721,9 +786,11 @@ def _write_apply_status_to_report_config(
     matched_item["target_branch"] = target_branch
     if applied_commit:
         matched_item["applied_commit"] = applied_commit
+        logger.info("[backport-batch] 已应用 commit: %s", applied_commit[:12])
 
     with open(config_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
+    logger.info("[backport-batch] apply 状态写入配置完成: config=%s", config_path)
 
 
 def _load_backport_batch_config(config_path: str):
@@ -1466,6 +1533,10 @@ def _append_remaining_pending_items(
     base_config,
     default_target_branch,
 ):
+    logger.info(
+        "[backport-batch] 追加剩余 pending 项: count=%d, is_report=%s",
+        len(remaining_items), is_report_config,
+    )
     for remaining in remaining_items:
         remaining_commit_id = remaining.get("commit")
         remaining_input_commit = remaining.get("input_commit")
@@ -1492,6 +1563,13 @@ def _append_remaining_pending_items(
         remaining_status = "pending"
         if is_report_config and remaining_item_config.get("status"):
             remaining_status = remaining_item_config.get("status")
+        logger.info(
+            "[backport-batch] 追加 pending 项: tag=%s, preserved_merged=%s, preserved_has_conflict=%s, "
+            "preserved_method=%s, preserved_status=%s",
+            remaining_commit_id or remaining_input_commit,
+            remaining_merged_in_target, remaining_has_conflict,
+            remaining_conflict_check_method, remaining_status,
+        )
         pending_item = {
             "commit": remaining_commit_id,
             "input_commit": remaining_input_commit,
@@ -1657,7 +1735,26 @@ def _resolve_merge_and_conflict_status(
     conflict_check_method,
     conflict_check_error,
 ):
+    logger.info(
+        "[backport-batch] merge/conflict 状态解析入口: tag=%s, commit=%s, branch=%s, "
+        "is_report=%s, force_recheck=%s, input_merged=%s, input_has_conflict=%s, "
+        "input_conflict_method=%s, fixed_commit=%s, patch_path=%s, is_merge_commit=%s",
+        tag or commit_id,
+        fixed_commit,
+        target_branch,
+        is_report_config,
+        force_recheck,
+        merged_in_target,
+        has_conflict,
+        conflict_check_method,
+        fixed_commit,
+        patch_path,
+        is_merge_commit,
+    )
     if not fixed_commit:
+        logger.info(
+            "[backport-batch] merge/conflict 跳过：fixed_commit 为空, tag=%s", tag or commit_id
+        )
         return (
             merged_in_target,
             merged_check_error,
@@ -1690,6 +1787,10 @@ def _resolve_merge_and_conflict_status(
         )
         if merged_in_target:
             has_conflict, conflict_check_method, conflict_check_error = False, "merged", None
+        logger.info(
+            "[backport-batch] merge/conflict 结果(使用缓存): tag=%s, merged=%s, has_conflict=%s, method=%s",
+            tag or commit_id, merged_in_target, has_conflict, conflict_check_method,
+        )
         return (
             merged_in_target,
             merged_check_error,
@@ -1705,6 +1806,10 @@ def _resolve_merge_and_conflict_status(
         source_path=base_project_dir,
         commit_title=commit_title,
     )
+    logger.info(
+        "[backport-batch] merge-base 检测结果: tag=%s, commit=%s, merged_in_target=%s, error=%s",
+        tag or commit_id, fixed_commit, merged_in_target, merged_check_error,
+    )
     if merged_in_target:
         logger.info(
             "[backport-batch] 目标分支已包含该提交，跳过冲突检测: tag=%s, commit=%s, branch=%s",
@@ -1719,6 +1824,10 @@ def _resolve_merge_and_conflict_status(
         if patch_path:
             patch_applied, patch_check_error = _is_patch_applied_in_target(
                 base_target_path, target_branch, patch_path
+            )
+            logger.info(
+                "[backport-batch] patch-reverse 检测结果: tag=%s, patch=%s, applied=%s, error=%s",
+                tag or commit_id, patch_path, patch_applied, patch_check_error,
             )
         if patch_applied:
             merged_in_target = True
@@ -1747,6 +1856,10 @@ def _resolve_merge_and_conflict_status(
     # Raw configs need an initial conflict check. Report configs only recheck
     # when the caller explicitly enters stop-at-first-conflict detection mode.
     if ((not is_report_config) or force_recheck) and (not merged_in_target):
+        logger.info(
+            "[backport-batch] 开始冲突检测: tag=%s, commit=%s, is_report=%s, force_recheck=%s",
+            tag or commit_id, fixed_commit, is_report_config, force_recheck,
+        )
         has_conflict, conflict_check_method, conflict_check_error = _check_conflict_with_apply_or_cherrypick(
             base_target_path,
             target_branch,
@@ -1755,7 +1868,7 @@ def _resolve_merge_and_conflict_status(
             base_project_dir,
         )
         logger.info(
-            "[backport-batch] 冲突检测: tag=%s, has_conflict=%s, method=%s, error=%s",
+            "[backport-batch] 冲突检测完成: tag=%s, has_conflict=%s, method=%s, error=%s",
             tag or commit_id,
             has_conflict,
             conflict_check_method,
@@ -1769,6 +1882,12 @@ def _resolve_merge_and_conflict_status(
             target_branch,
         )
 
+    logger.info(
+        "[backport-batch] merge/conflict 最终结果: tag=%s, merged=%s, merged_error=%s, "
+        "has_conflict=%s, conflict_method=%s, conflict_error=%s",
+        tag or commit_id, merged_in_target, merged_check_error,
+        has_conflict, conflict_check_method, conflict_check_error,
+    )
     return (
         merged_in_target,
         merged_check_error,
@@ -1943,6 +2062,13 @@ def _execute_backport_batch_action(
 ):
     did_backport = False
     refreshed_status = None
+    logger.info(
+        "[backport-batch] 执行动作入口: tag=%s, commit=%s, branch=%s, is_report=%s, "
+        "is_merge=%s, merged=%s, has_conflict=%s, conflict_method=%s, stop_at_first=%s",
+        tag or commit_id, fixed_commit, target_branch, is_report_config,
+        is_merge_commit, merged_in_target, has_conflict, conflict_check_method,
+        getattr(args, "stop_at_first_conflict", False),
+    )
     if is_merge_commit:
         logger.info(
             "[backport-batch] merge commit 跳过处理: tag=%s, commit=%s, branch=%s",
@@ -1995,12 +2121,22 @@ def _execute_backport_batch_action(
 
         if has_conflict:
             # report 场景下，冲突可能因前置补丁已应用而发生变化，进入回移植前先实时复检一次
+            logger.info(
+                "[backport-batch] 冲突复检开始: tag=%s, commit=%s, branch=%s, "
+                "previous_merged=%s, previous_has_conflict=%s, previous_method=%s",
+                tag or commit_id, fixed_commit, target_branch,
+                merged_in_target, has_conflict, conflict_check_method,
+            )
             latest_merged_in_target, latest_merged_check_error = _is_commit_merged_in_target(
                 base_target_path,
                 target_branch,
                 fixed_commit,
                 source_path=base_project_dir,
                 commit_title=commit_title,
+            )
+            logger.info(
+                "[backport-batch] 冲突复检 merge-base: tag=%s, merged=%s, error=%s",
+                tag or commit_id, latest_merged_in_target, latest_merged_check_error,
             )
             latest_has_conflict = has_conflict
             latest_conflict_check_method = conflict_check_method
@@ -2016,6 +2152,10 @@ def _execute_backport_batch_action(
                 if patch_path:
                     patch_applied, patch_check_error = _is_patch_applied_in_target(
                         base_target_path, target_branch, patch_path
+                    )
+                    logger.info(
+                        "[backport-batch] 冲突复检 patch-reverse: tag=%s, patch=%s, applied=%s, error=%s",
+                        tag or commit_id, patch_path, patch_applied, patch_check_error,
                     )
                 if patch_applied:
                     latest_merged_in_target = True
@@ -2117,6 +2257,12 @@ def _execute_backport_batch_action(
                 }
                 if apply_result.get("error"):
                     result["error"] = apply_result["error"]
+                if apply_result.get("status") == "failed":
+                    result["fatal_error"] = (
+                        f"无冲突补丁应用失败（冲突复检后），中止批量处理: "
+                        f"tag={tag or commit_id}, commit={fixed_commit}, branch={target_branch}, "
+                        f"error={apply_result.get('error', '未知错误')}"
+                    )
                 return result, did_backport, refreshed_status
 
             logger.info(
@@ -2127,7 +2273,18 @@ def _execute_backport_batch_action(
             )
             logger.info("[backport-batch] 回移植配置: %s", config_dict)
             did_backport = True
-            return _run_selected_backport_engine(config_dict, debug_mode=args.debug), did_backport, refreshed_status
+            backport_engine_result = _run_selected_backport_engine(config_dict, debug_mode=args.debug)
+            logger.info(
+                "[backport-batch] 回移植引擎返回: tag=%s, status=%s, empty_patch=%s, equivalent=%s, "
+                "backported_patch=%s, error=%s",
+                tag or commit_id,
+                backport_engine_result.get("status"),
+                backport_engine_result.get("empty_patch"),
+                backport_engine_result.get("equivalent_exists"),
+                backport_engine_result.get("backported_patch_path"),
+                backport_engine_result.get("error"),
+            )
+            return backport_engine_result, did_backport, refreshed_status
 
         logger.info(
             "[backport-batch] 无冲突，直接应用补丁: tag=%s, commit=%s, target_branch=%s",
@@ -2182,6 +2339,12 @@ def _execute_backport_batch_action(
         }
         if apply_result.get("error"):
             result["error"] = apply_result["error"]
+        if apply_result.get("status") == "failed":
+            result["fatal_error"] = (
+                f"无冲突补丁应用失败，中止批量处理: "
+                f"tag={tag or commit_id}, commit={fixed_commit}, branch={target_branch}, "
+                f"error={apply_result.get('error', '未知错误')}"
+            )
         return result, did_backport, refreshed_status
 
     logger.info(
@@ -2222,6 +2385,12 @@ def _build_backport_batch_report_item(
     empty_patch = bool(backport_result.get("empty_patch"))
     equivalent_exists = bool(backport_result.get("equivalent_exists"))
     empty_and_equivalent = empty_patch and equivalent_exists
+    logger.info(
+        "[backport-batch] 构建 report_item: tag=%s, input_merged=%s, input_has_conflict=%s, "
+        "input_method=%s, empty_patch=%s, equivalent=%s, backport_status=%s",
+        commit_id or input_commit, merged_in_target, has_conflict,
+        conflict_check_method, empty_patch, equivalent_exists, backport_result.get("status"),
+    )
     short_note = (
         "patch already applied (or equivalent), skip remaining steps"
         if empty_and_equivalent and backport_result.get("status") == "success"
@@ -2270,6 +2439,15 @@ def _build_backport_batch_report_item(
             base_config=base_config,
             args=args,
         )
+    effective_error = short_note if short_note else backport_result.get("error")
+    logger.info(
+        "[backport-batch] report_item 最终值: commit=%s, status=%s, merged=%s, has_conflict=%s, "
+        "method=%s, error=%s, original_patch=%s, backported_patch=%s, patch_path=%s",
+        commit_id or input_commit, backport_result.get("status"),
+        effective_merged_in_target, effective_has_conflict,
+        effective_conflict_check_method, effective_error,
+        resolved_original_patch, resolved_backported_patch, effective_patch_path,
+    )
     return {
         "commit": commit_id,
         "input_commit": input_commit,
@@ -2287,7 +2465,7 @@ def _build_backport_batch_report_item(
         "conflict_check_error": effective_conflict_check_error,
         "empty_patch": empty_patch,
         "equivalent_exists": equivalent_exists,
-        "error": short_note if short_note else backport_result.get("error"),
+        "error": effective_error,
         "original_patch_path": resolved_original_patch,
         "backported_patch_path": resolved_backported_patch,
         "patch_path": effective_patch_path,
@@ -2445,6 +2623,13 @@ def _process_backport_batch_item(
             args=args,
         )
         if refreshed_status:
+            logger.info(
+                "[backport-batch] 应用 refreshed_status: tag=%s, merged=%s->%s, has_conflict=%s->%s, method=%s->%s",
+                tag or commit_id,
+                merged_in_target, refreshed_status.get("merged_in_target"),
+                has_conflict, refreshed_status.get("has_conflict"),
+                conflict_check_method, refreshed_status.get("conflict_check_method"),
+            )
             merged_in_target = refreshed_status.get("merged_in_target")
             merged_check_error = refreshed_status.get("merged_check_error")
             has_conflict = refreshed_status.get("has_conflict")
@@ -2457,6 +2642,12 @@ def _process_backport_batch_item(
             and not did_backport
             and not getattr(args, "stop_at_first_conflict", False)
         ):
+            logger.info(
+                "[backport-batch] 直接应用成功，更新状态为已合入: tag=%s, commit=%s, "
+                "old_merged=%s, old_has_conflict=%s, old_method=%s",
+                tag or commit_id, fixed_commit,
+                merged_in_target, has_conflict, conflict_check_method,
+            )
             merged_in_target = True
             merged_check_error = None
             has_conflict = False
@@ -2464,6 +2655,12 @@ def _process_backport_batch_item(
                 conflict_check_method = "apply"
             conflict_check_error = None
 
+        logger.info(
+            "[backport-batch] 构建 report_item 前状态: tag=%s, merged=%s, has_conflict=%s, "
+            "method=%s, status=%s, did_backport=%s, backport_status=%s",
+            tag or commit_id, merged_in_target, has_conflict, conflict_check_method,
+            backport_result.get("status"), did_backport, backport_result.get("status"),
+        )
         result = None
         if did_backport:
             result = _build_batch_summary_result(
@@ -2502,6 +2699,7 @@ def _process_backport_batch_item(
             "result": result,
             "report_item": report_item,
             "did_backport": did_backport,
+            "fatal_error": backport_result.get("fatal_error"),
         }
     except Exception as e:
         result = _build_backport_batch_failed_result(
@@ -2539,6 +2737,7 @@ def _process_backport_batch_item(
             "result": result,
             "report_item": report_item,
             "did_backport": did_backport,
+            "fatal_error": f"处理条目时发生异常，中止批量处理: tag={tag or commit_id}, error={e}",
         }
 
 
@@ -2588,6 +2787,19 @@ def _build_backport_batch_report(
 
 def _write_backport_batch_report(config_path, is_report_config, report):
     report_path = config_path if is_report_config else config_path + ".report.yml"
+    commits = report.get("commits") or []
+    merged_count = sum(1 for c in commits if isinstance(c, dict) and c.get("merged_in_target") is True)
+    conflict_count = sum(1 for c in commits if isinstance(c, dict) and c.get("has_conflict") is True)
+    pending_count = sum(1 for c in commits if isinstance(c, dict) and str(c.get("status") or "").strip().lower() == "pending")
+    success_count = sum(1 for c in commits if isinstance(c, dict) and str(c.get("status") or "").strip().lower() == "success")
+    failed_count = sum(1 for c in commits if isinstance(c, dict) and str(c.get("status") or "").strip().lower() == "failed")
+    skipped_count = sum(1 for c in commits if isinstance(c, dict) and str(c.get("status") or "").strip().lower() == "skipped")
+    logger.info(
+        "[backport-batch] report 写入前统计: total=%d, merged=%d, conflict=%d, "
+        "pending=%d, success=%d, failed=%d, skipped=%d, path=%s",
+        len(commits), merged_count, conflict_count, pending_count,
+        success_count, failed_count, skipped_count, report_path,
+    )
     with open(report_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(report, f, allow_unicode=True, sort_keys=False)
     logger.info("[backport-batch] report 已写入: %s", report_path)
@@ -2688,6 +2900,14 @@ def _execute_backport_batch_items(
             report_items.append(_copy_existing_report_item(item))
             continue
 
+        item_tag = (
+            item.get("commit") or item.get("input_commit") or str(item.get("commit_title", ""))[:40]
+            if isinstance(item, dict) else str(item)[:40]
+        )
+        logger.info(
+            "[backport-batch] 处理第 %d/%d 项: tag=%s, is_report=%s, stop_at_first=%s",
+            idx, len(sorted_items), item_tag, is_report_config, stop_at_first_conflict,
+        )
         processed = _process_backport_batch_item(
             item=item,
             is_report_config=is_report_config,
@@ -2703,6 +2923,19 @@ def _execute_backport_batch_items(
         if processed.get("result"):
             results.append(processed["result"])
         report_items.append(processed["report_item"])
+        if processed.get("fatal_error"):
+            logger.error(
+                "[backport-batch] 检测到致命错误，中止批量处理: %s",
+                processed["fatal_error"],
+            )
+            _append_remaining_pending_items(
+                report_items=report_items,
+                remaining_items=sorted_items[idx + 1 :],
+                is_report_config=is_report_config,
+                base_config=base_config,
+                default_target_branch=default_target_branch,
+            )
+            break
         if (
             stop_at_first_conflict
             and processed.get("report_item", {}).get("has_conflict") is True
