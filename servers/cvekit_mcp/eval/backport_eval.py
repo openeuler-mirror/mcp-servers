@@ -49,6 +49,15 @@ SINGLE_CASE_COMMIT_SORT = "time"
 SOURCE_REF_PATTERNS = (
     re.compile(r"(?im)^\s*commit[:\s]+([0-9a-f]{7,40})\s+(?:upstream|openeuler)\s*$"),
     re.compile(r"(?im)^\s*(?:upstream|openeuler)\s+commit[:\s]+([0-9a-f]{7,40})\s*$"),
+    re.compile(r"(?im)^\s*\[\s*(?:upstream|openeuler)\s+commit\s+([0-9a-f]{7,40})\s*\]\s*$"),
+    re.compile(
+        r"(?im)^\s*(?:source|upstream|mainline|original|origin|linux|openeuler|原始|源代码仓)"
+        r".*?commit(?:\s+(?:id|hash))?\s*[:：]?\s+([0-9a-f]{7,40})\b"
+    ),
+    re.compile(
+        r"(?im)^\s*commit(?:\s+(?:id|hash))?\s*[:：]?\s+([0-9a-f]{7,40})\b"
+        r".*?(?:source|upstream|mainline|original|origin|linux|openeuler|原始|源代码仓)"
+    ),
     re.compile(r"(?im)^\s*commit[:\s]+([0-9a-f]{7,40})\s*$"),
     re.compile(r"(?im)^\s*\(?cherry[ -]?picked from commit\s+([0-9a-f]{7,40})\)?\s*$"),
 )
@@ -96,7 +105,7 @@ class Config:
     eval_name: str
     source_repo: Path
     source_branch: str
-    source_excel: Path
+    source_excel: Path | None
     target_repo: Path
     pr_url: str
     first_pr_commit: str
@@ -156,7 +165,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-name", default=EVAL_NAME)
     parser.add_argument("--source-repo", default="")
     parser.add_argument("--source-branch", default="")
-    parser.add_argument("--source-excel", default="")
+    parser.add_argument(
+        "--source-excel",
+        default="",
+        help="描述 source commit 的 Excel；不传时从 PR commit message 中提取源 commit",
+    )
     parser.add_argument("--target-repo", default="")
     parser.add_argument("--pr-url", default="")
     parser.add_argument("--first-pr-commit", default="")
@@ -186,7 +199,6 @@ def build_config(args: argparse.Namespace) -> Config:
     required = {
         "source_repo": args.source_repo,
         "source_branch": args.source_branch,
-        "source_excel": args.source_excel,
         "target_repo": args.target_repo,
         "pr_url": args.pr_url,
         "first_pr_commit": args.first_pr_commit,
@@ -201,7 +213,11 @@ def build_config(args: argparse.Namespace) -> Config:
     eval_name = safe_name(args.eval_name) or EVAL_NAME
     source_repo = Path(args.source_repo).expanduser().resolve()
     target_repo = Path(args.target_repo).expanduser().resolve()
-    source_excel = Path(args.source_excel).expanduser().resolve()
+    source_excel = (
+        Path(args.source_excel).expanduser().resolve()
+        if args.source_excel.strip()
+        else None
+    )
     cvekit = Path(args.cvekit).expanduser().resolve()
     cvekit_workdir = (
         Path(args.cvekit_workdir).expanduser().resolve()
@@ -342,27 +358,10 @@ def extract_source_refs(message: str) -> list[str]:
     return refs
 
 
-def read_source_commits(config: Config) -> tuple[list[SourceCommit], int]:
-    workbook = openpyxl.load_workbook(config.source_excel, read_only=True, data_only=True)
-    sheet = workbook[workbook.sheetnames[0]]
-    by_commit: dict[str, dict[str, Any]] = {}
-    input_count = 0
-    for row_number, values in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
-        title = normalize_title(str(values[0] or ""))
-        commit_input = str(values[1] or "").strip()
-        if not title and not commit_input:
-            continue
-        input_count += 1
-        if not commit_input:
-            raise EvalError(f"Excel row {row_number} has no commit hash")
-        full_commit = git_verify(config.source_repo, commit_input)
-        actual_title = normalize_title(git(config.source_repo, "show", "-s", "--format=%s", full_commit))
-        entry = by_commit.setdefault(
-            full_commit,
-            {"excel_rows": [], "source_title": actual_title or title},
-        )
-        entry["excel_rows"].append(row_number)
-
+def sort_source_commits(
+    config: Config,
+    by_commit: dict[str, dict[str, Any]],
+) -> list[SourceCommit]:
     try:
         sys.path.insert(0, str(config.cvekit_workdir))
         from cvekit.utils.backport_sort import sort_commit_items
@@ -391,7 +390,57 @@ def read_source_commits(config: Config) -> tuple[list[SourceCommit], int]:
                 git_describe=str(item.get("git_describe") or ""),
             )
         )
-    return sources, input_count
+    return sources
+
+
+def read_source_commits_from_excel(config: Config) -> tuple[list[SourceCommit], int, str]:
+    if config.source_excel is None:
+        raise EvalError("source Excel is not configured")
+    workbook = openpyxl.load_workbook(config.source_excel, read_only=True, data_only=True)
+    sheet = workbook[workbook.sheetnames[0]]
+    by_commit: dict[str, dict[str, Any]] = {}
+    input_count = 0
+    for row_number, values in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+        title = normalize_title(str(values[0] or ""))
+        commit_input = str(values[1] or "").strip()
+        if not title and not commit_input:
+            continue
+        input_count += 1
+        if not commit_input:
+            raise EvalError(f"Excel row {row_number} has no commit hash")
+        full_commit = git_verify(config.source_repo, commit_input)
+        actual_title = normalize_title(git(config.source_repo, "show", "-s", "--format=%s", full_commit))
+        entry = by_commit.setdefault(
+            full_commit,
+            {"excel_rows": [], "source_title": actual_title or title},
+        )
+        entry["excel_rows"].append(row_number)
+    return sort_source_commits(config, by_commit), input_count, "excel"
+
+
+def read_source_commits_from_pr_messages(
+    config: Config,
+    manuals: list[ManualCommit],
+) -> tuple[list[SourceCommit], int, str]:
+    by_commit: dict[str, dict[str, Any]] = {}
+    input_count = 0
+    for manual in manuals:
+        for source_commit in manual.source_refs:
+            input_count += 1
+            actual_title = normalize_title(
+                git(config.source_repo, "show", "-s", "--format=%s", source_commit)
+            )
+            entry = by_commit.setdefault(
+                source_commit,
+                {"excel_rows": [], "source_title": actual_title},
+            )
+            entry["excel_rows"].append(manual.index)
+    if not by_commit:
+        raise EvalError(
+            "no source commits found in PR commit messages; pass --source-excel "
+            "or add source commit references to the PR commits"
+        )
+    return sort_source_commits(config, by_commit), input_count, "pr_messages"
 
 
 def read_manual_commits(config: Config) -> list[ManualCommit]:
@@ -527,9 +576,12 @@ def discovery_payload(
     manuals: list[ManualCommit],
     cases: list[EvalCase],
     input_count: int,
+    source_input_mode: str,
 ) -> dict[str, Any]:
     return {
         "source_repo": str(config.source_repo),
+        "source_excel": str(config.source_excel) if config.source_excel else "",
+        "source_input_mode": source_input_mode,
         "target_repo": str(config.target_repo),
         "pr_url": config.pr_url,
         "first_pr_commit": config.first_pr_commit,
@@ -561,9 +613,20 @@ def ensure_clean_target(config: Config) -> None:
         )
 
 
+def is_eval_temp_branch(branch: str) -> bool:
+    return branch.startswith("eval/") and "backport-eval" in branch
+
+
 def current_repo_state(config: Config) -> dict[str, str]:
     branch = git(config.target_repo, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
+    if branch and is_eval_temp_branch(branch):
+        raise EvalError(
+            "target repository is currently on an eval temp branch from an unfinished "
+            f"or uncleaned run: {branch}. Resume or recover that run before starting "
+            f"{config.eval_name}."
+        )
     return {
+        "eval_name": config.eval_name,
         "branch": branch,
         "head": git(config.target_repo, "rev-parse", "HEAD"),
         "temp_branch": config.temp_branch,
@@ -595,6 +658,8 @@ def read_json(path: Path) -> Any:
 
 def discovery_signature(payload: dict[str, Any]) -> dict[str, Any]:
     signature = {
+        "source_input_mode": payload.get("source_input_mode", ""),
+        "source_excel": payload.get("source_excel", ""),
         "last_pr_commit": payload.get("last_pr_commit") or payload.get("pr_head", ""),
         "pr_baseline": payload["pr_baseline"],
         "input_count": payload["input_count"],
@@ -701,8 +766,31 @@ def restore_target(config: Config, state: dict[str, str]) -> None:
     git(config.target_repo, "reset", "--hard")
     git(config.target_repo, "clean", "-fd")
     if state.get("branch"):
-        git(config.target_repo, "switch", state["branch"])
-        git(config.target_repo, "reset", "--hard", state["head"])
+        if is_eval_temp_branch(state["branch"]):
+            LOGGER.warning(
+                "RESTORE: recorded branch is an eval temp branch; detaching at saved head branch=%s head=%s",
+                state["branch"],
+                state["head"],
+            )
+            git(config.target_repo, "switch", "--detach", state["head"])
+        else:
+            branch_exists = git(
+                config.target_repo,
+                "rev-parse",
+                "--verify",
+                f"{state['branch']}^{{commit}}",
+                check=False,
+            )
+            if branch_exists:
+                git(config.target_repo, "switch", state["branch"])
+                git(config.target_repo, "reset", "--hard", state["head"])
+            else:
+                LOGGER.warning(
+                    "RESTORE: recorded branch no longer exists; detaching at saved head branch=%s head=%s",
+                    state["branch"],
+                    state["head"],
+                )
+                git(config.target_repo, "switch", "--detach", state["head"])
     else:
         git(config.target_repo, "switch", "--detach", state["head"])
     recovery_temp_branch = state.get("temp_branch") or config.temp_branch
@@ -716,8 +804,29 @@ def recover_if_needed(config: Config) -> None:
     state = json.loads(config.recovery_file.read_text(encoding="utf-8"))
     if state.get("target_repo") != str(config.target_repo):
         raise EvalError(f"unexpected recovery record: {config.recovery_file}")
+    if state.get("eval_name") and state["eval_name"] != config.eval_name:
+        raise EvalError(
+            f"recovery record belongs to {state['eval_name']}, not {config.eval_name}: "
+            f"{config.recovery_file}"
+        )
     LOGGER.warning("recovering target repository from an interrupted previous run")
     restore_target(config, state)
+
+
+def ensure_no_foreign_recovery(config: Config) -> None:
+    for path in SCRIPT_DIR.glob("*_recovery.json"):
+        if path.resolve() == config.recovery_file.resolve():
+            continue
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if state.get("target_repo") == str(config.target_repo):
+            raise EvalError(
+                "another evaluation has an unfinished recovery record for the same "
+                f"target repository: {path}. Resume or recover that run before "
+                f"starting {config.eval_name}."
+            )
 
 
 def reset_case(config: Config, baseline: str) -> None:
@@ -1108,6 +1217,8 @@ def write_workbook(
     manual_mystique_rows = [row for row in manual_rows if row.get("decision") == "mystique_patch"]
     info = {
         "source_repo": str(config.source_repo),
+        "source_excel": str(config.source_excel) if config.source_excel else "",
+        "source_input_mode": payload.get("source_input_mode", ""),
         "target_repo": str(config.target_repo),
         "PR URL": config.pr_url,
         "PR first commit": config.first_pr_commit,
@@ -1188,7 +1299,11 @@ def main() -> int:
         resume_mode,
     )
     recover_if_needed(config)
-    for path in (config.source_repo, config.target_repo, config.source_excel, config.cvekit):
+    ensure_no_foreign_recovery(config)
+    required_paths = [config.source_repo, config.target_repo, config.cvekit]
+    if config.source_excel is not None:
+        required_paths.append(config.source_excel)
+    for path in required_paths:
         if not path.exists():
             raise EvalError(f"required path does not exist: {path}")
     git_verify(config.source_repo, config.source_branch)
@@ -1196,18 +1311,23 @@ def main() -> int:
     git_verify(config.target_repo, config.last_pr_commit)
     git_verify(config.target_repo, config.pr_baseline)
 
-    LOGGER.info("reading and sorting Excel source commits")
-    sources, input_count = read_source_commits(config)
     manuals = read_manual_commits(config)
+    if config.source_excel is not None:
+        LOGGER.info("reading and sorting Excel source commits")
+        sources, input_count, source_input_mode = read_source_commits_from_excel(config)
+    else:
+        LOGGER.info("extracting and sorting source commits from PR commit messages")
+        sources, input_count, source_input_mode = read_source_commits_from_pr_messages(config, manuals)
     cases = build_cases(sources, manuals)
     validate_discovery(config, sources, manuals, cases, input_count)
-    payload = discovery_payload(config, sources, manuals, cases, input_count)
+    payload = discovery_payload(config, sources, manuals, cases, input_count, source_input_mode)
     if resume_mode:
         validate_resume_discovery(run_dir, payload)
     else:
         write_json_atomic(run_dir / "discovery.json", payload)
     LOGGER.info(
-        "discovery validated: inputs=%d unique=%d manual=%d mapped=%d",
+        "discovery validated: source_mode=%s inputs=%d unique=%d manual=%d mapped=%d",
+        source_input_mode,
         input_count,
         len(sources),
         len(manuals),

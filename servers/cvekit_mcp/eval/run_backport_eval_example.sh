@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Copy this script or override these example values before running.
+# Leave SOURCE_EXCEL empty to derive source commits from PR commit messages.
 EVAL_NAME="${EVAL_NAME:-my_backport_eval}"
 SOURCE_REPO="${SOURCE_REPO:-/path/to/source-kernel}"
 SOURCE_BRANCH="${SOURCE_BRANCH:-origin/main}"
