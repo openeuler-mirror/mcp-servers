@@ -22,6 +22,7 @@ Start with patch-only review:
 - Compare touched files, changed lines, hunk labels, added/deleted behavior, and mechanical evidence.
 - Check whether low `manual_change_coverage` means the AI patch omitted manual behavior.
 - Check whether low `ai_change_precision` or `extra_ai_files` means the AI patch introduced unrelated behavior.
+- When added code looks similar, verify equivalent execution conditions, ordering, path coverage, and any old behavior it replaces.
 - If the manual patch and AI patch alone clearly show equivalent behavior, missing behavior, or extra behavior, finish the judgement without inspecting repositories.
 
 Escalate to `target_repo@case_baseline` only when patch-only evidence cannot answer the semantic question:
