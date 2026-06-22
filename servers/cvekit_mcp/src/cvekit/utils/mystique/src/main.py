@@ -265,150 +265,6 @@ def _build_c_signature_line_map(target_code: str, target_filename: str) -> dict[
     return signature_map
 
 
-def _handle_function_declarations(
-    pre_file: str,
-    post_file: str,
-    target_file: str,
-    signatures: list[str],
-    language: Language,
-) -> str | None:
-    """Handle migration of function declarations in header files.
-
-    When normal method migration fails (because declarations don't have method objects),
-    this function provides a simpler text-based migration for function declarations.
-
-    Returns the patched code or None if it fails.
-    """
-    # Read file contents
-    with open(pre_file, "r") as f:
-        pre_content = f.read()
-    with open(post_file, "r") as f:
-        post_content = f.read()
-    with open(target_file, "r") as f:
-        target_content = f.read()
-
-    pre_lines = pre_content.splitlines(keepends=True)
-    post_lines = post_content.splitlines(keepends=True)
-    target_lines_list = target_content.splitlines(keepends=True)
-
-    # Use git diff + @@-based parsing to find changed line numbers
-    difft_pre, difft_post = _get_changed_lines_from_diff(pre_file, post_file)
-    if not difft_pre and not difft_post:
-        logging.debug("No changes detected in declarations")
-        return None
-
-    logging.debug(f"Declaration changed lines: pre={difft_pre}, post={difft_post}")
-
-    # Extract function names from signatures
-    func_names = [sig.rsplit("#", 1)[-1] if "#" in sig else sig for sig in signatures]
-    logging.debug(f"Declaration function names: {func_names}")
-
-    # For each function, find where its declaration is and what changed
-    replacements = []
-
-    for func_name in func_names:
-        # Find the declaration in pre, post, and target
-        pre_decl_lines = []
-        post_decl_lines = []
-        target_decl_start = None
-        target_decl_end = None
-
-        # Search for the function declaration in pre (function name + semicolon at end of line)
-        for i, line in enumerate(pre_lines):
-            if func_name in line and ';' in line:
-                # Found start of declaration
-                pre_decl_start = i
-                pre_decl_lines = [line]
-                # Check if declaration spans multiple lines
-                j = i + 1
-                while j < len(pre_lines) and ';' not in pre_lines[j]:
-                    pre_decl_lines.append(pre_lines[j])
-                    j += 1
-                if j < len(pre_lines):
-                    pre_decl_lines.append(pre_lines[j])  # line with closing semicolon
-                break
-
-        # Search for the function declaration in post
-        for i, line in enumerate(post_lines):
-            if func_name in line and ';' in line:
-                # Found start of declaration
-                post_decl_lines = [line]
-                # Check if declaration spans multiple lines
-                j = i + 1
-                while j < len(post_lines) and ';' not in post_lines[j]:
-                    post_decl_lines.append(post_lines[j])
-                    j += 1
-                if j < len(post_lines):
-                    post_decl_lines.append(post_lines[j])  # line with closing semicolon
-                break
-
-        # Search for the function declaration in target
-        for i, line in enumerate(target_lines_list):
-            if func_name in line and ';' in line:
-                # Found start of declaration
-                target_decl_start = i
-                target_decl_end = i
-                # Check if declaration spans multiple lines
-                j = i + 1
-                while j < len(target_lines_list) and ';' not in target_lines_list[j]:
-                    j += 1
-                target_decl_end = j
-                break
-
-        if target_decl_start is None:
-            logging.warning(f"Could not find declaration for {func_name} in target")
-            continue
-
-        # Check if this declaration actually changed (is in difft_pre/difft_post)
-        pre_changed = any(i in difft_pre for i in range(pre_decl_start + 1, pre_decl_start + len(pre_decl_lines) + 1))
-        if not pre_changed:
-            logging.debug(f"Declaration for {func_name} was not changed")
-            continue
-
-        # Build old and new declaration text
-        old_decl = "".join(pre_decl_lines).rstrip('\n')
-        new_decl = "".join(post_decl_lines).rstrip('\n')
-
-        logging.info(f"Declaration change for {func_name}:")
-        logging.info(f"  OLD: {old_decl}")
-        logging.info(f"  NEW: {new_decl}")
-
-        replacements.append((
-            target_decl_start + 1,  # 1-based
-            target_decl_end + 1,    # 1-based
-            old_decl,
-            new_decl
-        ))
-
-    if not replacements:
-        logging.debug("Could not find matching declarations in target")
-        return None
-
-    # Apply replacements to target
-    patched_lines = target_lines_list.copy()
-
-    # Process replacements in reverse order to maintain line numbers
-    for target_start, target_end, old_decl, new_decl in replacements:
-        logging.info(f"Replacing lines {target_start}-{target_end} in target")
-
-        # Build replacement lines
-        new_lines = []
-        for line in new_decl.splitlines(keepends=True):
-            if not line.endswith('\n'):
-                line += '\n'
-            new_lines.append(line)
-        if not new_lines:
-            new_lines = ['\n']
-
-        # Replace in patched_lines
-        idx_start = target_start - 1
-        idx_end = target_end - 1
-        if 0 <= idx_start <= idx_end < len(patched_lines):
-            patched_lines[idx_start:idx_end + 1] = new_lines
-
-    return "".join(patched_lines)
-
-
 def _apply_method_replacements(
     target_code: str,
     replacements: list[tuple[str, int, int, str]],
@@ -687,32 +543,6 @@ def patchbp(
         solve_failed_signatures.extend(cluster_failed)
 
     if not replacements:
-        # Check if we have function declarations that couldn't be processed
-        # Try a simpler text-based approach for declarations
-        if prepare_failed_signatures:
-            logging.info("尝试处理函数声明...")
-            try:
-                decl_replacement = _handle_function_declarations(
-                    pre_method_file, post_method_file, target_method_file,
-                    prepare_failed_signatures, language
-                )
-                if decl_replacement:
-                    logging.info("函数声明处理成功")
-                    if language == Language.C:
-                        external_result = migrate_external_changes(
-                            pre_method_code,
-                            post_method_code,
-                            decl_replacement,
-                        )
-                        _log_external_migration_result(
-                            external_result,
-                            "函数声明回退后的函数外迁移完成",
-                        )
-                        return external_result.code
-                    return decl_replacement
-            except Exception as e:
-                logging.warning(f"函数声明处理失败: {e}")
-
         if language == Language.C:
             external_result = migrate_external_changes(
                 pre_method_code,
@@ -721,7 +551,7 @@ def patchbp(
             )
             _log_external_migration_result(
                 external_result,
-                "函数迁移失败后的函数外迁移完成",
+                "函数迁移失败，函数外迁移完成",
             )
             return external_result.code
         logging.warning("❌ 所有函数迁移失败，返回原始 target")
@@ -1093,65 +923,228 @@ def _normalize_patched_formatting(
                 modified_names.add(sig)
         logging.info("Format normalization limited to modified functions: %s", sorted(modified_names))
 
-    def _extract_functions(code: str) -> list:
-        funcs: list[tuple[str, int, int, list[str]]] = []
-        lines = code.split("\n")
+    def _extract_all_regions(code: str) -> list[tuple[str, int, int, list[str]]]:
+        """Extract ALL code regions — both functions and non-function blocks.
+
+        Returns list of (name, start_line_1idx, end_line_1idx, lines).
+        Function names are their actual function names.
+        Non-function blocks get synthetic positional names like
+        ``__top_before_funcname__`` or ``__top_after_funcname__`` so they can
+        be matched across target/patched by the same name-based logic.
+        """
+        regions: list[tuple[str, int, int, list[str]]] = []
+        all_lines = code.split("\n")
         from func_parser import parse_functions_with_tree_sitter
 
-        for func in parse_functions_with_tree_sitter(code):
-            s = func.start_line
-            e = func.end_line
-            text = lines[s - 1 : e]
-            funcs.append((func.name, s, e, text))
-        return funcs
+        funcs = sorted(parse_functions_with_tree_sitter(code), key=lambda f: f.start_line)
+        prev_end = 1  # 1-indexed, next line after the previous region
+
+        for func in funcs:
+            s, e = func.start_line, func.end_line
+            # Non-function block before this function
+            if s > prev_end:
+                text = all_lines[prev_end - 1 : s - 1]
+                name = f"__top_before_{func.name}__"
+                regions.append((name, prev_end, s - 1, text))
+            # The function itself
+            text = all_lines[s - 1 : e]
+            regions.append((func.name, s, e, text))
+            prev_end = e + 1
+
+        # Trailing non-function block after the last function
+        if prev_end <= len(all_lines):
+            text = all_lines[prev_end - 1 :]
+            anchor = funcs[-1].name if funcs else "eof"
+            name = f"__top_after_{anchor}__"
+            regions.append((name, prev_end, len(all_lines), text))
+
+        return regions
+
+    def _format_top_region(target_lines, patched_lines, region_name):
+        """Format a top-level (non-function) region by isolating changed sub-regions.
+
+        Uses SequenceMatcher on whitespace-insensitive line keys to split the
+        region into equal/insert/delete/replace sub-regions.  Equal parts are
+        copied from target; only small changed sub-regions go to the LLM.
+
+        Returns (formatted_lines, fixes_count) or (None, 0) on failure.
+        """
+        import difflib
+        from changed_region_formatter import _line_match_key
+
+        target_keys = [_line_match_key(l) for l in target_lines]
+        patched_keys = [_line_match_key(l) for l in patched_lines]
+
+        matcher = difflib.SequenceMatcher(None, target_keys, patched_keys, autojunk=False)
+        opcodes = matcher.get_opcodes()
+
+        meaningful_equal = sum(
+            ti2 - ti1
+            for tag, ti1, ti2, _, _ in opcodes
+            if tag == "equal" and any(target_keys[ti1:ti2])
+        )
+        if meaningful_equal == 0:
+            logging.warning(
+                "  _format_top_region: no stable anchor lines in '%s', falling back",
+                region_name,
+            )
+            return None, 0
+
+        rebuilt: list[str] = []
+        changes = 0
+
+        for tag, ti1, ti2, pi1, pi2 in opcodes:
+            if tag == "equal":
+                rebuilt.extend(target_lines[ti1:ti2])
+            elif tag == "delete":
+                if all(not l.strip() for l in target_lines[ti1:ti2]):
+                    rebuilt.extend(target_lines[ti1:ti2])
+                    changes += 1
+                    logging.info(
+                        "  FIX (restore blank) %s: restored %d blank line(s) removed by patch",
+                        region_name, ti2 - ti1,
+                    )
+            elif tag == "insert":
+                if all(not l.strip() for l in patched_lines[pi1:pi2]):
+                    changes += 1
+                    logging.info(
+                        "  FIX (drop blank) %s: suppressed %d spurious blank line(s)",
+                        region_name, pi2 - pi1,
+                    )
+                    continue
+                rebuilt.extend(patched_lines[pi1:pi2])
+            elif tag == "replace":
+                t_block = target_lines[ti1:ti2]
+                p_block = patched_lines[pi1:pi2]
+
+                t_stripped = [l.strip() for l in t_block if l.strip()]
+                p_stripped = [l.strip() for l in p_block if l.strip()]
+
+                if t_stripped == p_stripped and t_stripped:
+                    rebuilt.extend(t_block)
+                    changes += 1
+                    logging.info(
+                        "  FIX (local top) %s: %d lines -> %d lines (pure formatting)",
+                        region_name, len(p_block), len(t_block),
+                    )
+                    continue
+
+                if len(t_block) == len(p_block):
+                    t_ws = [l.strip() for l in t_block]
+                    p_ws = [l.strip() for l in p_block]
+                    if t_ws == p_ws:
+                        rebuilt.extend(t_block)
+                        changes += 1
+                        logging.info(
+                            "  FIX (local top ws) %s: %d lines, whitespace-only",
+                            region_name, len(p_block),
+                        )
+                        continue
+
+                prompt = f"""\
+Fix formatting of this code block to match the TARGET style.
+
+=== TARGET (correct formatting reference) ===
+{chr(10).join(t_block)}
+
+=== CODE TO REFORMAT (preserve all content, only fix formatting) ===
+{chr(10).join(p_block)}
+
+Output ONLY the reformatted code, no explanations, no markdown fences.
+"""
+                try:
+                    result = llm.llm_generate(
+                        prompt,
+                        temperature=0,
+                        system_message="You are a C code formatting expert. Reformat the code to match the target's style while preserving ALL content. NEVER change identifiers, keywords, statements, or logic.",
+                    )
+                    if result:
+                        cleaned = re.sub(r"<antThinking>.*?</antThinking>", "", result, flags=re.DOTALL)
+                        cleaned = re.sub(r"<thinking>.*?</thinking>", "", cleaned, flags=re.DOTALL)
+                        cleaned = re.sub(r"<\|begin_thinking\|>.*?<\|end_thinking\|>", "", cleaned, flags=re.DOTALL)
+                        cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL)
+                        cleaned = re.sub(r"^```(?:c|C|cpp|CPP)?\s*\n", "", cleaned, flags=re.MULTILINE)
+                        cleaned = re.sub(r"\n```\s*$", "", cleaned, flags=re.DOTALL)
+                        cleaned = cleaned.strip()
+
+                        if cleaned and len(cleaned) >= len("\n".join(p_block)) * 0.3:
+                            sub_lines = cleaned.split("\n")
+                            rebuilt.extend(sub_lines)
+                            changes += 1
+                            logging.info(
+                                "  FIX (LLM sub) %s: %d lines -> %d lines",
+                                region_name, len(p_block), len(sub_lines),
+                            )
+                            continue
+                except Exception as e:
+                    logging.warning("  LLM sub-region failed for '%s': %s", region_name, e)
+
+                rebuilt.extend(p_block)
+
+        return rebuilt, changes
 
     def _process_one_pass(current_code: str, target_code: str) -> tuple[str, int]:
-        """Do one pass of format normalization. Returns (new_code, fixes_count)."""
-        t_funcs = _extract_functions(target_code)
-        p_funcs = _extract_functions(current_code)
+        """Do one pass of format normalization. Returns (new_code, fixes_count).
 
+        Matches regions (both function bodies and non-function blocks) by name
+        between target and patched code, then formats any mismatched region
+        using the same LLM + validate_formatting pipeline.
+        """
+        t_regions = _extract_all_regions(target_code)
+        p_regions = _extract_all_regions(current_code)
+
+        t_func_count = sum(1 for r in t_regions if not r[0].startswith("__top_"))
+        p_func_count = sum(1 for r in p_regions if not r[0].startswith("__top_"))
         logging.info(
-            "  _process_one_pass: extracted %d target funcs, %d patched funcs",
-            len(t_funcs), len(p_funcs),
+            "  _process_one_pass: target=%d regions (%d funcs, %d top-level), "
+            "patched=%d regions (%d funcs, %d top-level)",
+            len(t_regions), t_func_count, len(t_regions) - t_func_count,
+            len(p_regions), p_func_count, len(p_regions) - p_func_count,
         )
-        t_func_names = sorted(set(f[0] for f in t_funcs))
-        p_func_names = sorted(set(f[0] for f in p_funcs))
-        logging.info("  target func names: %s", t_func_names)
-        logging.info("  patched func names: %s", p_func_names)
 
-        if not t_funcs or not p_funcs:
-            logging.warning("  _process_one_pass: empty funcs, t=%d p=%d, returning early",
-                          len(t_funcs), len(p_funcs))
+        if not t_regions or not p_regions:
+            logging.warning(
+                "  _process_one_pass: empty regions, t=%d p=%d, returning early",
+                len(t_regions), len(p_regions),
+            )
             return current_code, 0
 
+        # Build name → entries mappings (same for func and non-func regions)
         t_map: dict[str, list] = {}
-        for name, start, end, text in t_funcs:
+        for name, start, end, text in t_regions:
             t_map.setdefault(name, []).append((start, end, text))
 
         p_map: dict[str, list] = {}
-        for name, start, end, text in p_funcs:
+        for name, start, end, text in p_regions:
             p_map.setdefault(name, []).append((start, end, text))
 
+        # Determine which names to check
+        region_names = {r[0] for r in t_regions if not r[0].startswith("__top_")}
         if modified_names:
-            in_t_not_p = modified_names & set(t_map.keys()) - set(p_map.keys())
-            in_p_not_t = modified_names & set(p_map.keys()) - set(t_map.keys())
-            check_names = modified_names & set(t_map.keys()) & set(p_map.keys())
-            if in_t_not_p:
-                logging.warning("  modified funcs in target but NOT in patched: %s", sorted(in_t_not_p))
-            if in_p_not_t:
-                logging.warning("  modified funcs in patched but NOT in target: %s", sorted(in_p_not_t))
+            check_region_names = modified_names & region_names & set(p_map.keys())
+            for mn in modified_names:
+                if mn in region_names and mn not in p_map:
+                    logging.warning("  modified func in target but NOT in patched: %s", mn)
+                if mn in set(p_map.keys()) and mn not in region_names:
+                    logging.warning("  modified func in patched but NOT in target: %s", mn)
         else:
-            check_names = set(t_map.keys()) & set(p_map.keys())
+            check_region_names = region_names & set(p_map.keys())
 
-        logging.info("  check_names (intersection): %s", sorted(check_names))
+        # Also check non-function regions (__top_* names) that appear in both
+        top_names = {r[0] for r in t_regions if r[0].startswith("__top_")}
+        check_top_names = top_names & set(p_map.keys())
+
+        check_names = check_region_names | check_top_names
+        logging.info("  check_names: %d func + %d top-level = %d total",
+                    len(check_region_names), len(check_top_names), len(check_names))
 
         # Sort by position in current file
         work_items: list[tuple[int, str, list, list]] = []
-        for func_name in check_names:
-            p_entries = p_map[func_name]
-            t_entries = t_map[func_name]
+        for region_name in check_names:
+            p_entries = p_map[region_name]
+            t_entries = t_map[region_name]
             if p_entries:
-                work_items.append((p_entries[0][1], func_name, t_entries, p_entries))
+                work_items.append((p_entries[0][1], region_name, t_entries, p_entries))
         work_items.sort(key=lambda x: x[0])
 
         if not work_items:
@@ -1162,7 +1155,7 @@ def _normalize_patched_formatting(
         line_offset = 0
         processed: set[tuple[int, int]] = set()
 
-        for _, func_name, t_entries, p_entries in work_items:
+        for _, region_name, t_entries, p_entries in work_items:
             for t_start, t_end, t_text in t_entries:
                 for p_start, p_end, p_text in p_entries:
                     if (p_start, p_end) in processed:
@@ -1183,7 +1176,7 @@ def _normalize_patched_formatting(
                         processed.add((p_start, p_end))
                         logging.info(
                             "  FIX (local) %s: lines %d-%d (adj %d-%d)",
-                            func_name, p_start, p_end, adj_s + 1, adj_e,
+                            region_name, p_start, p_end, adj_s + 1, adj_e,
                         )
                         continue
 
@@ -1193,8 +1186,30 @@ def _normalize_patched_formatting(
                     adj_s = p_start - 1 + line_offset
                     adj_e = p_end + line_offset
 
+                    is_top = region_name.startswith("__top_")
+
+                    # For top-level regions, try smart sub-region formatting
+                    # first to avoid LLM oscillation on large mixed-content blocks.
+                    if is_top:
+                        smart_lines, smart_fixes = _format_top_region(
+                            t_text, p_text, region_name,
+                        )
+                        if smart_lines is not None and smart_fixes > 0:
+                            result_lines[adj_s:adj_e] = smart_lines
+                            line_offset += len(smart_lines) - (p_end - p_start + 1)
+                            fixes += 1
+                            processed.add((p_start, p_end))
+                            logging.info(
+                                "  FIX (smart top) %s: adj %d-%d (%d lines -> %d lines), delta=%+d",
+                                region_name, adj_s + 1, adj_e,
+                                p_end - p_start + 1, len(smart_lines),
+                                len(smart_lines) - (p_end - p_start + 1),
+                            )
+                            continue
+
+                    kind = "code block" if is_top else "function"
                     prompt = f"""\
-Reformat the PATCHED function below to match the TARGET function's FORMATTING STYLE only.
+Reformat the PATCHED {kind} below to match the TARGET {kind}'s FORMATTING STYLE only.
 
 CRITICAL: You MUST call the `validate_formatting` tool to verify your output before finalizing:
   validate_formatting(original_code=<PATCHED code below>, formatted_code=<your reformatted output>)
@@ -1206,18 +1221,18 @@ Formatting changes ONLY:
 
 NEVER change: identifiers, types, keywords, statements, parameters, logic, braces count, semicolons.
 
-=== TARGET function ({len(t_text)} lines) — FORMATTING REFERENCE only ===
+=== TARGET {kind} ({len(t_text)} lines) — FORMATTING REFERENCE only ===
 {target_str}
 
-=== PATCHED function ({len(p_text)} lines) — reformat this, KEEP ALL CODE CHANGES ===
+=== PATCHED {kind} ({len(p_text)} lines) — reformat this, KEEP ALL CODE CHANGES ===
 {patched_str}
 
-Output ONLY the reformatted function, no explanations, no markdown fences.
+Output ONLY the reformatted {kind}, no explanations, no markdown fences.
 """
 
                     logging.info(
                         "  LLM '%s': patched lines %d-%d (adj %d-%d), prompt=%d chars",
-                        func_name, p_start, p_end, adj_s + 1, adj_e, len(prompt),
+                        region_name, p_start, p_end, adj_s + 1, adj_e, len(prompt),
                     )
 
                     try:
@@ -1229,7 +1244,7 @@ Output ONLY the reformatted function, no explanations, no markdown fences.
                         )
 
                         if not result:
-                            logging.warning("  LLM returned empty for '%s'", func_name)
+                            logging.warning("  LLM returned empty for '%s'", region_name)
                             continue
 
                         cleaned = re.sub(r"<antThinking>.*?</antThinking>", "", result, flags=re.DOTALL)
@@ -1241,13 +1256,13 @@ Output ONLY the reformatted function, no explanations, no markdown fences.
                         cleaned = cleaned.strip()
 
                         if not cleaned:
-                            logging.warning("  Cleaned empty for '%s'", func_name)
+                            logging.warning("  Cleaned empty for '%s'", region_name)
                             continue
 
                         if len(cleaned) < len(patched_str) * 0.3:
                             logging.warning(
                                 "  Result too small for '%s' (%d vs %d), skipping",
-                                func_name, len(cleaned), len(patched_str),
+                                region_name, len(cleaned), len(patched_str),
                             )
                             continue
 
@@ -1265,8 +1280,59 @@ Output ONLY the reformatted function, no explanations, no markdown fences.
                         if val_result:
                             logging.warning(
                                 "  REJECTED (safety net) '%s': %s",
-                                func_name, val_result[:300],
+                                region_name, val_result[:300],
                             )
+                            # One retry with explicit error feedback
+                            retry_prompt = f"""\
+Your previous reformatting was REJECTED because it changed content, not just formatting.
+
+VALIDATION ERROR:
+{val_result[:1000]}
+
+Original (PATCHED) code — REFORMAT THIS:
+{patched_str}
+
+Target (REFERENCE) formatting:
+{target_str}
+
+CRITICAL: Call validate_formatting(original_code=<PATCHED code above>, formatted_code=<your output>)
+before finalizing. If the tool reports errors, fix them and call again.
+NEVER change identifiers, keywords, statements, logic, or comment position/order.
+Output ONLY the reformatted function, no markdown fences, no explanations."""
+                            try:
+                                retry_result = llm.llm_generate(
+                                    retry_prompt,
+                                    temperature=0,
+                                    tools=[llm.validate_formatting],
+                                    system_message="You are a C code formatting expert. Fix the validation errors while preserving ALL code content exactly. Always call validate_formatting tool to verify.",
+                                )
+                                if retry_result:
+                                    retry_cleaned = re.sub(r"<antThinking>.*?</antThinking>", "", retry_result, flags=re.DOTALL)
+                                    retry_cleaned = re.sub(r"<thinking>.*?</thinking>", "", retry_cleaned, flags=re.DOTALL)
+                                    retry_cleaned = re.sub(r"<\|begin_thinking\|>.*?<\|end_thinking\|>", "", retry_cleaned, flags=re.DOTALL)
+                                    retry_cleaned = re.sub(r"<think>.*?</think>", "", retry_cleaned, flags=re.DOTALL)
+                                    retry_cleaned = re.sub(r"^```(?:c|C|cpp|CPP)?\s*\n", "", retry_cleaned, flags=re.MULTILINE)
+                                    retry_cleaned = re.sub(r"\n```\s*$", "", retry_cleaned, flags=re.DOTALL)
+                                    retry_cleaned = retry_cleaned.strip()
+                                    if retry_cleaned:
+                                        val_result2 = llm.validate_formatting.invoke({
+                                            "original_code": patched_str,
+                                            "formatted_code": retry_cleaned,
+                                        })
+                                        if not val_result2:
+                                            logging.info("  RETRY SUCCESS '%s' — safety net passed on retry", region_name)
+                                            replacement_lines = retry_cleaned.split("\n")
+                                            orig_count = p_end - p_start + 1
+                                            delta = len(replacement_lines) - orig_count
+                                            result_lines[adj_s:adj_e] = replacement_lines
+                                            line_offset += delta
+                                            fixes += 1
+                                            processed.add((p_start, p_end))
+                                            continue
+                                        else:
+                                            logging.warning("  RETRY FAILED '%s': %s", region_name, val_result2[:200])
+                            except Exception as e:
+                                logging.warning("  Retry LLM failed for '%s': %s", region_name, e)
                             processed.add((p_start, p_end))
                             continue
 
@@ -1276,7 +1342,7 @@ Output ONLY the reformatted function, no explanations, no markdown fences.
                             orig_preview += " ..."
                         logging.info(
                             "  FIX (LLM) '%s': adj %d-%d (%d lines -> %d lines), delta=%+d",
-                            func_name, adj_s + 1, adj_e, orig_count, len(replacement_lines), delta,
+                            region_name, adj_s + 1, adj_e, orig_count, len(replacement_lines), delta,
                         )
                         logging.info("    Was: %s", orig_preview[:200])
                         logging.info("    Now: %s", "; ".join(replacement_lines[:3])[:200])
@@ -1287,7 +1353,7 @@ Output ONLY the reformatted function, no explanations, no markdown fences.
                         processed.add((p_start, p_end))
 
                     except Exception as e:
-                        logging.warning("  LLM failed for '%s': %s", func_name, e)
+                        logging.warning("  LLM failed for '%s': %s", region_name, e)
 
         return "\n".join(result_lines), fixes
 
@@ -1302,7 +1368,14 @@ Output ONLY the reformatted function, no explanations, no markdown fences.
             logging.info("No more format differences found, done.")
             break
 
+    # Normalize top-level (non-function) code blocks.  The function-level
+    # formatter above only touches code inside function bodies.  External
+    # migration (migrate_external_changes) adds/modifies struct definitions,
+    # global variables, prototypes, includes, macros, and file-scope comments
+    # — all of which live outside functions and would otherwise escape
+    # formatting entirely.
     return current_code
+
 
 
 def _generate_unified_patch(
@@ -1375,7 +1448,7 @@ def _find_functions_by_hunk_lines(
 
     # Build a map of line number -> function name using func_parser
     line_to_func: dict[int, str] = {}
-    func_infos: dict[str, tuple[int, int]] = {}  # func_name -> (start_line, end_line)
+    func_infos: dict[str, tuple[int, int]] = {}  # region_name -> (start_line, end_line)
 
     for func in parse_functions(code):
         for line_num in range(func.start_line, func.end_line + 1):
@@ -1401,12 +1474,12 @@ def _find_functions_by_hunk_lines(
         # parse_functions may report incorrect ranges for inline functions in headers,
         # so we verify the overlap before accepting.
         validated_funcs: set[str] = set()
-        for func_name in hunk_funcs:
-            if func_name in func_infos:
-                start, end = func_infos[func_name]
+        for region_name in hunk_funcs:
+            if region_name in func_infos:
+                start, end = func_infos[region_name]
                 # Check if any changed line falls within this function's range
                 if any(start <= ln <= end for ln in all_hunk_lines):
-                    validated_funcs.add(func_name)
+                    validated_funcs.add(region_name)
         hunk_funcs = validated_funcs
 
         # If we found validated functions via line mapping, use them
@@ -1418,31 +1491,31 @@ def _find_functions_by_hunk_lines(
             import re
             m = re.match(r"^\s*(?:static\s+|inline\s+|__\w+\s+)*(?:const\s+)?[\w\*]+\s+(\w+)\s*\([^)]*\)\s*[{;]?\s*$", hunk.func_name)
             if m:
-                func_name = m.group(1)
+                region_name = m.group(1)
                 # Filter out obvious non-functions
-                if func_name not in ("if", "else", "while", "for", "switch", "do", "catch", "namespace"):
+                if region_name not in ("if", "else", "while", "for", "switch", "do", "catch", "namespace"):
                     # Validate that this function overlaps with changed lines
-                    if func_name in func_infos:
-                        start, end = func_infos[func_name]
+                    if region_name in func_infos:
+                        start, end = func_infos[region_name]
                         if any(start <= ln <= end for ln in all_hunk_lines):
-                            modified_funcs.add(func_name)
+                            modified_funcs.add(region_name)
                     else:
-                        # func_name not found by parse_functions, trust git context but log warning
+                        # region_name not found by parse_functions, trust git context but log warning
                         logging.warning(
                             "  函数 '%s' (来自git context) 未在代码中找到定义，跳过",
-                            func_name
+                            region_name
                         )
 
         # If still no functions found, try to find the function that actually contains
         # the changed lines (search all functions and find the one whose range contains
         # any of the changed lines, even if parse_functions reported wrong ranges)
         if not modified_funcs and all_hunk_lines:
-            for func_name, (start, end) in func_infos.items():
+            for region_name, (start, end) in func_infos.items():
                 if any(start <= ln <= end for ln in all_hunk_lines):
-                    modified_funcs.add(func_name)
+                    modified_funcs.add(region_name)
                     logging.warning(
                         "  使用行范围重叠检测到修改的函数: %s (lines %d-%d, changed lines: %s)",
-                        func_name, start, end, all_hunk_lines
+                        region_name, start, end, all_hunk_lines
                     )
 
     return modified_funcs

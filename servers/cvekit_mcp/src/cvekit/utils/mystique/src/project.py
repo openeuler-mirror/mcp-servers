@@ -1206,16 +1206,17 @@ class Method:
         print()
 
         # 检查占位符数量是否一致
-        print(f"🔍 检查占位符数量一致性:")
         if placeholder_count != hunks_count:
-            print(f"  ⚠️ 数量不匹配: {placeholder_count} != {hunks_count}")
-            if placeholder_count > hunks_count:
-                print(f"  ⚠️ 占位符过多(LLM添加了额外的placeholder)，将替换前{hunks_count}个，移除多余的{placeholder_count - hunks_count}个")
-            else:
-                print(f"  ⚠️ 占位符过少，将替换所有{placeholder_count}个，剩余{hunks_count - placeholder_count}个hunk无法恢复")
-        else:
-            print(f"  ✅ 数量匹配: {placeholder_count} == {hunks_count}")
-        print()
+            logging.warning(
+                "RECOVER_PLACEHOLDER[%s]: MISMATCH placeholder=%d hunk=%d — 返回 None 触发安全回退",
+                self.name, placeholder_count, hunks_count,
+            )
+            # Return None to trigger the safe fallback in solve_cluster_jointly
+            # that strips all placeholder lines rather than injecting wrong
+            # hunks into wrong positions (which produces corrupted code).
+            # With the fresh re-call approach in _joint_llm_fix, this path
+            # is now rarely reached.
+            return None
 
         print(f"🔧 开始替换占位符:")
         result = ""

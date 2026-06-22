@@ -1,9 +1,9 @@
 """Migrate file-level C nodes outside Mystique's function pipeline.
 
 This module owns includes, object-like and function-like defines, file-level
-function prototypes, named struct definitions, and conservative single-variable
-global declarations. Function definitions remain owned by the existing
-Mystique Joern and LLM pipeline.
+function prototypes, named struct definitions, file-scope comments, and
+conservative single-variable global declarations. Function definitions remain
+owned by the existing Mystique Joern and LLM pipeline.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ EXTERNAL_QUERY = """
   (preproc_function_def)
   (declaration)
   (struct_specifier)
+  (comment)
 ] @node
 """
 
@@ -158,14 +159,20 @@ def _struct_definition_span(code: str, node) -> tuple[int, int] | None:
     return node.start_byte, end + 1
 
 
-def extract_external_nodes(code: str) -> list[ExternalNode]:
+def extract_external_nodes(code: str, label: str = "") -> list[ExternalNode]:
     """Extract file-level nodes owned by the external migration pipeline."""
+    _label = f" [{label}]" if label else ""
     parser = CParser()
     root = parser.parse(code)
     nodes: list[ExternalNode] = []
+    skipped_inside_func: list[tuple[str, str]] = []
+    skipped_empty_key: list[str] = []
 
     for node in parser.query_all(root, EXTERNAL_QUERY):
         if _inside_function(node):
+            if node.type == "comment":
+                raw_first_line = _node_text(node).splitlines()[0].strip() if _node_text(node).splitlines() else ""
+                skipped_inside_func.append((node.type, raw_first_line[:80]))
             continue
         kind: str
         key: str | None = None
@@ -198,6 +205,34 @@ def extract_external_nodes(code: str) -> list[ExternalNode]:
                 )
             )
             continue
+        elif node.type == "comment":
+            kind = "comment"
+            raw = _node_text(node).strip()
+            if raw.startswith("//"):
+                content = raw[2:].strip()
+            elif raw.startswith("/*"):
+                inner = raw[2:]
+                if inner.endswith("*/"):
+                    inner = inner[:-2]
+                lines = inner.splitlines()
+                meaningful: list[str] = []
+                for line in lines:
+                    stripped = line.strip()
+                    if stripped.startswith("*"):
+                        stripped = stripped[1:].strip()
+                    if stripped.endswith("*/"):
+                        stripped = stripped[:-2].strip()
+                    if stripped:
+                        meaningful.append(stripped)
+                content = meaningful[0] if meaningful else ""
+                # Kernel-doc comments use "func_name - description" format.
+                # The func_name may differ across kernel forks (e.g. af_alg_ vs aead_),
+                # so use only the description part as the identity key.
+                if " - " in content:
+                    content = content.split(" - ", 1)[1]
+            else:
+                content = ""
+            key = content if content else None
         elif node.type == "declaration":
             declarators = _declaration_declarators(node)
             if len(declarators) != 1:
@@ -214,6 +249,8 @@ def extract_external_nodes(code: str) -> list[ExternalNode]:
             continue
 
         if not key:
+            if node.type == "comment":
+                skipped_empty_key.append(_node_text(node)[:80])
             continue
         nodes.append(
             ExternalNode(
@@ -226,6 +263,19 @@ def extract_external_nodes(code: str) -> list[ExternalNode]:
             )
         )
 
+    # ── debug: summary counts ──
+    kind_counts: dict[str, int] = {}
+    for n in nodes:
+        kind_counts[n.kind] = kind_counts.get(n.kind, 0) + 1
+    comment_keys = [(n.key, n.start_byte, n.end_byte, n.guard_context) for n in nodes if n.kind == "comment"]
+    logging.debug("extract_external_nodes%s: total=%d by_kind=%s", _label, len(nodes), kind_counts)
+    if comment_keys:
+        logging.debug("extract_external_nodes%s: comment keys=%s", _label, comment_keys)
+    if skipped_inside_func:
+        logging.debug("extract_external_nodes%s: skipped (inside function)=%s", _label, skipped_inside_func)
+    if skipped_empty_key:
+        logging.debug("extract_external_nodes%s: skipped (empty key)=%s", _label, skipped_empty_key)
+
     return sorted(nodes, key=lambda item: item.start_byte)
 
 
@@ -234,8 +284,8 @@ def _normalized(text: str) -> str:
 
 
 def _detect_changes(pre_code: str, post_code: str) -> tuple[list[ExternalChange], list[ExternalNode]]:
-    pre_nodes = extract_external_nodes(pre_code)
-    post_nodes = extract_external_nodes(post_code)
+    pre_nodes = extract_external_nodes(pre_code, label="pre")
+    post_nodes = extract_external_nodes(post_code, label="post")
     pre_by_id = {node.identity: node for node in pre_nodes}
     post_by_id = {node.identity: node for node in post_nodes}
 
@@ -249,6 +299,22 @@ def _detect_changes(pre_code: str, post_code: str) -> tuple[list[ExternalChange]
             changes.append(ExternalChange("delete", pre_node, None))
         elif _normalized(pre_node.text) != _normalized(post_node.text):
             changes.append(ExternalChange("modify", pre_node, post_node))
+
+    # ── debug: summary of detected changes ──
+    comment_changes = [c for c in changes if (c.post_node or c.pre_node).kind == "comment"]
+    logging.debug(
+        "_detect_changes: total=%d comment_changes=%d",
+        len(changes), len(comment_changes),
+    )
+    for c in comment_changes:
+        node = c.post_node or c.pre_node
+        logging.debug(
+            "  comment change: action=%s identity=%s pre_text_head=%s post_text_head=%s",
+            c.action,
+            c.identity,
+            (c.pre_node.text[:120].replace('\n','\\n') if c.pre_node else None),
+            (c.post_node.text[:120].replace('\n','\\n') if c.post_node else None),
+        )
 
     def sort_key(change: ExternalChange) -> tuple[int, int]:
         node = change.post_node or change.pre_node
@@ -419,9 +485,41 @@ def migrate_external_changes(pre_code: str, post_code: str, target_code: str) ->
     unresolved: list[UnresolvedChange] = []
 
     for change in changes:
-        target_nodes = extract_external_nodes(current)
+        target_nodes = extract_external_nodes(current, label="target")
         target_by_id = {node.identity: node for node in target_nodes}
         target_node = target_by_id.get(change.identity)
+
+        # ── debug: diagnose missing target node for modify/delete ──
+        if target_node is None and change.action in ("modify", "delete"):
+            node = change.pre_node or change.post_node
+            assert node is not None
+            # Collect all comments in target that could be close matches
+            target_comments = [
+                (n.identity, n.text[:120].replace('\n', '\\n'))
+                for n in target_nodes if n.kind == "comment"
+            ]
+            # Search for the comment key in target to show surrounding code
+            target_snippet = ""
+            target_encoded = current.encode("utf-8")
+            search_key = node.key if node.key else ""
+            if search_key:
+                pos = target_encoded.find(search_key.encode("utf-8"))
+                if pos >= 0:
+                    snippet_start = max(0, pos - 400)
+                    snippet_end = min(len(target_encoded), pos + 200)
+                    target_snippet = target_encoded[snippet_start:snippet_end].decode("utf-8", errors="replace")
+            logging.warning(
+                "🔍 目标节点缺失: action=%s identity=%s\n"
+                "  目标代码中的 comment 节点: %s\n"
+                "  搜索 key='%s' 附近的代码片段(byte %d-%d):\n"
+                ">>> %s <<<",
+                change.action, change.identity,
+                target_comments,
+                search_key,
+                max(0, pos - 400) if search_key and pos >= 0 else 0,
+                min(len(target_encoded), pos + 200) if search_key and pos >= 0 else 0,
+                target_snippet.replace('\n', '\\n') if target_snippet else "<not found>",
+            )
 
         if change.action == "add":
             assert change.post_node is not None
@@ -470,6 +568,17 @@ def migrate_external_changes(pre_code: str, post_code: str, target_code: str) ->
 
         if change.action == "delete":
             if _normalized(target_node.text) != _normalized(change.pre_node.text):
+                # For comments, directly delete — don't let LLM guess whether
+                # a diverged comment should be partially kept.
+                if change.pre_node.kind == "comment":
+                    current = _replace_bytes(
+                        current,
+                        target_node.start_byte,
+                        _delete_end(current, target_node),
+                        "",
+                    )
+                    applied.append(change)
+                    continue
                 merged = _resolve_conflict_with_llm(change, target_node)
                 if merged is None:
                     unresolved.append(UnresolvedChange(change, "LLM failed to merge delete conflict"))
@@ -501,6 +610,20 @@ def migrate_external_changes(pre_code: str, post_code: str, target_code: str) ->
 
         assert change.post_node is not None
         if _normalized(target_node.text) == _normalized(change.post_node.text):
+            continue
+        # For comments, directly apply POST instead of LLM merge.
+        # Comments are documentation, not logic — target-specific modifications
+        # to comments (e.g. aead_ vs af_alg_ prefix bugs) are not worth preserving.
+        # LLM merge often produces incorrect results when the target comment has
+        # formatting differences from both pre and post.
+        if change.pre_node is not None and change.pre_node.kind == "comment":
+            current = _replace_bytes(
+                current,
+                target_node.start_byte,
+                target_node.end_byte,
+                change.post_node.text,
+            )
+            applied.append(change)
             continue
         if _normalized(target_node.text) != _normalized(change.pre_node.text):
             merged = _resolve_conflict_with_llm(change, target_node)
