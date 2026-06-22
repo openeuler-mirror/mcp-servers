@@ -863,6 +863,7 @@ def _joint_llm_fix(
     artifacts_by_signature: dict[str, MethodPatchArtifacts],
     language: Language,
     new_defines: list[str] | None = None,
+    max_attempts: int = 3,
 ) -> dict[str, str]:
     prompt = _build_joint_fix_prompt(signatures, artifacts_by_signature, language, new_defines)
     logging.info("📋 LLM联合修复提示词:")
@@ -882,17 +883,88 @@ def _joint_llm_fix(
 
     # Pass compile_check tool so LLM can verify its output compiles
     compile_tool = [llm.compile_check] if language == Language.C else None
-    raw = llm.llm_generate(prompt, temperature=0, tools=compile_tool, max_tokens=max_tokens)
-    if raw is None:
-        logging.error("❌ LLM联合修复请求失败")
-        return {}
-    logging.info(f"✅ LLM联合修复原始返回 (长度={len(raw)}):")
-    logging.info(raw)
-    result = _parse_joint_llm_output(raw, signatures)
-    result = _repair_placeholder_mismatch(
-        signatures, result, artifacts_by_signature, language, new_defines
-    )
-    return result
+
+    # Re-call from scratch with increasing temperature when placeholder counts
+    # mismatch.  Functions that already have correct placeholder counts are
+    # locked in and skipped on subsequent retries to shrink the prompt and
+    # let the LLM focus on the remaining failures.
+    temperatures = [0, 0.2, 0.4][:max_attempts]
+    locked_in: dict[str, str] = {}
+    best_result: dict[str, str] = {}
+    best_mismatch_count: float = float("inf")
+
+    def _check_signature(sig: str, code: str) -> bool:
+        artifact = artifacts_by_signature.get(sig)
+        if artifact is None or not artifact.target_slice_lines:
+            return True  # No placeholder expected → always OK
+        expected = _placeholder_count(artifact.target_sliced_code_placeholder)
+        got = _placeholder_count(code)
+        return expected == got
+
+    current_signatures = list(signatures)
+    current_prompt = prompt
+
+    for attempt, temp in enumerate(temperatures):
+        raw = llm.llm_generate(current_prompt, temperature=temp, tools=compile_tool, max_tokens=max_tokens)
+        if raw is None:
+            logging.error("❌ LLM联合修复请求失败 (attempt %d, temp=%s)", attempt + 1, temp)
+            continue
+
+        logging.info("✅ LLM联合修复原始返回 (attempt=%d, temp=%s, 长度=%d):", attempt + 1, temp, len(raw))
+        logging.info(raw)
+
+        result = _parse_joint_llm_output(raw, current_signatures)
+        if not result:
+            logging.warning("⚠️ LLM输出解析失败 (attempt %d, temp=%s)", attempt + 1, temp)
+            continue
+
+        # Merge locked-in results
+        merged = {**locked_in, **result}
+
+        # Check placeholder counts; lock in successes
+        mismatch_count = 0
+        all_match = True
+        for signature in signatures:
+            if signature in locked_in:
+                continue
+            code = merged.get(signature, "")
+            if not _check_signature(signature, code):
+                all_match = False
+                mismatch_count += 1
+                logging.warning(
+                    "⚠️ LLM输出占位符数量不匹配 (attempt %d): %s expected=%s got=%s",
+                    attempt + 1, signature,
+                    _placeholder_count(artifacts_by_signature[signature].target_sliced_code_placeholder),
+                    _placeholder_count(code),
+                )
+            else:
+                locked_in[signature] = code
+
+        if all_match:
+            logging.info("✅ 所有占位符数量匹配 (attempt %d, temp=%s)", attempt + 1, temp)
+            return merged
+
+        if mismatch_count < best_mismatch_count:
+            best_mismatch_count = mismatch_count
+            best_result = merged
+            logging.info("📋 当前最佳结果: %d 个不匹配 (attempt %d)", mismatch_count, attempt + 1)
+
+        # Build a smaller prompt for the next attempt, only for failed signatures
+        failed = [s for s in signatures if s not in locked_in]
+        if failed and attempt + 1 < len(temperatures):
+            current_signatures = failed
+            current_prompt = _build_joint_fix_prompt(
+                failed, artifacts_by_signature, language, new_defines,
+            )
+            logging.info(
+                "🔁 锁定 %d 个成功方法，仅重试 %d 个失败方法 (attempt %d→%d)",
+                len(locked_in), len(failed), attempt + 1, attempt + 2,
+            )
+
+    if best_result:
+        logging.warning("⚠️ %d 次尝试后仍有 %d 个方法占位符不匹配，使用最佳结果",
+                       max_attempts, best_mismatch_count)
+    return best_result
 
 
 def _strip_placeholders(code: str) -> str:
@@ -946,73 +1018,6 @@ def _placeholder_count(code: str) -> int:
         if line.strip() == placeholder_text:
             count += 1
     return count
-
-
-def _repair_placeholder_mismatch(
-    signatures: list[str],
-    llm_result: dict[str, str],
-    artifacts_by_signature: dict[str, MethodPatchArtifacts],
-    language: Language,
-    new_defines: list[str] | None = None,
-) -> dict[str, str]:
-    mismatch_sigs: list[str] = []
-    for signature in signatures:
-        artifact = artifacts_by_signature.get(signature)
-        fixed_code = llm_result.get(signature)
-        if artifact is None or fixed_code is None:
-            continue
-        if not artifact.target_slice_lines:
-            continue
-        expected = _placeholder_count(artifact.target_sliced_code_placeholder)
-        got = _placeholder_count(fixed_code)
-        if expected != got:
-            mismatch_sigs.append(signature)
-            logging.warning(
-                "⚠️ LLM输出占位符数量不匹配: %s expected=%s got=%s",
-                signature,
-                expected,
-                got,
-            )
-
-    if not mismatch_sigs:
-        return llm_result
-
-    retry_prompt = _build_placeholder_fix_prompt(
-        mismatch_sigs, llm_result, artifacts_by_signature, language, new_defines
-    )
-    logging.info("📋 占位符修复重试提示词:")
-    logging.info(retry_prompt)
-    retry_raw = llm.llm_generate(retry_prompt, temperature=0)
-    if retry_raw is None:
-        logging.warning("⚠️ 占位符修复重试第1次失败(超时)，尝试第2次...")
-        retry_raw = llm.llm_generate(retry_prompt, temperature=0.1)
-    if retry_raw is None:
-        logging.warning("⚠️ 占位符修复重试2次均失败，保留原结果")
-        return llm_result
-    logging.info(f"✅ 占位符修复重试原始返回 (长度={len(retry_raw)}):")
-    logging.info(retry_raw)
-    retry_result = _parse_joint_llm_output(retry_raw, mismatch_sigs, allow_partial=True)
-    if not retry_result:
-        logging.warning("⚠️ 占位符修复重试解析失败，保留原结果")
-        return llm_result
-
-    merged = dict(llm_result)
-    for signature, fixed_code in retry_result.items():
-        artifact = artifacts_by_signature.get(signature)
-        if artifact is None:
-            continue
-        expected = _placeholder_count(artifact.target_sliced_code_placeholder)
-        got = _placeholder_count(fixed_code)
-        if expected != got:
-            logging.warning(
-                "⚠️ 占位符修复重试后仍不匹配: %s expected=%s got=%s，忽略该重试结果",
-                signature,
-                expected,
-                got,
-            )
-            continue
-        merged[signature] = fixed_code
-    return merged
 
 
 def _cluster_consistency_backfill(
@@ -1128,7 +1133,13 @@ def _build_joint_fix_prompt(
         "If a new parameter is added and the target already has a caller that passes an argument for it, the signature MUST be updated to accept it.\n\n"
         "To produce the fixed code:\n"
         "1. Compare [PRE_SLICED]/[PRE_CODE] with [TARGET_WITH_PLACEHOLDER]/[TARGET_CODE] to identify lines that differ between pre and target.\n"
-        "2. Apply the patch changes (additions/deletions from [PATCH]) to the target.\n"
+        "2. Apply the patch changes (additions/deletions from [PATCH]) to the target. "
+        "CRITICAL — POSITION WITHIN EACH HUNK: In [PATCH], context lines (no +/- prefix) are anchors. "
+        "+ lines that appear BEFORE a context line must be inserted BEFORE the corresponding line in the target. "
+        "+ lines that appear AFTER a context line must be inserted AFTER it. "
+        "Never reorder additions relative to their anchor — e.g., if a new comment or doc-block is on "
+        "+ lines before a context statement, it stays before that statement; if new code is on + lines "
+        "after the context, it goes after. Delete - lines only at the position shown in the hunk.\n"
         "3. For context lines in the patch (no +/- prefix), if the target has a different version than pre, align the target line with the post version.\n"
         "4. When the patch adds new code (lines with + prefix) and the target already has structurally similar code at the same position "
         "(e.g., same control-flow pattern but different identifiers), apply the patch's semantic change to that existing target code "
@@ -1195,78 +1206,6 @@ def _build_joint_fix_prompt(
         f"<<<method_ns_mkdir_op_END>>>\n"
         f"Keys MUST be exactly these signatures: [{sig_list_str}].\n"
         f"No markdown, no explanation."
-    )
-
-
-def _build_placeholder_fix_prompt(
-    signatures: list[str],
-    current_result: dict[str, str],
-    artifacts_by_signature: dict[str, MethodPatchArtifacts],
-    language: Language,
-    new_defines: list[str] | None = None,
-) -> str:
-    lang = "Java" if language == Language.JAVA else "C"
-    sections: list[str] = []
-    for signature in signatures:
-        artifact = artifacts_by_signature[signature]
-        current_code = current_result.get(signature, "")
-        expected = _placeholder_count(artifact.target_sliced_code_placeholder)
-        got = _placeholder_count(current_code)
-
-        # Build line-by-line placeholder position mapping to help LLM
-        target_lines = artifact.target_sliced_code_placeholder.splitlines()
-        current_lines = current_code.splitlines() if current_code else []
-
-        target_placeholder_lines = []
-        for i, line in enumerate(target_lines):
-            if line.strip() == config.PLACE_HOLDER.strip():
-                target_placeholder_lines.append(i + 1)
-
-        current_placeholder_lines = []
-        for i, line in enumerate(current_lines):
-            if line.strip() == config.PLACE_HOLDER.strip():
-                current_placeholder_lines.append(i + 1)
-
-        sections.append(
-            (
-                f"## METHOD {signature}\n"
-                f"[TARGET_WITH_PLACEHOLDER]\n{artifact.target_sliced_code_placeholder}\n\n"
-                f"[CURRENT_BAD_OUTPUT]\n{current_code}\n\n"
-                f"[EXPECTED_PLACEHOLDER_COUNT] {expected}\n"
-                f"[CURRENT_PLACEHOLDER_COUNT] {got}\n"
-                f"[TARGET_PLACEHOLDER_LINE_NUMBERS] {target_placeholder_lines}\n"
-                f"[CURRENT_PLACEHOLDER_LINE_NUMBERS] {current_placeholder_lines}\n"
-            )
-        )
-    defines_section = ""
-    if new_defines:
-        defines_text = "\n".join(new_defines)
-        defines_section = f"[NEW_DEFINES]\n{defines_text}\n\n"
-    sig_list_str = ", ".join(signatures)
-    return (
-        f"You are fixing placeholder-count violations in {lang} methods.\n"
-        f"Placeholder token is: {config.PLACE_HOLDER}\n"
-        "TASK: Restore missing placeholder lines to [CURRENT_BAD_OUTPUT] so it has EXACTLY [EXPECTED_PLACEHOLDER_COUNT] placeholders.\n"
-        "A placeholder was LOST when you previously replaced it with real code. You must add it BACK.\n"
-        "How to find where: compare [TARGET_PLACEHOLDER_LINE_NUMBERS] with [CURRENT_PLACEHOLDER_LINE_NUMBERS].\n"
-        "Each number in [TARGET_PLACEHOLDER_LINE_NUMBERS] that is MISSING from [CURRENT_PLACEHOLDER_LINE_NUMBERS]\n"
-        "indicates a placeholder that was removed and must be re-inserted at that relative position.\n"
-        "Rules:\n"
-        "1) Keep code semantics of [CURRENT_BAD_OUTPUT] as much as possible.\n"
-        "2) Do NOT remove, alter, or merge existing placeholder lines.\n"
-        "3) Do NOT add new placeholder lines beyond [EXPECTED_PLACEHOLDER_COUNT].\n"
-        "4) NEVER insert a placeholder into new code you're adding from the patch.\n"
-        "5) Output must contain EXACTLY [EXPECTED_PLACEHOLDER_COUNT] placeholder lines.\n"
-        "6) Placeholder text must match token exactly.\n"
-        "7) The placeholder must be on its OWN line, with the SAME indentation as in [TARGET_WITH_PLACEHOLDER].\n"
-        "8) BRACKET BALANCE: re-verify that `{` count equals `}` count after insertion.\n"
-        "9) Use the `compile_check` tool to verify C syntax before outputting your final answer.\n\n"
-        + defines_section
-        + "\n".join(sections)
-        + f"\n\nOutput each method wrapped in <<<method_SIG_START>>>/<<<method_SIG_END>>> markers.\n"
-          f"For each method, the SIG is the part after '#' in the signature.\n"
-          f"Keys MUST be exactly these signatures: [{sig_list_str}].\n"
-          f"No markdown, no explanation."
     )
 
 
