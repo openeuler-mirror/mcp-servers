@@ -1473,7 +1473,11 @@ def _find_commit_title_in_target(
     if not title:
         return None
     if not title_allowlist:
-        raise RuntimeError("target title allowlist 为空，无法进行可信的 title 索引判定")
+        return _find_commit_title_in_target_by_grep(
+            target_repo,
+            target_branch,
+            title,
+        )
     return next(
         iter(
             _filtered_commit_title_index_in_target(
@@ -1485,6 +1489,29 @@ def _find_commit_title_in_target(
         ),
         None,
     )
+
+
+def _find_commit_title_in_target_by_grep(
+    target_repo: git.Repo,
+    target_branch: str,
+    commit_title: str,
+):
+    title = str(commit_title or "").strip()
+    if not title:
+        return None
+    output = target_repo.git.log(
+        target_branch,
+        "--format=%H%x00%s",
+        "--fixed-strings",
+        f"--grep={title}",
+    )
+    for line in output.splitlines():
+        if "\x00" not in line:
+            continue
+        commit_id, found_subject = line.split("\x00", 1)
+        if found_subject.strip() == title:
+            return commit_id.strip()
+    return None
 
 
 def _resolve_commit_title_for_merge_check(
@@ -1736,52 +1763,84 @@ def _resolve_complete_target_title_allowlist(sorted_items, base_project_dir: str
     return frozenset(titles)
 
 
+def _prepare_preview_patch_input(
+    item,
+    *,
+    is_report_config,
+    base_project_dir: str,
+    prepared_patch_batch_token: str,
+    generate_missing_patch: bool,
+) -> str:
+    fields = _extract_backport_batch_item_fields(item, is_report_config)
+    item_config = fields["item_config"]
+    fixed_commit = fields["commit_id"]
+    patch_path = (
+        item_config.get("patch_path")
+        or item_config.get("original_patch_path")
+        or ""
+    )
+    is_merge_commit = fields["is_merge_commit"]
+    fixed_commit, patch_path, is_merge_commit, should_skip = _prepare_backport_patch_and_commit(
+        is_report_config=is_report_config,
+        generate_missing_patch=generate_missing_patch,
+        allow_existing_patch_reuse=False,
+        fixed_commit=fixed_commit,
+        patch_path=patch_path,
+        is_merge_commit=is_merge_commit,
+        base_project_dir=base_project_dir,
+    )
+    if should_skip:
+        return ""
+
+    if fixed_commit:
+        item["commit"] = fixed_commit
+    if isinstance(item_config, dict):
+        if fixed_commit:
+            item_config["fixed_commit"] = fixed_commit
+        if patch_path:
+            item_config["patch_path"] = patch_path
+            item_config.setdefault("original_patch_path", patch_path)
+            item_config["_prepared_patch_batch_token"] = prepared_patch_batch_token
+            item_config["_prepared_patch_path"] = patch_path
+        if is_merge_commit is not None:
+            item_config["is_merge_commit"] = is_merge_commit
+
+    if str(item_config.get("commit_message_preview") or "").strip():
+        return ""
+
+    preview_patch_path = _infer_original_patch_path(item_config) or patch_path
+    if not preview_patch_path:
+        return ""
+    preview_patch_path = os.path.abspath(os.path.expanduser(preview_patch_path))
+    if not os.path.exists(preview_patch_path):
+        return ""
+    return preview_patch_path
+
+
 def _resolve_complete_linux_subject_allowlist(
     sorted_items,
     *,
     is_report_config,
     base_project_dir: str,
     prepared_patch_batch_token: str,
+    generate_missing_patch: bool,
 ) -> frozenset[str]:
     subjects: set[str] = set()
     parser = CommitMessageParser()
     for item in sorted_items:
         if not isinstance(item, dict):
             continue
-        fields = _extract_backport_batch_item_fields(item, is_report_config)
-        item_config = fields["item_config"]
-        fixed_commit = fields["commit_id"]
-        patch_path = (
-            item_config.get("patch_path")
-            or item_config.get("original_patch_path")
-            or ""
-        )
-        is_merge_commit = fields["is_merge_commit"]
-        fixed_commit, patch_path, is_merge_commit, should_skip = _prepare_backport_patch_and_commit(
+        preview_patch_path = _prepare_preview_patch_input(
+            item,
             is_report_config=is_report_config,
-            generate_missing_patch=False,
-            allow_existing_patch_reuse=False,
-            fixed_commit=fixed_commit,
-            patch_path=patch_path,
-            is_merge_commit=is_merge_commit,
             base_project_dir=base_project_dir,
+            prepared_patch_batch_token=prepared_patch_batch_token,
+            generate_missing_patch=generate_missing_patch,
         )
-        if fixed_commit:
-            item["commit"] = fixed_commit
-        if isinstance(item_config, dict):
-            if fixed_commit:
-                item_config["fixed_commit"] = fixed_commit
-            if patch_path:
-                item_config["patch_path"] = patch_path
-                item_config.setdefault("original_patch_path", patch_path)
-                item_config["_prepared_patch_batch_token"] = prepared_patch_batch_token
-                item_config["_prepared_patch_path"] = patch_path
-            if is_merge_commit is not None:
-                item_config["is_merge_commit"] = is_merge_commit
-        if should_skip or not patch_path or not os.path.exists(patch_path):
+        if not preview_patch_path:
             continue
         try:
-            subject = parser.parse_patch_file(patch_path).subject.strip()
+            subject = parser.parse_patch_file(preview_patch_path).subject.strip()
         except Exception:
             continue
         if subject:
@@ -3268,6 +3327,7 @@ def _prepare_backport_batch_context(args):
         is_report_config=is_report_config,
         base_project_dir=base_project_dir,
         prepared_patch_batch_token=prepared_patch_batch_token,
+        generate_missing_patch=bool(is_report_config and getattr(args, "stop_at_first_conflict", False)),
     )
     logger.info(
         "[backport-batch] 排序完成: total_items=%d, sorted_items=%d, sort_errors=%d",
