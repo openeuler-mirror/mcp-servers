@@ -380,7 +380,7 @@ class SourceDetector:
         try:
             # allowlist 模式的优化前提是调用方提供可复用的 cache；
             # 否则这里仍会完整扫描一次 linux log，但不会跨 commit 复用结果。
-            process = subprocess.Popen(
+            with subprocess.Popen(
                 [
                     "git",
                     "-C",
@@ -394,23 +394,22 @@ class SourceDetector:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-            )
+            ) as process:
+                stdout_output, stderr_output = process.communicate()
         except Exception as exc:
             self._last_profile["linux_index_build_seconds"] += time.perf_counter() - started_at
             logger.warning("source detection: subject index build failed: %s", exc)
             return {}
 
-        assert process.stdout is not None
-        for line in process.stdout:
+        for line in stdout_output.splitlines():
             if "\x00" not in line:
                 continue
-            commit_id, found_subject = line.rstrip("\n").split("\x00", 1)
+            commit_id, found_subject = line.split("\x00", 1)
             normalized_subject = found_subject.strip()
             if normalized_subject not in allowlist:
                 continue
             matches.setdefault(normalized_subject, []).append(commit_id.strip())
 
-        _, stderr_output = process.communicate()
         if process.returncode != 0:
             self._last_profile["linux_index_build_seconds"] += time.perf_counter() - started_at
             logger.warning(
