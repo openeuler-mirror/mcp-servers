@@ -4,8 +4,10 @@ import logging
 import os
 import copy
 import re
+import subprocess
 import sys
 import time
+import uuid
 
 import git
 import yaml
@@ -13,8 +15,10 @@ from dataclasses import dataclass
 
 from .backporting import run_backport_from_config
 from .commit_message_template import (
+    CommitMessageParser,
     DEFAULT_COMMIT_MESSAGE_TEMPLATE,
     DEFAULT_LINUX_REPO_PATH,
+    FilteredSubjectIndexCache,
     build_commit_message_preview,
     normalize_commit_message_source,
 )
@@ -25,6 +29,58 @@ from tabulate import tabulate
 logger = logging.getLogger(__name__)
 
 import readline
+
+
+def _format_profile_seconds(value: float) -> str:
+    return f"{max(float(value or 0.0), 0.0):.2f}s"
+
+
+def _log_backport_batch_commit_profile(commit_ref: str, profile: dict[str, float], args) -> None:
+    if not getattr(args, "debug", False):
+        return
+    logger.debug(
+        "[backport-batch] profile commit=%s patch_gen=%s merged_check=%s reverse_apply=%s conflict_check=%s linux_grep=%s total=%s",
+        commit_ref,
+        _format_profile_seconds(profile.get("patch_gen_seconds", 0.0)),
+        _format_profile_seconds(profile.get("merged_check_seconds", 0.0)),
+        _format_profile_seconds(profile.get("reverse_apply_seconds", 0.0)),
+        _format_profile_seconds(profile.get("conflict_check_seconds", 0.0)),
+        _format_profile_seconds(profile.get("linux_grep_seconds", 0.0)),
+        _format_profile_seconds(profile.get("total_seconds", 0.0)),
+    )
+
+
+def _log_backport_batch_index_build_profile(commit_ref: str, profile: dict[str, float], args) -> None:
+    if not getattr(args, "debug", False):
+        return
+    linux_index_build = float(profile.get("linux_index_build_seconds", 0.0) or 0.0)
+    target_index_build = float(profile.get("target_index_build_seconds", 0.0) or 0.0)
+    if linux_index_build <= 0.0 and target_index_build <= 0.0:
+        return
+    logger.debug(
+        "[backport-batch] profile-index commit=%s linux_index_build=%s target_index_build=%s",
+        commit_ref,
+        _format_profile_seconds(linux_index_build),
+        _format_profile_seconds(target_index_build),
+    )
+
+
+def _finalize_backport_batch_profile(
+    *,
+    started_at: float,
+    commit_ref: str,
+    profile: dict[str, float],
+    args,
+) -> None:
+    profile["total_seconds"] = max(
+        time.perf_counter()
+        - started_at
+        - float(profile.get("linux_index_build_seconds", 0.0) or 0.0)
+        - float(profile.get("target_index_build_seconds", 0.0) or 0.0),
+        0.0,
+    )
+    _log_backport_batch_index_build_profile(commit_ref, profile, args)
+    _log_backport_batch_commit_profile(commit_ref, profile, args)
 
 
 def _resolve_commit_message_source(args, item_config: dict, base_config: dict) -> str:
@@ -60,6 +116,20 @@ class BackportBatchContext:
     base_target_path: str
     sorted_items: list
     sort_errors: list
+    linux_subject_allowlist: frozenset[str]
+    filtered_subject_index_cache: FilteredSubjectIndexCache
+    target_title_allowlist: frozenset[str]
+    target_title_index_cache: FilteredTitleIndexCache
+    prepared_patch_batch_token: str
+
+
+@dataclass
+class FilteredTitleIndexCache:
+    # 只缓存当前 backport-batch 上下文最近一次 target branch title 索引，
+    # 复用批内结果，避免模块级全局缓存。
+    key: tuple[str, str, tuple[str, ...]] | None = None
+    value: dict[str, tuple[str, ...]] | None = None
+    pending_build_seconds: float = 0.0
 
 
 def generate_backport_batch_config_from_excel(
@@ -251,6 +321,11 @@ def handle_backport_batch(args):
         base_project_dir=base_project_dir,
         base_target_path=base_target_path,
         default_target_branch=default_target_branch,
+        linux_subject_allowlist=context.linux_subject_allowlist,
+        filtered_subject_index_cache=context.filtered_subject_index_cache,
+        target_title_allowlist=context.target_title_allowlist,
+        target_title_index_cache=context.target_title_index_cache,
+        prepared_patch_batch_token=context.prepared_patch_batch_token,
         args=args,
     )
 
@@ -287,6 +362,8 @@ def _build_commit_message_report_fields(
     openeuler_commit_id: str,
     item_config: dict,
     base_config: dict,
+    linux_subject_allowlist: frozenset[str],
+    filtered_subject_index_cache: FilteredSubjectIndexCache,
     args,
 ) -> dict:
     if not patch_path or not os.path.exists(patch_path):
@@ -300,9 +377,12 @@ def _build_commit_message_report_fields(
                 "warning": "缺少原始 patch，无法生成 commit message 预览。",
             },
             "commit_message_warnings": ["缺少原始 patch，无法生成 commit message 预览。"],
+            "_profile": {
+                "linux_grep_seconds": 0.0,
+            },
         }
     try:
-        return build_commit_message_preview(
+        result, profile = build_commit_message_preview(
             patch_path=patch_path,
             openeuler_commit_id=openeuler_commit_id,
             template=(
@@ -318,7 +398,13 @@ def _build_commit_message_report_fields(
                 or DEFAULT_LINUX_REPO_PATH
             ),
             commit_message_source=_resolve_commit_message_source(args, item_config, base_config),
+            subject_allowlist=linux_subject_allowlist,
+            filtered_subject_index_cache=filtered_subject_index_cache,
         )
+        result["_profile"] = profile
+        result["_profile"].setdefault("linux_grep_seconds", 0.0)
+        result["_profile"].setdefault("linux_index_build_seconds", 0.0)
+        return result
     except Exception as exc:
         logger.warning("[backport-batch] commit message preview failed: %s", exc)
         return {
@@ -331,6 +417,10 @@ def _build_commit_message_report_fields(
                 "warning": str(exc),
             },
             "commit_message_warnings": [str(exc)],
+            "_profile": {
+                "linux_grep_seconds": 0.0,
+                "linux_index_build_seconds": 0.0,
+            },
         }
 
 
@@ -340,6 +430,8 @@ def _resolve_commit_message_fields(
     openeuler_commit_id: str,
     item_config: dict,
     base_config: dict,
+    linux_subject_allowlist: frozenset[str],
+    filtered_subject_index_cache: FilteredSubjectIndexCache,
     args,
 ) -> dict:
     existing_preview = str(item_config.get("commit_message_preview") or "").strip()
@@ -356,8 +448,18 @@ def _resolve_commit_message_fields(
         openeuler_commit_id=openeuler_commit_id,
         item_config=item_config,
         base_config=base_config,
+        linux_subject_allowlist=linux_subject_allowlist,
+        filtered_subject_index_cache=filtered_subject_index_cache,
         args=args,
     )
+
+
+def _consume_target_title_index_build_seconds(cache: FilteredTitleIndexCache | None) -> float:
+    if cache is None:
+        return 0.0
+    elapsed = float(cache.pending_build_seconds or 0.0)
+    cache.pending_build_seconds = 0.0
+    return elapsed
 
 
 def _looks_like_patch_path(value: str) -> bool:
@@ -451,6 +553,8 @@ def _handle_preview_commit_message(args):
         openeuler_commit_id=commit_id,
         item_config=item_config,
         base_config=context.base_config,
+        linux_subject_allowlist=context.linux_subject_allowlist,
+        filtered_subject_index_cache=context.filtered_subject_index_cache,
         args=args,
     )
     return {
@@ -499,10 +603,24 @@ def _is_pending_backport_item(item) -> bool:
     return str(item.get("status") or "").strip().lower() == "pending"
 
 
+def _strip_runtime_private_keys(value):
+    private_keys = {
+        "_prepared_patch_batch_token",
+        "_prepared_patch_path",
+    }
+    if isinstance(value, dict):
+        return {
+            key: _strip_runtime_private_keys(item)
+            for key, item in value.items()
+            if key not in private_keys
+        }
+    if isinstance(value, list):
+        return [_strip_runtime_private_keys(item) for item in value]
+    return copy.deepcopy(value)
+
+
 def _copy_existing_report_item(item):
-    if isinstance(item, dict):
-        return copy.deepcopy(item)
-    return item
+    return _strip_runtime_private_keys(item)
 
 
 def _apply_patch_file_to_target_repo(
@@ -528,7 +646,7 @@ def _apply_patch_file_to_target_repo(
     logger.info("[backport-batch] 当前 HEAD: commit=%s", original_head[:12])
 
     try:
-        already_applied, reverse_check_error = _is_patch_applied_in_target(
+        already_applied, reverse_check_error, _ = _is_patch_applied_in_target(
             target_path, target_branch, patch_path
         )
         if already_applied:
@@ -635,6 +753,8 @@ def _handle_direct_apply_backported_patch(args):
         openeuler_commit_id=str(commit_id or ""),
         item_config=item_config,
         base_config=context.base_config,
+        linux_subject_allowlist=context.linux_subject_allowlist,
+        filtered_subject_index_cache=context.filtered_subject_index_cache,
         args=args,
     )
     commit_message = commit_message_preview["commit_message"]
@@ -1259,26 +1379,138 @@ def _ensure_commit_available_for_cherry_pick(
         upstream_remote = target_repo.create_remote(remote_name, upstream_url)
     upstream_remote.fetch(commit_sha)
 
+def _filtered_commit_title_index_in_target(
+    target_repo: git.Repo,
+    target_branch: str,
+    title_allowlist: set[str] | frozenset[str] | None,
+    cache: FilteredTitleIndexCache | None = None,
+) -> dict[str, tuple[str, ...]]:
+    allowlist = frozenset(
+        title.strip()
+        for title in (title_allowlist or set())
+        if str(title or "").strip()
+    )
+    if not allowlist:
+        return {}
 
-def _find_commit_title_in_target(target_repo: git.Repo, target_branch: str, commit_title: str):
+    branch_sha = target_repo.commit(target_branch).hexsha
+    cache_key = (
+        os.path.abspath(target_repo.working_tree_dir or target_repo.working_dir or ""),
+        branch_sha,
+        tuple(sorted(allowlist)),
+    )
+    if cache is not None and cache.key == cache_key and cache.value is not None:
+        return cache.value
+
+    started_at = time.perf_counter()
+    matches: dict[str, list[str]] = {}
+    try:
+        with subprocess.Popen(
+            [
+                "git",
+                "-C",
+                target_repo.working_tree_dir or target_repo.working_dir,
+                "log",
+                target_branch,
+                "--format=%H%x00%s",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        ) as process:
+            stdout_output, stderr_output = process.communicate()
+    except Exception as exc:
+        raise RuntimeError(f"target title index build failed: {exc}") from exc
+
+    for line in stdout_output.splitlines():
+        if "\x00" not in line:
+            continue
+        commit_id, found_subject = line.split("\x00", 1)
+        normalized_subject = found_subject.strip()
+        if normalized_subject not in allowlist:
+            continue
+        matches.setdefault(normalized_subject, []).append(commit_id.strip())
+
+    if process.returncode != 0:
+        elapsed = time.perf_counter() - started_at
+        if cache is not None:
+            cache.pending_build_seconds += elapsed
+        raise RuntimeError(
+            stderr_output.strip() or f"target title index build failed: git log exited with {process.returncode}"
+        )
+
+    finalized = {
+        subject: tuple(dict.fromkeys(commit_ids))
+        for subject, commit_ids in matches.items()
+    }
+    elapsed = time.perf_counter() - started_at
+    if cache is not None:
+        cache.key = cache_key
+        cache.value = finalized
+        cache.pending_build_seconds += elapsed
+    logger.info(
+        "[backport-batch] built filtered target title index repo=%s branch=%s branch_sha=%s titles=%d matched=%d elapsed=%s",
+        target_repo.working_tree_dir or target_repo.working_dir,
+        target_branch,
+        branch_sha,
+        len(allowlist),
+        len(finalized),
+        _format_profile_seconds(elapsed),
+    )
+    return finalized
+
+
+def _find_commit_title_in_target(
+    target_repo: git.Repo,
+    target_branch: str,
+    commit_title: str,
+    title_allowlist: set[str] | frozenset[str] | None = None,
+    title_index_cache: FilteredTitleIndexCache | None = None,
+):
     title = str(commit_title or "").strip()
     if not title:
         return None
-    try:
-        log_output = target_repo.git.log(
+    if not title_allowlist:
+        return _find_commit_title_in_target_by_grep(
+            target_repo,
             target_branch,
-            "--fixed-strings",
-            f"--grep={title}",
-            "--format=%H%x00%s",
+            title,
         )
-    except Exception:
+    return next(
+        iter(
+            _filtered_commit_title_index_in_target(
+                target_repo,
+                target_branch,
+                title_allowlist,
+                title_index_cache,
+            ).get(title, ())
+        ),
+        None,
+    )
+
+
+def _find_commit_title_in_target_by_grep(
+    target_repo: git.Repo,
+    target_branch: str,
+    commit_title: str,
+):
+    title = str(commit_title or "").strip()
+    if not title:
         return None
-    for line in log_output.splitlines():
+    output = target_repo.git.log(
+        target_branch,
+        "--format=%H%x00%s",
+        "--fixed-strings",
+        f"--grep={title}",
+    )
+    for line in output.splitlines():
         if "\x00" not in line:
             continue
-        sha, subject = line.split("\x00", 1)
-        if subject.strip() == title:
-            return sha
+        commit_id, found_subject = line.split("\x00", 1)
+        if found_subject.strip() == title:
+            return commit_id.strip()
     return None
 
 
@@ -1308,12 +1540,15 @@ def _is_commit_merged_in_target(
     commit_sha: str,
     source_path: str = "",
     commit_title: str | None = None,
+    title_allowlist: set[str] | frozenset[str] | None = None,
+    title_index_cache: FilteredTitleIndexCache | None = None,
 ):
+    started_at = time.perf_counter()
     try:
         target_repo = git.Repo(target_path)
         _ensure_clean_and_checkout(target_repo, target_branch)
         target_repo.git.merge_base("--is-ancestor", commit_sha, target_branch)
-        return True, None
+        return True, None, time.perf_counter() - started_at
     except git.exc.GitCommandError as e:
         # 源仓提交迁移到目标仓后可能会生成新的 commit id。SHA 祖先关系
         # 不成立时，再用 commit title 在目标分支历史中做精确匹配。
@@ -1325,28 +1560,35 @@ def _is_commit_merged_in_target(
                 commit_sha,
                 commit_title,
             )
-            matched_sha = _find_commit_title_in_target(target_repo, target_branch, title)
+            matched_sha = _find_commit_title_in_target(
+                target_repo,
+                target_branch,
+                title,
+                title_allowlist=title_allowlist,
+                title_index_cache=title_index_cache,
+            )
             if matched_sha:
-                return True, f"matched by commit title: {matched_sha}"
+                return True, f"matched by commit title: {matched_sha}", time.perf_counter() - started_at
         except Exception as title_error:
-            return False, f"{merge_base_error}; title-check: {title_error}"
+            return False, f"{merge_base_error}; title-check: {title_error}", time.perf_counter() - started_at
         # 非祖先且同标题未命中，按未合入处理
-        return False, merge_base_error
+        return False, merge_base_error, time.perf_counter() - started_at
     except Exception as e:
-        return False, str(e)
+        return False, str(e), time.perf_counter() - started_at
 
 def _is_patch_applied_in_target(target_path: str, target_branch: str, patch_path: str):
     if not patch_path or not os.path.exists(patch_path):
-        return False, "patch_path missing"
+        return False, "patch_path missing", 0.0
+    started_at = time.perf_counter()
     try:
         target_repo = git.Repo(target_path)
         _ensure_clean_and_checkout(target_repo, target_branch)
         target_repo.git.apply("--check", "--reverse", patch_path)
-        return True, None
+        return True, None, time.perf_counter() - started_at
     except git.exc.GitCommandError as e:
-        return False, str(e)
+        return False, str(e), time.perf_counter() - started_at
     except Exception as e:
-        return False, str(e)
+        return False, str(e), time.perf_counter() - started_at
 
 def _check_conflict_with_apply_or_cherrypick(
     target_path: str,
@@ -1355,18 +1597,19 @@ def _check_conflict_with_apply_or_cherrypick(
     patch_path: str,
     project_dir: str,
 ):
+    started_at = time.perf_counter()
     target_repo = git.Repo(target_path)
     _ensure_clean_and_checkout(target_repo, target_branch)
     upstream_repo = git.Repo(project_dir)
     commit_obj = upstream_repo.commit(commit_sha)
     is_merge_commit = len(commit_obj.parents) > 1
     if is_merge_commit:
-        return False, "merge-commit-skipped", None
+        return False, "merge-commit-skipped", None, time.perf_counter() - started_at
     apply_error = None
     # 优先用 git apply --check
     try:
         target_repo.git.apply("--check", patch_path)
-        return False, "apply", None
+        return False, "apply", None, time.perf_counter() - started_at
     except git.exc.GitCommandError as e:
         apply_error = str(e)
 
@@ -1376,19 +1619,19 @@ def _check_conflict_with_apply_or_cherrypick(
         _ensure_commit_available_for_cherry_pick(target_repo, project_dir, commit_sha)
         target_repo.git.cherry_pick(commit_sha)
         _reset_hard_and_clean(target_repo, original_head)
-        return False, "cherry-pick", None
+        return False, "cherry-pick", None, time.perf_counter() - started_at
     except git.exc.GitCommandError as e:
         _abort_cherry_pick(target_repo)
         _reset_hard_and_clean(target_repo, original_head)
         if apply_error:
-            return True, "cherry-pick", f"{apply_error}; cherry-pick error: {e}"
-        return True, "cherry-pick", f"cherry-pick error: {e}"
+            return True, "cherry-pick", f"{apply_error}; cherry-pick error: {e}", time.perf_counter() - started_at
+        return True, "cherry-pick", f"cherry-pick error: {e}", time.perf_counter() - started_at
     except Exception as e:
         _abort_cherry_pick(target_repo)
         _reset_hard_and_clean(target_repo, original_head)
         if apply_error:
-            return True, "cherry-pick", f"{apply_error}; cherry-pick error: {e}"
-        return True, "cherry-pick", f"cherry-pick error: {e}"
+            return True, "cherry-pick", f"{apply_error}; cherry-pick error: {e}", time.perf_counter() - started_at
+        return True, "cherry-pick", f"cherry-pick error: {e}", time.perf_counter() - started_at
 
 def _apply_patch_to_target_repo(
     target_path: str,
@@ -1493,6 +1736,116 @@ def _resolve_sorted_backport_items(commit_items, is_report_config, base_project_
         )
     except ValueError as e:
         raise ValueError(f"{e}（请先克隆源代码仓到 project_dir）")
+
+
+def _resolve_complete_target_title_allowlist(sorted_items, base_project_dir: str) -> frozenset[str]:
+    titles: set[str] = set()
+    repo: git.Repo | None = None
+    for item in sorted_items:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("commit_title") or "").strip()
+        if title:
+            titles.add(title)
+            continue
+        commit_id = str(item.get("commit") or item.get("input_commit") or "").strip()
+        if not commit_id:
+            continue
+        if repo is None:
+            repo = git.Repo(base_project_dir)
+        try:
+            resolved_title = repo.commit(commit_id).summary.strip()
+        except Exception:
+            continue
+        if resolved_title:
+            item["commit_title"] = resolved_title
+            titles.add(resolved_title)
+    return frozenset(titles)
+
+
+def _prepare_preview_patch_input(
+    item,
+    *,
+    is_report_config,
+    base_project_dir: str,
+    prepared_patch_batch_token: str,
+    generate_missing_patch: bool,
+) -> str:
+    fields = _extract_backport_batch_item_fields(item, is_report_config)
+    item_config = fields["item_config"]
+    fixed_commit = fields["commit_id"]
+    patch_path = (
+        item_config.get("patch_path")
+        or item_config.get("original_patch_path")
+        or ""
+    )
+    is_merge_commit = fields["is_merge_commit"]
+    fixed_commit, patch_path, is_merge_commit, should_skip = _prepare_backport_patch_and_commit(
+        is_report_config=is_report_config,
+        generate_missing_patch=generate_missing_patch,
+        allow_existing_patch_reuse=False,
+        fixed_commit=fixed_commit,
+        patch_path=patch_path,
+        is_merge_commit=is_merge_commit,
+        base_project_dir=base_project_dir,
+    )
+    if should_skip:
+        return ""
+
+    if fixed_commit:
+        item["commit"] = fixed_commit
+    if isinstance(item_config, dict):
+        if fixed_commit:
+            item_config["fixed_commit"] = fixed_commit
+        if patch_path:
+            item_config["patch_path"] = patch_path
+            item_config.setdefault("original_patch_path", patch_path)
+            item_config["_prepared_patch_batch_token"] = prepared_patch_batch_token
+            item_config["_prepared_patch_path"] = patch_path
+        if is_merge_commit is not None:
+            item_config["is_merge_commit"] = is_merge_commit
+
+    if str(item_config.get("commit_message_preview") or "").strip():
+        return ""
+
+    preview_patch_path = _infer_original_patch_path(item_config) or patch_path
+    if not preview_patch_path:
+        return ""
+    preview_patch_path = os.path.abspath(os.path.expanduser(preview_patch_path))
+    if not os.path.exists(preview_patch_path):
+        return ""
+    return preview_patch_path
+
+
+def _resolve_complete_linux_subject_allowlist(
+    sorted_items,
+    *,
+    is_report_config,
+    base_project_dir: str,
+    prepared_patch_batch_token: str,
+    generate_missing_patch: bool,
+) -> frozenset[str]:
+    subjects: set[str] = set()
+    parser = CommitMessageParser()
+    for item in sorted_items:
+        if not isinstance(item, dict):
+            continue
+        preview_patch_path = _prepare_preview_patch_input(
+            item,
+            is_report_config=is_report_config,
+            base_project_dir=base_project_dir,
+            prepared_patch_batch_token=prepared_patch_batch_token,
+            generate_missing_patch=generate_missing_patch,
+        )
+        if not preview_patch_path:
+            continue
+        try:
+            subject = parser.parse_patch_file(preview_patch_path).subject.strip()
+        except Exception:
+            continue
+        if subject:
+            subjects.add(subject)
+    return frozenset(subjects)
 
 
 def _append_sort_error_report_item(report_items, item, error_message):
@@ -1694,12 +2047,20 @@ def _prepare_backport_patch_and_commit(
     *,
     is_report_config,
     generate_missing_patch,
+    allow_existing_patch_reuse,
     fixed_commit,
     patch_path,
     is_merge_commit,
     base_project_dir,
 ):
-    if (not is_report_config) or (generate_missing_patch and not patch_path):
+    patch_exists = bool(patch_path and os.path.exists(patch_path))
+    should_generate_patch = False
+    if not is_report_config:
+        should_generate_patch = not (allow_existing_patch_reuse and patch_exists)
+    else:
+        should_generate_patch = generate_missing_patch and not patch_exists
+
+    if should_generate_patch:
         try:
             logger.info("[backport-batch] 生成补丁: commit=%s", fixed_commit)
             full_sha, patch_path = _write_commit_patch_file(fixed_commit, base_project_dir)
@@ -1711,6 +2072,8 @@ def _prepare_backport_patch_and_commit(
         except Exception as e:
             logger.info("[backport-batch] 补丁生成失败: commit=%s, error=%s", fixed_commit, e)
             return fixed_commit, patch_path, is_merge_commit, True
+    if allow_existing_patch_reuse and patch_exists:
+        logger.info("[backport-batch] 复用本轮批处理预生成补丁: commit=%s, patch=%s", fixed_commit, patch_path)
     if is_merge_commit is None and fixed_commit:
         is_merge_commit = _resolve_is_merge_commit(base_project_dir, fixed_commit)
     return fixed_commit, patch_path, is_merge_commit, False
@@ -1727,6 +2090,8 @@ def _resolve_merge_and_conflict_status(
     base_project_dir,
     is_merge_commit,
     commit_title,
+    target_title_allowlist,
+    title_index_cache,
     tag,
     commit_id,
     merged_in_target,
@@ -1735,6 +2100,11 @@ def _resolve_merge_and_conflict_status(
     conflict_check_method,
     conflict_check_error,
 ):
+    profile = {
+        "merged_check_seconds": 0.0,
+        "reverse_apply_seconds": 0.0,
+        "conflict_check_seconds": 0.0,
+    }
     logger.info(
         "[backport-batch] merge/conflict 状态解析入口: tag=%s, commit=%s, branch=%s, "
         "is_report=%s, force_recheck=%s, input_merged=%s, input_has_conflict=%s, "
@@ -1761,6 +2131,7 @@ def _resolve_merge_and_conflict_status(
             has_conflict,
             conflict_check_method,
             conflict_check_error,
+            profile,
         )
 
     if is_merge_commit:
@@ -1776,6 +2147,7 @@ def _resolve_merge_and_conflict_status(
             False,
             "merge-commit-skipped",
             None,
+            profile,
         )
 
     use_config_merged = is_report_config and merged_in_target is True and not force_recheck
@@ -1797,14 +2169,22 @@ def _resolve_merge_and_conflict_status(
             has_conflict,
             conflict_check_method,
             conflict_check_error,
+            profile,
         )
 
-    merged_in_target, merged_check_error = _is_commit_merged_in_target(
+    merged_in_target, merged_check_error, profile["merged_check_seconds"] = _is_commit_merged_in_target(
         base_target_path,
         target_branch,
         fixed_commit,
         source_path=base_project_dir,
         commit_title=commit_title,
+        title_allowlist=target_title_allowlist,
+        title_index_cache=title_index_cache,
+    )
+    profile["target_index_build_seconds"] = _consume_target_title_index_build_seconds(title_index_cache)
+    profile["merged_check_seconds"] = max(
+        profile["merged_check_seconds"] - profile["target_index_build_seconds"],
+        0.0,
     )
     logger.info(
         "[backport-batch] merge-base 检测结果: tag=%s, commit=%s, merged_in_target=%s, error=%s",
@@ -1822,7 +2202,7 @@ def _resolve_merge_and_conflict_status(
         patch_applied = False
         patch_check_error = None
         if patch_path:
-            patch_applied, patch_check_error = _is_patch_applied_in_target(
+            patch_applied, patch_check_error, profile["reverse_apply_seconds"] = _is_patch_applied_in_target(
                 base_target_path, target_branch, patch_path
             )
             logger.info(
@@ -1860,7 +2240,7 @@ def _resolve_merge_and_conflict_status(
             "[backport-batch] 开始冲突检测: tag=%s, commit=%s, is_report=%s, force_recheck=%s",
             tag or commit_id, fixed_commit, is_report_config, force_recheck,
         )
-        has_conflict, conflict_check_method, conflict_check_error = _check_conflict_with_apply_or_cherrypick(
+        has_conflict, conflict_check_method, conflict_check_error, profile["conflict_check_seconds"] = _check_conflict_with_apply_or_cherrypick(
             base_target_path,
             target_branch,
             fixed_commit,
@@ -1894,6 +2274,7 @@ def _resolve_merge_and_conflict_status(
         has_conflict,
         conflict_check_method,
         conflict_check_error,
+        profile,
     )
 
 
@@ -2058,6 +2439,11 @@ def _execute_backport_batch_action(
     config_dict,
     base_target_path,
     base_project_dir,
+    linux_subject_allowlist,
+    filtered_subject_index_cache,
+    target_title_allowlist,
+    title_index_cache,
+    profile,
     args,
 ):
     did_backport = False
@@ -2127,16 +2513,24 @@ def _execute_backport_batch_action(
                 tag or commit_id, fixed_commit, target_branch,
                 merged_in_target, has_conflict, conflict_check_method,
             )
-            latest_merged_in_target, latest_merged_check_error = _is_commit_merged_in_target(
+            latest_merged_in_target, latest_merged_check_error, recheck_merged_seconds = _is_commit_merged_in_target(
                 base_target_path,
                 target_branch,
                 fixed_commit,
                 source_path=base_project_dir,
                 commit_title=commit_title,
+                title_allowlist=target_title_allowlist,
+                title_index_cache=title_index_cache,
             )
             logger.info(
                 "[backport-batch] 冲突复检 merge-base: tag=%s, merged=%s, error=%s",
                 tag or commit_id, latest_merged_in_target, latest_merged_check_error,
+            )
+            recheck_target_index_build_seconds = _consume_target_title_index_build_seconds(title_index_cache)
+            profile["target_index_build_seconds"] += recheck_target_index_build_seconds
+            profile["merged_check_seconds"] += max(
+                recheck_merged_seconds - recheck_target_index_build_seconds,
+                0.0,
             )
             latest_has_conflict = has_conflict
             latest_conflict_check_method = conflict_check_method
@@ -2150,9 +2544,10 @@ def _execute_backport_batch_action(
                 patch_applied = False
                 patch_check_error = None
                 if patch_path:
-                    patch_applied, patch_check_error = _is_patch_applied_in_target(
+                    patch_applied, patch_check_error, recheck_reverse_apply_seconds = _is_patch_applied_in_target(
                         base_target_path, target_branch, patch_path
                     )
+                    profile["reverse_apply_seconds"] += recheck_reverse_apply_seconds
                     logger.info(
                         "[backport-batch] 冲突复检 patch-reverse: tag=%s, patch=%s, applied=%s, error=%s",
                         tag or commit_id, patch_path, patch_applied, patch_check_error,
@@ -2175,6 +2570,7 @@ def _execute_backport_batch_action(
                         latest_has_conflict,
                         latest_conflict_check_method,
                         latest_conflict_check_error,
+                        recheck_conflict_seconds,
                     ) = _check_conflict_with_apply_or_cherrypick(
                         base_target_path,
                         target_branch,
@@ -2182,6 +2578,7 @@ def _execute_backport_batch_action(
                         patch_path,
                         base_project_dir,
                     )
+                    profile["conflict_check_seconds"] += recheck_conflict_seconds
 
             refreshed_status = {
                 "merged_in_target": latest_merged_in_target,
@@ -2228,6 +2625,8 @@ def _execute_backport_batch_action(
                     openeuler_commit_id=str(commit_id or fixed_commit or ""),
                     item_config=item_config,
                     base_config=config_dict,
+                    linux_subject_allowlist=linux_subject_allowlist,
+                    filtered_subject_index_cache=filtered_subject_index_cache,
                     args=args,
                 )
                 apply_result = _apply_patch_to_target_repo(
@@ -2309,6 +2708,8 @@ def _execute_backport_batch_action(
             openeuler_commit_id=str(commit_id or fixed_commit or ""),
             item_config=item_config,
             base_config=config_dict,
+            linux_subject_allowlist=linux_subject_allowlist,
+            filtered_subject_index_cache=filtered_subject_index_cache,
             args=args,
         )
         apply_result = _apply_patch_to_target_repo(
@@ -2380,6 +2781,8 @@ def _build_backport_batch_report_item(
     conflict_check_method,
     conflict_check_error,
     base_config,
+    linux_subject_allowlist,
+    filtered_subject_index_cache,
     args,
 ):
     empty_patch = bool(backport_result.get("empty_patch"))
@@ -2409,6 +2812,10 @@ def _build_backport_batch_report_item(
         if empty_and_equivalent
         else (resolved_backported_patch if effective_has_conflict else resolved_original_patch)
     )
+    profile = {
+        "linux_grep_seconds": 0.0,
+        "linux_index_build_seconds": 0.0,
+    }
     message_fields = {
         "commit_message_preview": (
             backport_result.get("commit_message_preview")
@@ -2437,9 +2844,16 @@ def _build_backport_batch_report_item(
             openeuler_commit_id=str(commit_id or input_commit or ""),
             item_config=item_config,
             base_config=base_config,
+            linux_subject_allowlist=linux_subject_allowlist,
+            filtered_subject_index_cache=filtered_subject_index_cache,
             args=args,
         )
     effective_error = short_note if short_note else backport_result.get("error")
+    message_profile = message_fields.pop("_profile", {}) if isinstance(message_fields, dict) else {}
+    profile["linux_grep_seconds"] = float(message_profile.get("linux_grep_seconds", 0.0) or 0.0)
+    profile["linux_index_build_seconds"] = float(
+        message_profile.get("linux_index_build_seconds", 0.0) or 0.0
+    )
     logger.info(
         "[backport-batch] report_item 最终值: commit=%s, status=%s, merged=%s, has_conflict=%s, "
         "method=%s, error=%s, original_patch=%s, backported_patch=%s, patch_path=%s",
@@ -2448,7 +2862,7 @@ def _build_backport_batch_report_item(
         effective_conflict_check_method, effective_error,
         resolved_original_patch, resolved_backported_patch, effective_patch_path,
     )
-    return {
+    return ({
         "commit": commit_id,
         "input_commit": input_commit,
         "commit_title": commit_title,
@@ -2474,7 +2888,7 @@ def _build_backport_batch_report_item(
         "fallback_error": backport_result.get("fallback_error") or item_config.get("fallback_error", ""),
         "warning": backport_result.get("warning") or item_config.get("warning", ""),
         **message_fields,
-    }
+    }, profile)
 
 
 def _build_backport_batch_failed_result(
@@ -2520,8 +2934,24 @@ def _process_backport_batch_item(
     base_project_dir,
     base_target_path,
     default_target_branch,
+    linux_subject_allowlist,
+    filtered_subject_index_cache,
+    target_title_allowlist,
+    target_title_index_cache,
+    prepared_patch_batch_token,
     args,
 ):
+    total_started_at = time.perf_counter()
+    profile = {
+        "patch_gen_seconds": 0.0,
+        "merged_check_seconds": 0.0,
+        "reverse_apply_seconds": 0.0,
+        "conflict_check_seconds": 0.0,
+        "linux_grep_seconds": 0.0,
+        "linux_index_build_seconds": 0.0,
+        "target_index_build_seconds": 0.0,
+        "total_seconds": 0.0,
+    }
     fields = _extract_backport_batch_item_fields(item, is_report_config)
     commit_id = fields["commit_id"]
     input_commit = fields["input_commit"]
@@ -2547,15 +2977,30 @@ def _process_backport_batch_item(
 
     fixed_commit = commit_id
     patch_path = item_config.get("patch_path") or item_config.get("original_patch_path") or ""
+    allow_existing_patch_reuse = bool(
+        patch_path
+        and item_config.get("_prepared_patch_batch_token") == prepared_patch_batch_token
+        and item_config.get("_prepared_patch_path") == patch_path
+    )
+    patch_started_at = time.perf_counter()
     fixed_commit, patch_path, is_merge_commit, should_skip = _prepare_backport_patch_and_commit(
         is_report_config=is_report_config,
         generate_missing_patch=bool(is_report_config and getattr(args, "stop_at_first_conflict", False)),
+        allow_existing_patch_reuse=allow_existing_patch_reuse,
         fixed_commit=fixed_commit,
         patch_path=patch_path,
         is_merge_commit=is_merge_commit,
         base_project_dir=base_project_dir,
     )
+    profile["patch_gen_seconds"] = time.perf_counter() - patch_started_at
     if should_skip:
+        commit_ref = str(commit_id or input_commit or tag or "")
+        _finalize_backport_batch_profile(
+            started_at=total_started_at,
+            commit_ref=commit_ref,
+            profile=profile,
+            args=args,
+        )
         return {"skip": True, "did_backport": False}
 
     merged_in_target = item_config.get("merged_in_target")
@@ -2569,6 +3014,7 @@ def _process_backport_batch_item(
         has_conflict,
         conflict_check_method,
         conflict_check_error,
+        status_profile,
     ) = _resolve_merge_and_conflict_status(
         is_report_config=is_report_config,
         force_recheck=bool(is_report_config and getattr(args, "stop_at_first_conflict", False)),
@@ -2579,6 +3025,8 @@ def _process_backport_batch_item(
         base_project_dir=base_project_dir,
         is_merge_commit=is_merge_commit,
         commit_title=commit_title,
+        target_title_allowlist=target_title_allowlist,
+        title_index_cache=target_title_index_cache,
         tag=tag,
         commit_id=commit_id,
         merged_in_target=merged_in_target,
@@ -2587,6 +3035,7 @@ def _process_backport_batch_item(
         conflict_check_method=conflict_check_method,
         conflict_check_error=conflict_check_error,
     )
+    profile.update(status_profile)
 
     config_dict = _build_backport_runtime_config(
         item_config=item_config,
@@ -2620,6 +3069,11 @@ def _process_backport_batch_item(
             config_dict=config_dict,
             base_target_path=base_target_path,
             base_project_dir=base_project_dir,
+            linux_subject_allowlist=linux_subject_allowlist,
+            filtered_subject_index_cache=filtered_subject_index_cache,
+            target_title_allowlist=target_title_allowlist,
+            title_index_cache=target_title_index_cache,
+            profile=profile,
             args=args,
         )
         if refreshed_status:
@@ -2675,7 +3129,7 @@ def _process_backport_batch_item(
                 conflict_check_error=conflict_check_error,
                 backport_result=backport_result,
             )
-        report_item = _build_backport_batch_report_item(
+        report_item, report_profile = _build_backport_batch_report_item(
             commit_id=commit_id,
             input_commit=input_commit,
             commit_title=commit_title,
@@ -2692,6 +3146,16 @@ def _process_backport_batch_item(
             conflict_check_method=conflict_check_method,
             conflict_check_error=conflict_check_error,
             base_config=base_config,
+            linux_subject_allowlist=linux_subject_allowlist,
+            filtered_subject_index_cache=filtered_subject_index_cache,
+            args=args,
+        )
+        profile.update(report_profile)
+        commit_ref = str(commit_id or input_commit or tag or "")
+        _finalize_backport_batch_profile(
+            started_at=total_started_at,
+            commit_ref=commit_ref,
+            profile=profile,
             args=args,
         )
         return {
@@ -2713,25 +3177,35 @@ def _process_backport_batch_item(
             conflict_check_error=conflict_check_error,
             error=e,
         )
-        report_item = {
-            "commit": commit_id,
-            "input_commit": input_commit,
-            "commit_title": commit_title,
-            "committed_datetime": committed_datetime,
-            "git_describe": git_describe,
-            "target_branch": target_branch,
-            "status": "failed",
-            "merged_in_target": merged_in_target,
-            "merged_check_error": merged_check_error,
-            "is_merge_commit": is_merge_commit,
-            "has_conflict": has_conflict,
-            "conflict_check_method": conflict_check_method,
-            "conflict_check_error": conflict_check_error,
-            "original_patch_path": None,
-            "backported_patch_path": None,
-            "patch_path": None,
-            "error": str(e),
-        }
+        report_item, report_profile = _build_backport_batch_report_item(
+            commit_id=commit_id,
+            input_commit=input_commit,
+            commit_title=commit_title,
+            committed_datetime=committed_datetime,
+            git_describe=git_describe,
+            target_branch=target_branch,
+            backport_result=result,
+            item_config=item_config,
+            patch_path=patch_path,
+            merged_in_target=merged_in_target,
+            merged_check_error=merged_check_error,
+            is_merge_commit=is_merge_commit,
+            has_conflict=has_conflict,
+            conflict_check_method=conflict_check_method,
+            conflict_check_error=conflict_check_error,
+            base_config=base_config,
+            linux_subject_allowlist=linux_subject_allowlist,
+            filtered_subject_index_cache=filtered_subject_index_cache,
+            args=args,
+        )
+        profile.update(report_profile)
+        commit_ref = str(commit_id or input_commit or tag or "")
+        _finalize_backport_batch_profile(
+            started_at=total_started_at,
+            commit_ref=commit_ref,
+            profile=profile,
+            args=args,
+        )
         return {
             "skip": False,
             "result": result,
@@ -2787,7 +3261,8 @@ def _build_backport_batch_report(
 
 def _write_backport_batch_report(config_path, is_report_config, report):
     report_path = config_path if is_report_config else config_path + ".report.yml"
-    commits = report.get("commits") or []
+    sanitized_report = _strip_runtime_private_keys(report)
+    commits = sanitized_report.get("commits") or []
     merged_count = sum(1 for c in commits if isinstance(c, dict) and c.get("merged_in_target") is True)
     conflict_count = sum(1 for c in commits if isinstance(c, dict) and c.get("has_conflict") is True)
     pending_count = sum(1 for c in commits if isinstance(c, dict) and str(c.get("status") or "").strip().lower() == "pending")
@@ -2801,7 +3276,7 @@ def _write_backport_batch_report(config_path, is_report_config, report):
         success_count, failed_count, skipped_count, report_path,
     )
     with open(report_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(report, f, allow_unicode=True, sort_keys=False)
+        yaml.safe_dump(sanitized_report, f, allow_unicode=True, sort_keys=False)
     logger.info("[backport-batch] report 已写入: %s", report_path)
 
 
@@ -2842,6 +3317,18 @@ def _prepare_backport_batch_context(args):
         base_config,
         args,
     )
+    target_title_allowlist = _resolve_complete_target_title_allowlist(
+        sorted_items,
+        base_project_dir,
+    )
+    prepared_patch_batch_token = uuid.uuid4().hex
+    linux_subject_allowlist = _resolve_complete_linux_subject_allowlist(
+        sorted_items,
+        is_report_config=is_report_config,
+        base_project_dir=base_project_dir,
+        prepared_patch_batch_token=prepared_patch_batch_token,
+        generate_missing_patch=bool(is_report_config and getattr(args, "stop_at_first_conflict", False)),
+    )
     logger.info(
         "[backport-batch] 排序完成: total_items=%d, sorted_items=%d, sort_errors=%d",
         len(commit_items),
@@ -2857,6 +3344,11 @@ def _prepare_backport_batch_context(args):
         base_target_path=base_target_path,
         sorted_items=sorted_items,
         sort_errors=sort_errors,
+        linux_subject_allowlist=linux_subject_allowlist,
+        filtered_subject_index_cache=FilteredSubjectIndexCache(),
+        target_title_allowlist=target_title_allowlist,
+        target_title_index_cache=FilteredTitleIndexCache(),
+        prepared_patch_batch_token=prepared_patch_batch_token,
     )
 
 
@@ -2868,6 +3360,11 @@ def _execute_backport_batch_items(
     base_project_dir,
     base_target_path,
     default_target_branch,
+    linux_subject_allowlist,
+    filtered_subject_index_cache,
+    target_title_allowlist,
+    target_title_index_cache,
+    prepared_patch_batch_token,
     args,
 ):
     results = []
@@ -2915,6 +3412,11 @@ def _execute_backport_batch_items(
             base_project_dir=base_project_dir,
             base_target_path=base_target_path,
             default_target_branch=default_target_branch,
+            linux_subject_allowlist=linux_subject_allowlist,
+            filtered_subject_index_cache=filtered_subject_index_cache,
+            target_title_allowlist=target_title_allowlist,
+            target_title_index_cache=target_title_index_cache,
+            prepared_patch_batch_token=prepared_patch_batch_token,
             args=args,
         )
         if processed.get("skip"):

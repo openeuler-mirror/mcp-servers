@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import subprocess
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -44,6 +46,14 @@ ALLOWED_TEMPLATE_VARIABLES = {
     "upstream_commit_id",
     "openeuler_commit_id",
 }
+
+
+@dataclass
+class FilteredSubjectIndexCache:
+    # backport-batch 在一次执行上下文里只保留最近一次 subject 索引，
+    # 既能跨 commit 复用，又避免模块级全局缓存泄漏到其它任务。
+    key: tuple[str, str, tuple[str, ...]] | None = None
+    value: dict[str, tuple[str, ...]] | None = None
 
 
 @dataclass
@@ -233,8 +243,22 @@ class CommitMessageParser:
 
 
 class SourceDetector:
-    def __init__(self, linux_repo_path: str | None = None) -> None:
+    def __init__(
+        self,
+        linux_repo_path: str | None = None,
+        subject_allowlist: set[str] | frozenset[str] | None = None,
+        filtered_subject_index_cache: FilteredSubjectIndexCache | None = None,
+    ) -> None:
         self.linux_repo_path = os.path.expanduser(linux_repo_path or DEFAULT_LINUX_REPO_PATH)
+        self.subject_allowlist = frozenset(
+            subject.strip() for subject in (subject_allowlist or set()) if str(subject or "").strip()
+        )
+        self.filtered_subject_index_cache = filtered_subject_index_cache
+        self._last_profile = {
+            "commit_exists_seconds": 0.0,
+            "linux_grep_seconds": 0.0,
+            "linux_index_build_seconds": 0.0,
+        }
 
     def detect(self, parsed: ParsedCommitMessage, openeuler_commit_id: str) -> SourceDetectionResult:
         openeuler_commit_id = str(openeuler_commit_id or "").strip()
@@ -287,10 +311,13 @@ class SourceDetector:
         repo = self._repo()
         if repo is None or not commit_id:
             return False
+        started_at = time.perf_counter()
         try:
             repo.git.merge_base("--is-ancestor", commit_id, self._master_ref(repo))
+            self._last_profile["commit_exists_seconds"] += time.perf_counter() - started_at
             return True
         except Exception:
+            self._last_profile["commit_exists_seconds"] += time.perf_counter() - started_at
             return False
 
     def _master_ref(self, repo: git.Repo) -> str:
@@ -306,6 +333,10 @@ class SourceDetector:
         repo = self._repo()
         if repo is None or not subject:
             return []
+        normalized_subject = subject.strip()
+        if self.subject_allowlist:
+            return list(self._filtered_subject_index(repo).get(normalized_subject, ()))
+        started_at = time.perf_counter()
         try:
             # commit message 的 upstream 判断只看 Linux master，避免其它分支/remote
             # 上的同标题 stable commit 把 source 判定扰乱。
@@ -315,7 +346,9 @@ class SourceDetector:
                 "--fixed-strings",
                 f"--grep={subject}",
             )
+            self._last_profile["linux_grep_seconds"] += time.perf_counter() - started_at
         except Exception as exc:
+            self._last_profile["linux_grep_seconds"] += time.perf_counter() - started_at
             logger.warning("source detection: subject search failed: %s", exc)
             return []
         matches: list[str] = []
@@ -326,6 +359,91 @@ class SourceDetector:
             if found_subject.strip() == subject.strip():
                 matches.append(commit_id.strip())
         return list(dict.fromkeys(matches))
+
+    def _filtered_subject_index(self, repo: git.Repo) -> dict[str, tuple[str, ...]]:
+        if not self.subject_allowlist:
+            return {}
+        master_ref = self._master_ref(repo)
+        master_ref_sha = repo.commit(master_ref).hexsha
+        cache_key = (
+            os.path.abspath(self.linux_repo_path),
+            master_ref_sha,
+            tuple(sorted(self.subject_allowlist)),
+        )
+        cache = self.filtered_subject_index_cache
+        if cache is not None and cache.key == cache_key and cache.value is not None:
+            return cache.value
+
+        started_at = time.perf_counter()
+        allowlist = self.subject_allowlist
+        matches: dict[str, list[str]] = {}
+        try:
+            # allowlist 模式的优化前提是调用方提供可复用的 cache；
+            # 否则这里仍会完整扫描一次 linux log，但不会跨 commit 复用结果。
+            with subprocess.Popen(
+                [
+                    "git",
+                    "-C",
+                    repo.working_tree_dir or self.linux_repo_path,
+                    "log",
+                    master_ref,
+                    "--format=%H%x00%s",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            ) as process:
+                stdout_output, stderr_output = process.communicate()
+        except Exception as exc:
+            self._last_profile["linux_index_build_seconds"] += time.perf_counter() - started_at
+            logger.warning("source detection: subject index build failed: %s", exc)
+            return {}
+
+        for line in stdout_output.splitlines():
+            if "\x00" not in line:
+                continue
+            commit_id, found_subject = line.split("\x00", 1)
+            normalized_subject = found_subject.strip()
+            if normalized_subject not in allowlist:
+                continue
+            matches.setdefault(normalized_subject, []).append(commit_id.strip())
+
+        if process.returncode != 0:
+            self._last_profile["linux_index_build_seconds"] += time.perf_counter() - started_at
+            logger.warning(
+                "source detection: subject index build failed: %s",
+                stderr_output.strip() or f"git log exited with {process.returncode}",
+            )
+            return {}
+
+        finalized = {
+            subject: tuple(dict.fromkeys(commit_ids))
+            for subject, commit_ids in matches.items()
+        }
+        if cache is not None:
+            cache.key = cache_key
+            cache.value = finalized
+        self._last_profile["linux_index_build_seconds"] += time.perf_counter() - started_at
+        logger.info(
+            "source detection: built filtered subject index repo=%s master_ref=%s master_sha=%s subjects=%d matched=%d",
+            self.linux_repo_path,
+            master_ref,
+            master_ref_sha,
+            len(allowlist),
+            len(finalized),
+        )
+        return finalized
+
+    def consume_profile(self) -> dict[str, float]:
+        profile = dict(self._last_profile)
+        self._last_profile = {
+            "commit_exists_seconds": 0.0,
+            "linux_grep_seconds": 0.0,
+            "linux_index_build_seconds": 0.0,
+        }
+        return profile
 
 
 def normalize_commit_message_source(value: str | None) -> str:
@@ -404,12 +522,25 @@ def build_commit_message_preview(
     template: str | None = None,
     linux_repo_path: str | None = None,
     commit_message_source: str | None = None,
-) -> dict[str, Any]:
+    subject_allowlist: set[str] | frozenset[str] | None = None,
+    filtered_subject_index_cache: FilteredSubjectIndexCache | None = None,
+) -> tuple[dict[str, Any], dict[str, float]]:
     parser = CommitMessageParser()
     parsed = parser.parse_patch_file(patch_path)
     detection = resolve_fixed_source_detection(parsed, openeuler_commit_id, commit_message_source)
+    detector = None
+    profile = {
+        "commit_exists_seconds": 0.0,
+        "linux_grep_seconds": 0.0,
+    }
     if detection is None:
-        detection = SourceDetector(linux_repo_path).detect(parsed, openeuler_commit_id)
+        detector = SourceDetector(
+            linux_repo_path,
+            subject_allowlist=subject_allowlist,
+            filtered_subject_index_cache=filtered_subject_index_cache,
+        )
+        detection = detector.detect(parsed, openeuler_commit_id)
+        profile = detector.consume_profile()
     context = {
         **parsed.to_dict(),
         "commit_id": detection.commit_id,
@@ -418,10 +549,13 @@ def build_commit_message_preview(
     }
     rendered = CommitMessageRenderer().render(template or DEFAULT_COMMIT_MESSAGE_TEMPLATE, context)
     warnings = [detection.warning] if detection.warning else []
-    return {
-        "commit_message": rendered,
-        "commit_message_preview": rendered,
-        "commit_message_context": context,
-        "source_detection": detection.to_dict(),
-        "commit_message_warnings": warnings,
-    }
+    return (
+        {
+            "commit_message": rendered,
+            "commit_message_preview": rendered,
+            "commit_message_context": context,
+            "source_detection": detection.to_dict(),
+            "commit_message_warnings": warnings,
+        },
+        profile,
+    )

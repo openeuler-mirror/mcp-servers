@@ -13,6 +13,22 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from cvekit.utils import backport_batch
+from cvekit.utils import commit_message_template
+
+
+def _write_test_patch(path: Path, subject: str) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                f"Subject: [PATCH] {subject}",
+                "",
+                "---",
+                " file.txt | 1 +",
+                " 1 file changed, 1 insertion(+)",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_normalize_backport_batch_commits_accepts_mapping_values():
@@ -102,6 +118,11 @@ def test_execute_backport_batch_items_stops_after_first_conflict_and_marks_rest_
             base_project_dir="/tmp/project",
             base_target_path="/tmp/target",
             default_target_branch="default-branch",
+            linux_subject_allowlist=frozenset(),
+            filtered_subject_index_cache=backport_batch.FilteredSubjectIndexCache(),
+            target_title_allowlist=frozenset(),
+            target_title_index_cache=backport_batch.FilteredTitleIndexCache(),
+            prepared_patch_batch_token="test-batch-token",
             args=args,
         )
 
@@ -157,6 +178,11 @@ def test_execute_backport_batch_items_report_mode_resumes_from_first_pending():
             base_project_dir="/tmp/project",
             base_target_path="/tmp/target",
             default_target_branch="default-branch",
+            linux_subject_allowlist=frozenset(),
+            filtered_subject_index_cache=backport_batch.FilteredSubjectIndexCache(),
+            target_title_allowlist=frozenset(),
+            target_title_index_cache=backport_batch.FilteredTitleIndexCache(),
+            prepared_patch_batch_token="test-batch-token",
             args=args,
         )
 
@@ -247,6 +273,133 @@ def test_resolve_backport_engine(cli_value, item_value, base_value, expected):
         )
         == expected
     )
+
+
+def test_resolve_complete_linux_subject_allowlist_collects_generated_preview_subjects(tmp_path):
+    generated_patch = tmp_path / "generated.patch"
+    skipped_patch = tmp_path / "skipped.patch"
+    _write_test_patch(generated_patch, "Need generated preview")
+    _write_test_patch(skipped_patch, "Already has preview")
+    sorted_items = [
+        {
+            "commit": "c1",
+            "item_config": {
+                "target_branch": "branch-1",
+            },
+        },
+        {
+            "commit": "c2",
+            "item_config": {
+                "target_branch": "branch-2",
+                "patch_path": str(skipped_patch),
+                "commit_message_preview": "existing preview",
+            },
+        },
+    ]
+
+    def prepare_side_effect(**kwargs):
+        if kwargs["fixed_commit"] == "c1":
+            return "c1-full", str(generated_patch), False, False
+        return kwargs["fixed_commit"], kwargs["patch_path"], False, False
+
+    with mock.patch.object(
+        backport_batch,
+        "_prepare_backport_patch_and_commit",
+        side_effect=prepare_side_effect,
+    ):
+        allowlist = backport_batch._resolve_complete_linux_subject_allowlist(
+            sorted_items,
+            is_report_config=False,
+            base_project_dir=str(tmp_path),
+            prepared_patch_batch_token="batch-token",
+            generate_missing_patch=False,
+        )
+
+    assert allowlist == frozenset({"Need generated preview"})
+    assert sorted_items[0]["commit"] == "c1-full"
+    assert sorted_items[0]["item_config"]["patch_path"] == str(generated_patch)
+    assert sorted_items[0]["item_config"]["_prepared_patch_batch_token"] == "batch-token"
+    assert sorted_items[0]["item_config"]["_prepared_patch_path"] == str(generated_patch)
+
+
+def test_resolve_complete_linux_subject_allowlist_covers_report_items_needing_report_preview(tmp_path):
+    original_patch = tmp_path / "report-original.patch"
+    _write_test_patch(original_patch, "Need report preview")
+    sorted_items = [
+        {
+            "commit": "c3",
+            "status": "success",
+            "target_branch": "branch-report",
+            "original_patch_path": str(original_patch),
+        }
+    ]
+
+    with mock.patch.object(
+        backport_batch,
+        "_prepare_backport_patch_and_commit",
+        return_value=("c3", str(original_patch), False, False),
+    ):
+        allowlist = backport_batch._resolve_complete_linux_subject_allowlist(
+            sorted_items,
+            is_report_config=True,
+            base_project_dir=str(tmp_path),
+            prepared_patch_batch_token="batch-token",
+            generate_missing_patch=False,
+        )
+
+    assert allowlist == frozenset({"Need report preview"})
+    assert sorted_items[0]["patch_path"] == str(original_patch)
+    assert sorted_items[0]["_prepared_patch_batch_token"] == "batch-token"
+
+
+def test_resolve_complete_linux_subject_allowlist_skips_stale_patch_when_generation_fails(tmp_path):
+    stale_patch = tmp_path / "stale.patch"
+    _write_test_patch(stale_patch, "Stale subject")
+    sorted_items = [
+        {
+            "commit": "c4",
+            "item_config": {
+                "patch_path": str(stale_patch),
+            },
+        }
+    ]
+
+    with mock.patch.object(
+        backport_batch,
+        "_prepare_backport_patch_and_commit",
+        return_value=("c4", str(stale_patch), False, True),
+    ):
+        allowlist = backport_batch._resolve_complete_linux_subject_allowlist(
+            sorted_items,
+            is_report_config=False,
+            base_project_dir=str(tmp_path),
+            prepared_patch_batch_token="batch-token",
+            generate_missing_patch=False,
+        )
+
+    assert allowlist == frozenset()
+    assert "_prepared_patch_batch_token" not in sorted_items[0]["item_config"]
+    assert "_prepared_patch_path" not in sorted_items[0]["item_config"]
+
+
+def test_source_detector_allowlist_hits_filtered_index_without_grep(tmp_path):
+    repo = SimpleNamespace(git=mock.Mock())
+    detector = commit_message_template.SourceDetector(
+        linux_repo_path=str(tmp_path),
+        subject_allowlist=frozenset({"Indexed subject"}),
+        filtered_subject_index_cache=commit_message_template.FilteredSubjectIndexCache(),
+    )
+
+    with mock.patch.object(detector, "_repo", return_value=repo), mock.patch.object(
+        detector,
+        "_filtered_subject_index",
+        return_value={"Indexed subject": ("sha1",)},
+    ) as index_mock:
+        matches = detector._find_commits_by_subject("Indexed subject")
+
+    assert matches == ["sha1"]
+    index_mock.assert_called_once_with(repo)
+    repo.git.log.assert_not_called()
 
 
 def test_resolve_backport_engine_rejects_unknown_engine():
