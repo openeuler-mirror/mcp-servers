@@ -187,13 +187,22 @@ def _build_added_method_artifact(
         return None
 
     if post_method_idx is not None and post_method_idx > 0:
-        prev_method_name = post_methods[post_method_idx - 1].name
-        prev_end = _find_method_end_line_in_target(prev_method_name)
-        if prev_end is not None:
-            insert_line = prev_end + 1
-            logging.info(f"🆕 新增函数 {func_name} 将插入到 {prev_method_name} 之后 (行 {insert_line})")
+        prev_method_name = None
+        # 直接前驱也可能是本次新增函数，因此 target 中还不存在。
+        # 继续向前找，直到找到 target 文件里已有的稳定锚点。
+        for prev_idx in range(post_method_idx - 1, -1, -1):
+            candidate_name = post_methods[prev_idx].name
+            if _find_method_end_line_in_target(candidate_name) is not None:
+                prev_method_name = candidate_name
+                break
+            logging.warning(f"⚠️ 在 target 中未找到前驱函数 {candidate_name}，继续向前定位")
+        if prev_method_name is None:
+            logging.warning(f"⚠️ 新增函数 {func_name} 未找到可用前驱函数，尝试后继函数定位")
         else:
-            logging.warning(f"⚠️ 在 target 中未找到前驱函数 {prev_method_name}，尝试后继函数定位")
+            prev_end = _find_method_end_line_in_target(prev_method_name)
+            if prev_end is not None:
+                insert_line = prev_end + 1
+                logging.info(f"🆕 新增函数 {func_name} 将插入到 {prev_method_name} 之后 (行 {insert_line})")
 
     if insert_line == len(target_raw_lines) + 1 and post_method_idx is not None:
         for next_idx in range(post_method_idx + 1, len(post_methods)):
@@ -224,6 +233,55 @@ def _build_added_method_artifact(
         called_names=_extract_called_names(added_code, language),
         identifiers=_extract_identifiers(added_code, language),
     )
+
+
+def _is_added_method_artifact(artifact: MethodPatchArtifacts | None) -> bool:
+    return (
+        artifact is not None
+        and not artifact.method_dir
+        and not artifact.pre_sliced_code
+        and not artifact.target_sliced_code
+        and not artifact.target_slice_lines
+        and artifact.target_end_line == artifact.target_start_line - 1
+    )
+
+
+def _coalesce_added_method_insertions(
+    cluster: list[str],
+    solved: dict[str, tuple[int, int, str]],
+    artifacts_by_signature: dict[str, MethodPatchArtifacts],
+) -> dict[str, tuple[int, int, str]]:
+    # 多个新增函数可能定位到同一个插入点。按 post/source 顺序合并成一个
+    # block 输出，避免切片替换时反转或打散相互依赖的函数定义。
+    insert_groups: dict[int, list[str]] = {}
+    for signature in cluster:
+        artifact = artifacts_by_signature.get(signature)
+        if not _is_added_method_artifact(artifact) or signature not in solved:
+            continue
+        start_line, end_line, _ = solved[signature]
+        if end_line != start_line - 1:
+            continue
+        insert_groups.setdefault(start_line, []).append(signature)
+
+    for start_line, signatures in insert_groups.items():
+        if len(signatures) <= 1:
+            continue
+        signatures.sort(key=lambda sig: artifacts_by_signature[sig].target_method.start_line)
+        block_code = "".join(
+            code if code.endswith("\n") else code + "\n"
+            for code in (solved[sig][2] for sig in signatures)
+        )
+        keep_signature = signatures[0]
+        solved[keep_signature] = (start_line, start_line - 1, block_code)
+        for signature in signatures[1:]:
+            del solved[signature]
+        logging.info(
+            "🧩 合并同一插入点的新增函数: line=%d, signatures=%s",
+            start_line,
+            signatures,
+        )
+
+    return solved
 
 
 def _method_keywords(language: Language) -> set[str]:
@@ -823,6 +881,8 @@ def solve_cluster_jointly(
     if len(solved) >= 2:
         solved = _cluster_consistency_backfill(cluster, solved, artifacts_by_signature, language)
 
+    solved = _coalesce_added_method_insertions(cluster, solved, artifacts_by_signature)
+
     replacements = [(sig, *solved[sig]) for sig in cluster if sig in solved]
     unresolved = [sig for sig in cluster if sig not in solved]
     failed.extend(unresolved)
@@ -1140,7 +1200,12 @@ def _build_joint_fix_prompt(
         "Never reorder additions relative to their anchor — e.g., if a new comment or doc-block is on "
         "+ lines before a context statement, it stays before that statement; if new code is on + lines "
         "after the context, it goes after. Delete - lines only at the position shown in the hunk.\n"
-        "3. For context lines in the patch (no +/- prefix), if the target has a different version than pre, align the target line with the post version.\n"
+        "3. Context lines in [PATCH] are anchors, not automatic edits. "
+        "When target context differs from patch context: "
+        "Preserve target behavior for error handling, return-value checks, API contracts, locking, cleanup, bounds, "
+        "and version-specific adaptations. "
+        "Update context only when it is directly coupled to the +/- change, such as the same renamed API, type, field, or parameter. "
+        "If unsure, make the minimal change needed for the +/- hunk and keep the target context.\n"
         "4. When the patch adds new code (lines with + prefix) and the target already has structurally similar code at the same position "
         "(e.g., same control-flow pattern but different identifiers), apply the patch's semantic change to that existing target code "
         "instead of inserting a duplicate. For example, if the patch adds `if (x > NEW_MACRO)` and the target already has "

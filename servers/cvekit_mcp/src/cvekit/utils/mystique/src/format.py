@@ -461,6 +461,18 @@ def del_lineBreak_C(code):
 
 
 def del_macros(code):
+    literal_pattern = re.compile(r'("(?:\\.|[^\\"])*"|\'(?:\\.|[^\\\'])*\')')
+
+    def _replace_outside_literals(line: str, replacements) -> str:
+        parts = literal_pattern.split(line)
+        for idx in range(0, len(parts), 2):
+            for old, new in replacements:
+                if hasattr(old, "sub"):
+                    parts[idx] = old.sub(new, parts[idx])
+                else:
+                    parts[idx] = parts[idx].replace(old, new)
+        return "".join(parts)
+
     lines = code.split("\n")
     # Single-word macros: MUST use \b word boundaries to avoid corrupting
     # identifiers that contain the macro as a substring (e.g. "IN" would
@@ -502,10 +514,10 @@ def del_macros(code):
     while i < len(lines):
         if lines[i].strip().startswith("#") and not lines[i].strip().startswith("#include"):
             lines[i] = ""
-        for pattern in _single_word_patterns:
-            lines[i] = pattern.sub('', lines[i])
         for replacement in _multi_word_replacements:
             lines[i] = lines[i].replace(replacement, "")
+        replacements = [(pattern, "") for pattern in _single_word_patterns]
+        lines[i] = _replace_outside_literals(lines[i], replacements)
         i += 1
     return "\n".join(lines)
 

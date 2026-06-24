@@ -128,7 +128,7 @@ class FilteredTitleIndexCache:
     # 只缓存当前 backport-batch 上下文最近一次 target branch title 索引，
     # 复用批内结果，避免模块级全局缓存。
     key: tuple[str, str, tuple[str, ...]] | None = None
-    value: dict[str, tuple[str, ...]] | None = None
+    value: dict[str, tuple[tuple[str, str, str], ...]] | None = None
     pending_build_seconds: float = 0.0
 
 
@@ -1384,7 +1384,7 @@ def _filtered_commit_title_index_in_target(
     target_branch: str,
     title_allowlist: set[str] | frozenset[str] | None,
     cache: FilteredTitleIndexCache | None = None,
-) -> dict[str, tuple[str, ...]]:
+) -> dict[str, tuple[tuple[str, str, str], ...]]:
     allowlist = frozenset(
         title.strip()
         for title in (title_allowlist or set())
@@ -1403,7 +1403,8 @@ def _filtered_commit_title_index_in_target(
         return cache.value
 
     started_at = time.perf_counter()
-    matches: dict[str, list[str]] = {}
+    normalized_allowlist = {_normalize_commit_title_text(title): title for title in allowlist}
+    matches: dict[str, list[tuple[str, str, str]]] = {}
     try:
         with subprocess.Popen(
             [
@@ -1430,8 +1431,20 @@ def _filtered_commit_title_index_in_target(
         commit_id, found_subject = line.split("\x00", 1)
         normalized_subject = found_subject.strip()
         if normalized_subject not in allowlist:
+            reverted_title = _reverted_commit_title_from_subject(normalized_subject)
+            if not reverted_title:
+                continue
+            normalized_reverted_title = _normalize_commit_title_text(reverted_title)
+            matched_title = normalized_allowlist.get(normalized_reverted_title)
+            if not matched_title:
+                continue
+            matches.setdefault(matched_title, []).append(
+                ("revert", commit_id.strip(), normalized_subject)
+            )
             continue
-        matches.setdefault(normalized_subject, []).append(commit_id.strip())
+        matches.setdefault(normalized_subject, []).append(
+            ("match", commit_id.strip(), normalized_subject)
+        )
 
     if process.returncode != 0:
         elapsed = time.perf_counter() - started_at
@@ -1442,8 +1455,8 @@ def _filtered_commit_title_index_in_target(
         )
 
     finalized = {
-        subject: tuple(dict.fromkeys(commit_ids))
-        for subject, commit_ids in matches.items()
+        subject: tuple(events)
+        for subject, events in matches.items()
     }
     elapsed = time.perf_counter() - started_at
     if cache is not None:
@@ -1462,6 +1475,62 @@ def _filtered_commit_title_index_in_target(
     return finalized
 
 
+def _normalize_commit_title_text(value: str) -> str:
+    return " ".join(str(value or "").split()).lower()
+
+
+def _reverted_commit_title_from_subject(subject: str) -> str | None:
+    match = re.match(r'^\s*Revert\s*:?\s*"(.+)"\s*$', str(subject or ""), re.IGNORECASE)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _matching_revert_subject(title: str, subject: str) -> bool:
+    reverted_title = _reverted_commit_title_from_subject(subject)
+    if not reverted_title:
+        return False
+    return _normalize_commit_title_text(reverted_title) == _normalize_commit_title_text(title)
+
+
+def _latest_title_match_from_events(
+    events: tuple[tuple[str, str, str], ...] | list[tuple[str, str, str]],
+) -> tuple[str | None, str | None]:
+    if not events:
+        return None, None
+    latest_kind, latest_sha, _ = events[0]
+    if latest_kind == "match":
+        return latest_sha, None
+    return None, f"matched title was later reverted by: {latest_sha}"
+
+
+def _find_commit_title_events_in_target_by_grep(
+    target_repo: git.Repo,
+    target_branch: str,
+    commit_title: str,
+):
+    title = str(commit_title or "").strip()
+    if not title:
+        return []
+    log_output = target_repo.git.log(
+        target_branch,
+        "--fixed-strings",
+        f"--grep={title}",
+        "--format=%H%x00%s",
+    )
+    events = []
+    for line in log_output.splitlines():
+        if "\x00" not in line:
+            continue
+        sha, subject = line.split("\x00", 1)
+        subject = subject.strip()
+        if subject == title:
+            events.append(("match", sha, subject))
+        elif _matching_revert_subject(title, subject):
+            events.append(("revert", sha, subject))
+    return events
+
+
 def _find_commit_title_in_target(
     target_repo: git.Repo,
     target_branch: str,
@@ -1471,47 +1540,23 @@ def _find_commit_title_in_target(
 ):
     title = str(commit_title or "").strip()
     if not title:
-        return None
+        return None, None
     if not title_allowlist:
-        return _find_commit_title_in_target_by_grep(
-            target_repo,
-            target_branch,
-            title,
-        )
-    return next(
-        iter(
-            _filtered_commit_title_index_in_target(
+        return _latest_title_match_from_events(
+            _find_commit_title_events_in_target_by_grep(
                 target_repo,
                 target_branch,
-                title_allowlist,
-                title_index_cache,
-            ).get(title, ())
-        ),
-        None,
+                title,
+            )
+        )
+    return _latest_title_match_from_events(
+        _filtered_commit_title_index_in_target(
+            target_repo,
+            target_branch,
+            title_allowlist,
+            title_index_cache,
+        ).get(title, ())
     )
-
-
-def _find_commit_title_in_target_by_grep(
-    target_repo: git.Repo,
-    target_branch: str,
-    commit_title: str,
-):
-    title = str(commit_title or "").strip()
-    if not title:
-        return None
-    output = target_repo.git.log(
-        target_branch,
-        "--format=%H%x00%s",
-        "--fixed-strings",
-        f"--grep={title}",
-    )
-    for line in output.splitlines():
-        if "\x00" not in line:
-            continue
-        commit_id, found_subject = line.split("\x00", 1)
-        if found_subject.strip() == title:
-            return commit_id.strip()
-    return None
 
 
 def _resolve_commit_title_for_merge_check(
@@ -1560,7 +1605,7 @@ def _is_commit_merged_in_target(
                 commit_sha,
                 commit_title,
             )
-            matched_sha = _find_commit_title_in_target(
+            matched_sha, title_match_error = _find_commit_title_in_target(
                 target_repo,
                 target_branch,
                 title,
@@ -1569,6 +1614,8 @@ def _is_commit_merged_in_target(
             )
             if matched_sha:
                 return True, f"matched by commit title: {matched_sha}", time.perf_counter() - started_at
+            if title_match_error:
+                return False, f"{merge_base_error}; title-check: {title_match_error}", time.perf_counter() - started_at
         except Exception as title_error:
             return False, f"{merge_base_error}; title-check: {title_error}", time.perf_counter() - started_at
         # 非祖先且同标题未命中，按未合入处理

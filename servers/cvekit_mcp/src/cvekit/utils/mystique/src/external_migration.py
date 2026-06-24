@@ -422,7 +422,18 @@ def _validate_llm_node(
         for node in candidate_nodes
         if node.kind == expected.kind and node.key == expected.key
     ]
-    if len(matching) != 1 or len(candidate_nodes) != 1:
+    if len(matching) == 1:
+        matched_node = matching[0]
+        extra_nodes = [node for node in candidate_nodes if node is not matched_node]
+        if all(
+            node.kind == "comment"
+            and matched_node.start_byte <= node.start_byte
+            and node.end_byte <= matched_node.end_byte
+            for node in extra_nodes
+        ):
+            return matched_node.text
+
+    if len(matching) != 1:
         logging.warning(
             "⚠️ 函数外冲突 LLM 结果身份校验失败: expected=(%s, %s), nodes=%s",
             expected.kind,
@@ -430,7 +441,13 @@ def _validate_llm_node(
             [(node.kind, node.key) for node in candidate_nodes],
         )
         return None
-    return matching[0].text
+    logging.warning(
+        "⚠️ 函数外冲突 LLM 结果包含目标节点外的额外节点: expected=(%s, %s), nodes=%s",
+        expected.kind,
+        expected.key,
+        [(node.kind, node.key) for node in candidate_nodes],
+    )
+    return None
 
 
 def _resolve_conflict_with_llm(
