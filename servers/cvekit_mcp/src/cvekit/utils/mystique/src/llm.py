@@ -29,6 +29,30 @@ from config import PROMPT_TEMPLATE
 from semantic_sanitizer import unescaped_newlines_in_strings
 
 
+KERNEL_PARSE_ONLY_ANNOTATIONS = (
+    "__iomem",
+    "__user",
+    "__rcu",
+    "__percpu",
+    "__force",
+)
+
+
+def sanitize_kernel_c_for_parse(code: str) -> str:
+    """Remove known Linux kernel annotations from a parse-only copy.
+
+    Tree-sitter's C grammar does not understand sparse address-space
+    annotations such as ``void __iomem *ptr``.  This sanitizer is only used
+    for syntax checking; callers must keep the original code for output.
+    """
+    annotation_pattern = re.compile(
+        r"(?<![A-Za-z0-9_])(?:"
+        + "|".join(re.escape(annotation) for annotation in KERNEL_PARSE_ONLY_ANNOTATIONS)
+        + r")(?![A-Za-z0-9_])\s*"
+    )
+    return annotation_pattern.sub("", code)
+
+
 @tool
 def compile_check(code: str, language: str = "C") -> str:
     """Parse C code with tree-sitter to check for basic syntax errors.
@@ -60,7 +84,8 @@ def compile_check(code: str, language: str = "C") -> str:
                 + ", ".join(str(line) for line in literal_newlines)
             )
 
-        parser = ASTParser(cleaned, Language.C)
+        parse_input = sanitize_kernel_c_for_parse(cleaned)
+        parser = ASTParser(parse_input, Language.C)
         # tree-sitter returns error nodes for syntax issues
         errors = []
         _collect_errors(parser.root, errors)

@@ -48,6 +48,12 @@ from external_migration import migrate_external_changes
 from project import Project
 from semantic_sanitizer import repair_broken_string_newlines
 from signature_modifiers import restore_target_signature_modifiers
+from text_config_migration import (
+    detect_text_config_kind,
+    find_parent_kconfig_relocation,
+    is_text_config_path,
+    migrate_text_config_file,
+)
 
 # Ensure the cvekit package root (4 levels up) is importable from this file.
 # main.py → cvekit/utils/mystique/src/ → ../../../../ → cvekit_mcp/src/
@@ -79,6 +85,16 @@ def detect_language(file_path: str) -> Language:
     if file_path.endswith(".java"):
         return Language.JAVA
     return Language.C
+
+
+def _is_supported_commit_file_path(path: str) -> bool:
+    return path.endswith((".c", ".h", ".java")) or is_text_config_path(path)
+
+
+def _result_language_for_path(path: str) -> str:
+    if is_text_config_path(path):
+        return "text_config"
+    return detect_language(path).value
 
 
 def _parse_patch_hunk_ranges(patch_text: str) -> dict[str, tuple[set[int], set[int]]]:
@@ -630,7 +646,7 @@ def _write_result_file(result: str, target_path: str, output_path: str | None = 
         return fallback
 
 
-def _git_get_file_content(repo_path: str, ref: str, file_path: str) -> str | None:
+def _git_get_file_content(repo_path: str, ref: str, file_path: str, warn: bool = True) -> str | None:
     try:
         result = subprocess.run(
             ["git", "-C", repo_path, "show", f"{ref}:{file_path}"],
@@ -640,7 +656,8 @@ def _git_get_file_content(repo_path: str, ref: str, file_path: str) -> str | Non
         )
         return result.stdout
     except subprocess.CalledProcessError:
-        logging.warning(f"无法获取文件内容: {repo_path}:{file_path} at {ref}")
+        if warn:
+            logging.warning(f"无法获取文件内容: {repo_path}:{file_path} at {ref}")
         return None
 
 
@@ -669,7 +686,7 @@ def _git_get_commit_changed_files(repo_path: str, commit_id: str) -> list[dict]:
             old_path = parts[1]
             new_path = parts[1]
 
-        if not new_path.endswith((".c", ".h", ".java")):
+        if not _is_supported_commit_file_path(new_path):
             continue
         files.append({
             "status": status[0],
@@ -1683,7 +1700,7 @@ def main_from_repo(
 
     changed_files = _git_get_commit_changed_files(project_dir, commit_hash)
     if not changed_files:
-        logging.warning(f"commit {commit_hash} 未修改任何 C/H/Java 文件")
+        logging.warning(f"commit {commit_hash} 未修改任何 C/H/Java/Kconfig/Makefile 文件")
         return []
 
     logging.info(f"commit {commit_hash[:8]} 修改了 {len(changed_files)} 个文件:")
@@ -1702,6 +1719,7 @@ def main_from_repo(
             logging.warning(f"解析 git format-patch 失败，回退到 detect_modified_methods: {e}")
 
     all_patch_parts: list[str] = []
+    has_required_unresolved_text_config = False
     results = []
     for file_info in changed_files:
         source_path = file_info["new_path"]
@@ -1716,7 +1734,7 @@ def main_from_repo(
                     "source_file": source_path,
                     "target_file": source_path,
                     "patched_file": f"(原始{action}文件补丁直接应用)",
-                    "language": detect_language(source_path).value,
+                    "language": _result_language_for_path(source_path),
                 })
             else:
                 action = "新增" if status == "A" else "删除"
@@ -1750,9 +1768,76 @@ def main_from_repo(
                     "source_file": source_path,
                     "target_file": target_file_path,
                     "patched_file": "(original patch applied cleanly)",
-                    "language": detect_language(source_path).value,
+                    "language": _result_language_for_path(source_path),
                 })
                 continue
+
+        if is_text_config_path(source_path):
+            def generate_text_config_patch(code: str) -> str | None:
+                return _generate_unified_patch(
+                    target_path,
+                    target_ref,
+                    target_file_path,
+                    code,
+                    simplified_target=target_content,
+                )
+
+            result, patch_diff, has_unresolved = migrate_text_config_file(
+                pre_content=pre_content,
+                post_content=post_content,
+                target_content=target_content,
+                source_path=source_path,
+                target_file_path=target_file_path,
+                result_dir=result_dir,
+                generate_patch=generate_text_config_patch,
+            )
+            if has_unresolved and detect_text_config_kind(source_path) == "kconfig":
+                relocated_path, relocated_content = find_parent_kconfig_relocation(
+                    source_path=source_path,
+                    unresolved_result=result,
+                    read_file=lambda path: _git_get_file_content(
+                        target_path,
+                        target_ref,
+                        path,
+                        warn=False,
+                    ),
+                )
+                if relocated_path and relocated_content:
+                    logging.info(
+                        "Kconfig scope relocated: %s -> %s",
+                        source_path,
+                        relocated_path,
+                    )
+
+                    def generate_relocated_text_config_patch(
+                        code: str,
+                        *,
+                        path: str = relocated_path,
+                        content: str = relocated_content,
+                    ) -> str | None:
+                        return _generate_unified_patch(
+                            target_path,
+                            target_ref,
+                            path,
+                            code,
+                            simplified_target=content,
+                        )
+
+                    result, patch_diff, has_unresolved = migrate_text_config_file(
+                        pre_content=pre_content,
+                        post_content=post_content,
+                        target_content=relocated_content,
+                        source_path=source_path,
+                        target_file_path=relocated_path,
+                        result_dir=result_dir,
+                        generate_patch=generate_relocated_text_config_patch,
+                    )
+            results.append(result)
+            if patch_diff:
+                all_patch_parts.append(patch_diff)
+            if has_unresolved:
+                has_required_unresolved_text_config = True
+            continue
 
         language = detect_language(source_path)
         file_ext = ".java" if language == Language.JAVA else ".c"
@@ -1982,7 +2067,7 @@ def main_from_repo(
             "status": "ported",
         })
 
-    if all_patch_parts:
+    if all_patch_parts and not has_required_unresolved_text_config:
         combined_patch_path = _build_backported_patch_path(
             result_dir, cve_id, commit_hash, run_timestamp
         )
@@ -2016,6 +2101,10 @@ def main_from_repo(
         logging.info(
             "✅ 所有文件均无需移植 (need not ported) — "
             "补丁改动已存在于目标代码中"
+        )
+    elif has_required_unresolved_text_config:
+        logging.warning(
+            "存在未解决的 text config 迁移，未导出部分成功的 combined patch"
         )
 
     for result in results:
