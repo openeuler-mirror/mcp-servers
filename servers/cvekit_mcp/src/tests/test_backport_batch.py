@@ -59,6 +59,67 @@ def test_is_report_config_requires_report_suffix_even_with_report_fields():
     assert backport_batch._is_report_config("batch.report.yml", commit_items) is True
 
 
+def test_find_commit_title_in_target_ignores_reverted_title_match():
+    title = "drm/hisilicon/hibmc: Replace module initialization with DRM helpers"
+    target_repo = SimpleNamespace(
+        git=SimpleNamespace(
+            log=lambda *args: "\n".join(
+                [
+                    f'222\x00Revert "{title}"',
+                    f"111\x00{title}",
+                ]
+            )
+        )
+    )
+
+    matched_sha, error = backport_batch._find_commit_title_in_target(
+        target_repo,
+        "target-branch",
+        title,
+    )
+
+    assert matched_sha is None
+    assert error == "matched title was later reverted by: 222"
+
+
+def test_find_commit_title_in_target_accepts_title_match_after_revert():
+    title = "drm/hisilicon/hibmc: Replace module initialization with DRM helpers"
+    target_repo = SimpleNamespace(
+        git=SimpleNamespace(
+            log=lambda *args: "\n".join(
+                [
+                    f"333\x00{title}",
+                    f'222\x00Revert "{title}"',
+                    f"111\x00{title}",
+                ]
+            )
+        )
+    )
+
+    matched_sha, error = backport_batch._find_commit_title_in_target(
+        target_repo,
+        "target-branch",
+        title,
+    )
+
+    assert matched_sha == "333"
+    assert error is None
+
+
+def test_matching_revert_subject_collapses_whitespace():
+    assert backport_batch._matching_revert_subject(
+        "drm/hisilicon/hibmc: Replace module initialization with DRM helpers",
+        '  Revert   "drm/hisilicon/hibmc:  Replace module initialization with DRM helpers"  ',
+    )
+
+
+def test_matching_revert_subject_allows_case_and_colon_variants():
+    assert backport_batch._matching_revert_subject(
+        "drm/hisilicon/hibmc: Replace module initialization with DRM helpers",
+        'revert: "DRM/HISILICON/HIBMC: replace module initialization with DRM helpers"',
+    )
+
+
 def test_handle_backport_batch_rejects_execute_with_raw_config_suffix():
     args = Namespace(
         preview_commit_message=False,

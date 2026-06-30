@@ -53,10 +53,86 @@ class MethodPatchArtifacts:
     target_sliced_code_placeholder: str
     called_names: set[str]
     identifiers: set[str]
+    symbol_compat_hints: str = ""
+    action: str = "modify"
 
 
 C_KEYWORDS = {"if", "for", "while", "switch", "return", "sizeof", "case", "do"}
 JAVA_KEYWORDS = {"if", "for", "while", "switch", "return", "new", "throw", "catch", "super", "this"}
+
+
+def _symbol_in_text(symbol: str, text: str) -> bool:
+    return re.search(rf"\b{re.escape(symbol)}\b", text) is not None
+
+
+def _filter_symbol_compat_hints_for_method(
+    symbol_compat_hints: str,
+    artifact: MethodPatchArtifacts,
+) -> str:
+    """Keep only file-level symbol hints that are relevant to one method."""
+    if not symbol_compat_hints or "[TARGET_SYMBOL_COMPATIBILITY_HINTS]" not in symbol_compat_hints:
+        return symbol_compat_hints
+
+    method_context = "\n".join(
+        [
+            artifact.patch_code,
+            artifact.pre_sliced_code,
+            artifact.target_sliced_code,
+            artifact.target_sliced_code_placeholder,
+        ]
+    )
+    lines = symbol_compat_hints.splitlines()
+    prefix: list[str] = []
+    blocks: list[list[str]] = []
+    footer: list[str] = []
+    current_block: list[str] | None = None
+    in_footer = False
+
+    for line in lines:
+        if line.startswith("Missing symbol: "):
+            if current_block is not None:
+                blocks.append(current_block)
+            current_block = [line]
+            in_footer = False
+            continue
+        if line.startswith("Use candidates only if"):
+            if current_block is not None:
+                blocks.append(current_block)
+                current_block = None
+            footer.append(line)
+            in_footer = True
+            continue
+        if in_footer:
+            footer.append(line)
+        elif current_block is not None:
+            current_block.append(line)
+        else:
+            prefix.append(line)
+
+    if current_block is not None:
+        blocks.append(current_block)
+
+    selected_blocks: list[list[str]] = []
+    for block in blocks:
+        match = re.match(r"Missing symbol:\s*([A-Za-z_]\w*)\b", block[0])
+        if match and _symbol_in_text(match.group(1), method_context):
+            selected_blocks.append(block)
+
+    if not selected_blocks:
+        return ""
+
+    output: list[str] = list(prefix)
+    while output and output[-1] == "":
+        output.pop()
+    output.append("")
+    for block in selected_blocks:
+        output.extend(block)
+        output.append("")
+    if footer:
+        output.extend(footer)
+    elif output and output[-1] == "":
+        output.pop()
+    return "\n".join(output).rstrip()
 
 
 def _build_fallback_patch(pre_code: str, post_code: str) -> str:
@@ -232,12 +308,91 @@ def _build_added_method_artifact(
         target_sliced_code_placeholder="",
         called_names=_extract_called_names(added_code, language),
         identifiers=_extract_identifiers(added_code, language),
+        action="add",
+    )
+
+
+def _is_static_method(method: Method) -> bool:
+    lines = method.code.splitlines()
+    first_line = lines[0] if lines else ""
+    return re.search(r"\bstatic\b", first_line) is not None
+
+
+def _method_similarity(lhs: str, rhs: str) -> float:
+    import difflib
+
+    lhs_norm = format.normalize(lhs)
+    rhs_norm = format.normalize(rhs)
+    if not lhs_norm and not rhs_norm:
+        return 1.0
+    return difflib.SequenceMatcher(None, lhs_norm, rhs_norm).ratio()
+
+
+def _contains_call_to(code: str, func_name: str) -> bool:
+    return re.search(rf"\b{re.escape(func_name)}\s*\(", code) is not None
+
+
+def _project_contains_call_to(project: Project, func_name: str) -> bool:
+    return any(_contains_call_to(file.code, func_name) for file in project.files)
+
+
+def _build_deleted_method_artifact(
+    signature: str,
+    pre_method: Method,
+    target_method: Method,
+    post_project: Project,
+    language: Language,
+) -> MethodPatchArtifacts | None:
+    # 当前删除模式只覆盖static函数定义，static 在 C 里表示这个函数是文件内链接，通常只能被当前 .c 文件引用。删除它时，风险范围比较可控
+    # 非static 函数	可能被其他 .c 文件调用，单文件文本检查看不到
+    if language != Language.C:
+        logging.warning(f"❌ 删除函数暂仅支持 C: {signature}")
+        return None
+    if target_method.is_func_decl:
+        logging.warning(f"❌ 删除函数声明不走函数级删除: {signature}")
+        return None
+    if not _is_static_method(pre_method) or not _is_static_method(target_method):
+        logging.warning(f"❌ 删除函数不是 static，跳过受保护删除: {signature}")
+        return None
+    similarity = _method_similarity(pre_method.code, target_method.code)
+    if similarity < 0.65:
+        logging.warning(
+            "❌ 删除函数 target 与 pre 差异较大，跳过受保护删除: %s similarity=%.3f",
+            signature,
+            similarity,
+        )
+        return None
+    if _project_contains_call_to(post_project, pre_method.name):
+        logging.warning(f"❌ 删除函数在 post 中仍有调用，跳过受保护删除: {signature}")
+        return None
+
+    logging.info(
+        "🗑️ 删除函数使用受保护删除模式: %s similarity=%.3f",
+        signature,
+        similarity,
+    )
+    return MethodPatchArtifacts(
+        signature=signature,
+        method_dir="",
+        file_suffix=target_method.file_suffix,
+        target_start_line=target_method.start_line,
+        target_end_line=target_method.end_line,
+        target_method=target_method,
+        target_slice_lines=set(),
+        patch_code="",
+        pre_sliced_code=pre_method.code,
+        target_sliced_code=target_method.code,
+        target_sliced_code_placeholder=target_method.code,
+        called_names=set(),
+        identifiers=set(),
+        action="delete",
     )
 
 
 def _is_added_method_artifact(artifact: MethodPatchArtifacts | None) -> bool:
     return (
         artifact is not None
+        and artifact.action == "add"
         and not artifact.method_dir
         and not artifact.pre_sliced_code
         and not artifact.target_sliced_code
@@ -250,6 +405,7 @@ def _coalesce_added_method_insertions(
     cluster: list[str],
     solved: dict[str, tuple[int, int, str]],
     artifacts_by_signature: dict[str, MethodPatchArtifacts],
+    coalesced_signatures: set[str] | None = None,
 ) -> dict[str, tuple[int, int, str]]:
     # 多个新增函数可能定位到同一个插入点。按 post/source 顺序合并成一个
     # block 输出，避免切片替换时反转或打散相互依赖的函数定义。
@@ -275,6 +431,8 @@ def _coalesce_added_method_insertions(
         solved[keep_signature] = (start_line, start_line - 1, block_code)
         for signature in signatures[1:]:
             del solved[signature]
+            if coalesced_signatures is not None:
+                coalesced_signatures.add(signature)
         logging.info(
             "🧩 合并同一插入点的新增函数: line=%d, signatures=%s",
             start_line,
@@ -282,6 +440,51 @@ def _coalesce_added_method_insertions(
         )
 
     return solved
+
+
+def _project_solved_replacements(
+    target_code: str,
+    solved: dict[str, tuple[int, int, str]],
+    skip_signatures: set[str],
+) -> str:
+    lines = target_code.splitlines(keepends=True)
+    for signature, (start_line, end_line, replacement_code) in sorted(
+        solved.items(),
+        key=lambda item: item[1][0],
+        reverse=True,
+    ):
+        if signature in skip_signatures:
+            continue
+        replacement_lines = replacement_code.splitlines(keepends=True)
+        if replacement_lines and not replacement_lines[-1].endswith("\n"):
+            replacement_lines[-1] += "\n"
+        lines[start_line - 1:end_line] = replacement_lines
+    return "".join(lines)
+
+
+def _can_apply_deleted_method_after_solve(
+    signature: str,
+    artifact: MethodPatchArtifacts,
+    solved: dict[str, tuple[int, int, str]],
+) -> bool:
+    projected_replacements = dict(solved)
+    projected_replacements[signature] = (
+        artifact.target_start_line,
+        artifact.target_end_line,
+        artifact.patch_code,
+    )
+    projected = _project_solved_replacements(
+        artifact.target_method.file.code,
+        projected_replacements,
+        skip_signatures=set(),
+    )
+    if _contains_call_to(projected, artifact.target_method.name):
+        logging.warning(
+            "❌ 删除函数仍有调用残留，跳过删除: %s",
+            signature,
+        )
+        return False
+    return True
 
 
 def _method_keywords(language: Language) -> set[str]:
@@ -651,6 +854,7 @@ def build_method_artifacts_for_signatures(
     triple_projects: tuple[Project, Project, Project],
     cache_dir: str,
     language: Language,
+    symbol_compat_hints: str = "",
 ) -> tuple[dict[str, MethodPatchArtifacts], list[str]]:
     artifacts_by_signature: dict[str, MethodPatchArtifacts] = {}
     failed_signatures: list[str] = []
@@ -659,6 +863,10 @@ def build_method_artifacts_for_signatures(
         if artifact is None:
             failed_signatures.append(signature)
             continue
+        artifact.symbol_compat_hints = _filter_symbol_compat_hints_for_method(
+            symbol_compat_hints,
+            artifact,
+        )
         artifacts_by_signature[signature] = artifact
     return artifacts_by_signature, failed_signatures
 
@@ -673,10 +881,15 @@ def _build_method_artifact(
     triple_methods = Project.get_triple_methods(triple_projects, signature)
 
     if triple_methods is None:
+        pre_method = pre_project.get_method(signature)
+        target_method = target_project.get_method(signature)
         post_method = post_project.get_method(signature)
         if post_method is not None and signature not in pre_project.methods_signature_set:
             logging.info(f"🆕 新增函数，使用插入模式: {signature}")
             return _build_added_method_artifact(signature, post_method, target_project, language)
+        if pre_method is not None and post_method is None and target_method is not None:
+            logging.info(f" 删除函数，使用删除模式: {signature}")
+            return _build_deleted_method_artifact(signature, pre_method, target_method, post_project, language)
         logging.warning(f"❌ 跳过方法，无法获取 triple methods: {signature}")
         return None
 
@@ -801,11 +1014,15 @@ def solve_cluster_jointly(
     solved: dict[str, tuple[int, int, str]] = {}
     failed: list[str] = []
     llm_pending: list[str] = []
+    delete_pending: list[str] = []
 
     for signature in cluster:
         artifact = artifacts_by_signature.get(signature)
         if artifact is None:
             failed.append(signature)
+            continue
+        if artifact.action == "delete":
+            delete_pending.append(signature)
             continue
         if artifact.target_method.is_func_decl:
             solved[signature] = (artifact.target_start_line, artifact.target_end_line, artifact.patch_code)
@@ -878,13 +1095,37 @@ def solve_cluster_jointly(
                 utils.write2file(f"{artifact.method_dir}/5.ours{artifact.file_suffix}", final_code)
             solved[signature] = (artifact.target_start_line, artifact.target_end_line, final_code)
 
+    for signature in delete_pending:
+        artifact = artifacts_by_signature.get(signature)
+        if artifact is None:
+            failed.append(signature)
+            continue
+        if _can_apply_deleted_method_after_solve(signature, artifact, solved):
+            solved[signature] = (
+                artifact.target_start_line,
+                artifact.target_end_line,
+                artifact.patch_code,
+            )
+            logging.info("🗑️ 删除函数已通过残留调用检查: %s", signature)
+        else:
+            failed.append(signature)
+
     if len(solved) >= 2:
         solved = _cluster_consistency_backfill(cluster, solved, artifacts_by_signature, language)
 
-    solved = _coalesce_added_method_insertions(cluster, solved, artifacts_by_signature)
+    coalesced_signatures: set[str] = set()
+    solved = _coalesce_added_method_insertions(
+        cluster,
+        solved,
+        artifacts_by_signature,
+        coalesced_signatures,
+    )
 
     replacements = [(sig, *solved[sig]) for sig in cluster if sig in solved]
-    unresolved = [sig for sig in cluster if sig not in solved]
+    unresolved = [
+        sig for sig in cluster
+        if sig not in solved and sig not in coalesced_signatures
+    ]
     failed.extend(unresolved)
     failed = sorted(set(failed))
     return replacements, failed
@@ -1086,19 +1327,29 @@ def _cluster_consistency_backfill(
     artifacts_by_signature: dict[str, MethodPatchArtifacts],
     language: Language,
 ) -> dict[str, tuple[int, int, str]]:
-    prompt = _build_consistency_prompt(cluster, solved, artifacts_by_signature, language)
+    consistency_cluster = [
+        signature
+        for signature in cluster
+        if signature in solved
+        and artifacts_by_signature.get(signature) is not None
+        and artifacts_by_signature[signature].action != "delete"
+    ]
+    if len(consistency_cluster) < 2:
+        return solved
+
+    prompt = _build_consistency_prompt(consistency_cluster, solved, artifacts_by_signature, language)
     raw = llm.llm_generate(prompt, temperature=0)
     if raw is None:
         return solved
 
-    updates = _parse_joint_llm_output(raw, cluster, allow_partial=True)
+    updates = _parse_joint_llm_output(raw, consistency_cluster, allow_partial=True)
     for signature, fixed_code in updates.items():
         if signature not in solved:
             continue
         start_line, end_line, _ = solved[signature]
         solved[signature] = (start_line, end_line, fixed_code)
         artifact = artifacts_by_signature.get(signature)
-        if artifact is not None:
+        if artifact is not None and artifact.method_dir:
             utils.write2file(f"{artifact.method_dir}/6.ours@consistency{artifact.file_suffix}", fixed_code)
     return solved
 
@@ -1114,13 +1365,19 @@ def _build_joint_fix_prompt(
     has_placeholder = any(artifact.target_slice_lines for artifact in artifacts_by_signature.values() if artifact.signature in signatures)
     for signature in signatures:
         artifact = artifacts_by_signature[signature]
+        hints_section = (
+            f"\n\n{artifact.symbol_compat_hints}\n"
+            if artifact.symbol_compat_hints
+            else ""
+        )
         if not artifact.target_slice_lines:
             sections.append(
                 (
                     f"## METHOD {signature}\n"
                     f"[PRE_CODE]\n{artifact.pre_sliced_code}\n\n"
                     f"[PATCH]\n{artifact.patch_code}\n\n"
-                    f"[TARGET_CODE]\n{artifact.target_sliced_code_placeholder}\n"
+                    f"[TARGET_CODE]\n{artifact.target_sliced_code_placeholder}"
+                    f"{hints_section}\n"
                 )
             )
         else:
@@ -1129,7 +1386,8 @@ def _build_joint_fix_prompt(
                     f"## METHOD {signature}\n"
                     f"[PRE_SLICED]\n{artifact.pre_sliced_code}\n\n"
                     f"[PATCH]\n{artifact.patch_code}\n\n"
-                    f"[TARGET_WITH_PLACEHOLDER]\n{artifact.target_sliced_code_placeholder}\n"
+                    f"[TARGET_WITH_PLACEHOLDER]\n{artifact.target_sliced_code_placeholder}"
+                    f"{hints_section}\n"
                 )
             )
     defines_section = ""

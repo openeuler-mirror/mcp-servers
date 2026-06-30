@@ -2029,6 +2029,8 @@ def _build_batch_summary_result(
     if short_note:
         # 兼容仅展示 error 字段的消费方，给出同样清晰的结论
         result["error"] = short_note
+    elif backport_result.get("error"):
+        result["error"] = backport_result["error"]
     result["details"] = {
         "action": "backport-batch",
         "tag": tag or commit_id,
@@ -2441,6 +2443,34 @@ def _run_mystique_from_config(config_dict: dict, debug_mode: bool = False) -> di
     empty_patch = bool(results) and all(
         item.get("status") == "need_not_ported" for item in results
     )
+    review_items = [
+        item for item in results
+        if item.get("issues")
+        or item.get("status") in {"need_human", "unresolved", "doc_unresolved", "migration_failed"}
+    ]
+    warnings = [
+        str(item.get("warning"))
+        for item in results
+        if item.get("warning")
+    ]
+    issues = [
+        issue
+        for item in results
+        for issue in (item.get("issues") or [])
+        if isinstance(issue, dict)
+    ]
+
+    def human_review_reason(item: dict) -> str:
+        reason = item.get("reason")
+        if reason:
+            return str(reason)
+        unresolved = item.get("unresolved")
+        if isinstance(unresolved, list) and unresolved:
+            first = unresolved[0]
+            if isinstance(first, dict) and first.get("reason"):
+                return str(first["reason"])
+        return str(item.get("status") or "need_human")
+
     status = "success" if backported_patch_path or empty_patch else "failed"
     result = {
         "status": status,
@@ -2452,8 +2482,19 @@ def _run_mystique_from_config(config_dict: dict, debug_mode: bool = False) -> di
         "logfile": logfile,
         "time_cost": int(time.time() - start_time),
     }
+    if warnings:
+        result["warning"] = "; ".join(warnings[:5])
+    if issues:
+        result["issues"] = issues
     if status == "failed":
-        result["error"] = "Mystique 未生成回移植补丁"
+        if review_items:
+            details = "; ".join(
+                f"{item.get('source_file')}: {human_review_reason(item)}"
+                for item in review_items[:3]
+            )
+            result["error"] = f"Mystique 遇到需要人工处理的文件: {details}"
+        else:
+            result["error"] = "Mystique 未生成回移植补丁"
     return result
 
 

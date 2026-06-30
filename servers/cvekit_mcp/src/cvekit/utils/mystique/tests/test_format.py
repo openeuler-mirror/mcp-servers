@@ -171,3 +171,20 @@ class TestDelMacros:
         result = del_macros(code)
         assert "EINVAL" in result
         assert "-EINVAL" in result
+
+    def test_preserves_in_out_inside_string_literals(self):
+        code = (
+            'drm_dbg_dp(&priv->dev, "HPD IN isr occur!\\n");\n'
+            'drm_dbg_dp(&priv->dev, "HPD OUT isr occur!\\n");'
+        )
+        result = del_macros(code)
+        assert '"HPD IN isr occur!\\n"' in result
+        assert '"HPD OUT isr occur!\\n"' in result
+
+    def test_still_removes_in_out_parameter_macros(self):
+        code = "void foo(IN int *src, OUT int *dst);"
+        result = del_macros(code)
+        assert "IN int" not in result
+        assert "OUT int" not in result
+        assert "int *src" in result
+        assert "int *dst" in result

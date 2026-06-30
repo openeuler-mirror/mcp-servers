@@ -44,8 +44,25 @@ from cross_method import (
     extract_new_defines,
     solve_cluster_jointly,
 )
-from external_migration import migrate_external_changes
+from external_migration import (
+    filter_header_prototype_signatures,
+    migrate_external_changes,
+    split_source_only_header_inline_failures,
+)
+from file_classification import (
+    DIRECT_APPLY_OPTIONAL,
+    NEED_HUMAN,
+    classify_commit_file,
+    optional_direct_apply_issue_result,
+)
+from target_compat_resolver import (
+    check_fast_path_symbol_compatibility,
+    collect_patch_defined_symbols_from_post_files,
+    format_symbol_compatibility_hints,
+    resolve_patch_includes,
+)
 from project import Project
+from preprocessor_guard import restore_lost_preprocessor_guards
 from semantic_sanitizer import repair_broken_string_newlines
 from signature_modifiers import restore_target_signature_modifiers
 from text_config_migration import (
@@ -87,14 +104,34 @@ def detect_language(file_path: str) -> Language:
     return Language.C
 
 
-def _is_supported_commit_file_path(path: str) -> bool:
-    return path.endswith((".c", ".h", ".java")) or is_text_config_path(path)
-
-
 def _result_language_for_path(path: str) -> str:
+    if classify_commit_file(path) == DIRECT_APPLY_OPTIONAL:
+        return "documentation"
     if is_text_config_path(path):
         return "text_config"
     return detect_language(path).value
+
+
+def _manual_review_result(
+    source_path: str,
+    target_file_path: str,
+    status: str,
+    reason: str,
+) -> dict:
+    return {
+        "source_file": source_path,
+        "target_file": target_file_path,
+        "patched_file": None,
+        "language": _result_language_for_path(source_path),
+        "status": status,
+        "reason": reason,
+        "issues": [{
+            "kind": status,
+            "reason": reason,
+            "blocks_patch": False,
+        }],
+        "warning": reason,
+    }
 
 
 def _parse_patch_hunk_ranges(patch_text: str) -> dict[str, tuple[set[int], set[int]]]:
@@ -162,8 +199,8 @@ def _parse_patch_hunks(patch_text: str) -> dict[str, list[PatchHunk]]:
     """
     file_hunks: dict[str, list[PatchHunk]] = {}
     current_file: str | None = None
-    pre_changed: set[int] = field(default_factory=set)
-    post_changed: set[int] = field(default_factory=set)
+    pre_changed: set[int] = set()
+    post_changed: set[int] = set()
     pre_line = 0
     post_line = 0
     current_func = ""
@@ -298,6 +335,9 @@ def _apply_method_replacements(
         resolved_ranges.append((start_line, end_line, replacement_code))
 
     for start_line, end_line, replacement_code in sorted(resolved_ranges, key=lambda x: x[0], reverse=True):
+        if language == Language.C:
+            target_function = "".join(lines[start_line - 1:end_line])
+            replacement_code = restore_lost_preprocessor_guards(target_function, replacement_code)
         replacement_lines = replacement_code.splitlines(keepends=True)
         if replacement_lines and not replacement_lines[-1].endswith("\n"):
             replacement_lines[-1] += "\n"
@@ -307,11 +347,12 @@ def _apply_method_replacements(
 
 def _log_external_migration_result(result, message: str = "函数外迁移完成") -> None:
     logging.info(
-        "📋 %s: detected=%d, applied=%d, unresolved=%d",
+        "📋 %s: detected=%d, applied=%d, unresolved=%d, missing_coverage=%d",
         message,
         len(result.detected),
         len(result.applied),
         len(result.unresolved),
+        len(getattr(result, "missing_coverage", []) or []),
     )
     for unresolved in result.unresolved:
         logging.warning(
@@ -319,6 +360,19 @@ def _log_external_migration_result(result, message: str = "函数外迁移完成
             unresolved.change.identity,
             unresolved.reason,
         )
+    for change in getattr(result, "missing_coverage", []) or []:
+        logging.warning(
+            "⚠️ 函数外必需节点未出现在迁移结果中: identity=%s",
+            change.identity,
+        )
+
+
+def _external_failure_reasons(result) -> list[str]:
+    missing_reasons = [
+        f"missing external coverage: {change.identity}"
+        for change in getattr(result, "missing_coverage", []) or []
+    ]
+    return [str(item.reason) for item in result.unresolved] + missing_reasons
 
 
 def _resolve_input_path(path: str) -> str:
@@ -380,7 +434,10 @@ def patchbp(
     overwrite: bool = False,
     pre_changed_lines: set[int] | None = None,
     post_changed_lines: set[int] | None = None,
+    symbol_compat_hints: str = "",
 ) -> str:
+    patchbp.last_failed_signatures = []
+    patchbp.last_soft_skipped_signatures = []
     pre_method_file = _resolve_input_path(pre_method_file)
     post_method_file = _resolve_input_path(post_method_file)
     target_method_file = _resolve_input_path(target_method_file)
@@ -508,16 +565,27 @@ def patchbp(
                                                       pre_method_file, post_method_file)
         logging.info(f"  输出: {selected_signatures}")
 
+    #过滤.h文件 里的 prototype/declaration，没有函数体，应该交由external migration而不是method migartion
+    selected_signatures = filter_header_prototype_signatures(
+        target_method_file,
+        selected_signatures,
+        pre_method_code,
+        post_method_code,
+    )
+
     if not selected_signatures:
         if language == Language.C:
             external_result = migrate_external_changes(
                 pre_method_code,
                 post_method_code,
                 target_method_code,
+                symbol_compat_hints=symbol_compat_hints,
             )
             _log_external_migration_result(external_result)
+            patchbp.last_failed_signatures = _external_failure_reasons(external_result)
             return external_result.code
         logging.warning("⚠️ 未检测到可迁移的修改函数，直接返回原始 target")
+        patchbp.last_failed_signatures = ["no modified methods detected"]
         return target_method_code
 
     logging.info(f"🔍 本次待迁移函数数: {len(selected_signatures)}")
@@ -544,7 +612,11 @@ def patchbp(
     logging.info("main.py:build_method_artifacts_for_signatures: 为给定的方法签名列表构建补丁工件，包含切片代码、补丁代码等信息")
     logging.info(f"  输入: signatures={selected_signatures}, cache_dir={cache_dir}, language={language}")
     artifacts_by_signature, prepare_failed_signatures = build_method_artifacts_for_signatures(
-        selected_signatures, triple_projects, cache_dir, language
+        selected_signatures,
+        triple_projects,
+        cache_dir,
+        language,
+        symbol_compat_hints=symbol_compat_hints,
     )
     logging.info(f"  输出: artifacts_by_signature.keys()={list(artifacts_by_signature.keys())}, prepare_failed_signatures={prepare_failed_signatures}")
 
@@ -564,13 +636,31 @@ def patchbp(
                 pre_method_code,
                 post_method_code,
                 target_method_code,
+                symbol_compat_hints=symbol_compat_hints,
             )
             _log_external_migration_result(
                 external_result,
                 "函数迁移失败，函数外迁移完成",
             )
+            # 避免 source-only .h 里的 static inline 缺失把整次迁移误判成失败
+            method_failures, soft_skips = split_source_only_header_inline_failures(
+                target_method_file,
+                prepare_failed_signatures + solve_failed_signatures,
+                external_result,
+                pre_method_code,
+                post_method_code,
+                target_method_code,
+            )
+            patchbp.last_failed_signatures = sorted(set(
+                method_failures
+                + _external_failure_reasons(external_result)
+            ))
+            patchbp.last_soft_skipped_signatures = soft_skips
             return external_result.code
         logging.warning("❌ 所有函数迁移失败，返回原始 target")
+        patchbp.last_failed_signatures = sorted(set(
+            prepare_failed_signatures + solve_failed_signatures
+        )) or ["all method migrations failed"]
         return target_method_code
 
     logging.info("main.py:_apply_method_replacements: 将修复后的代码应用到目标代码中")
@@ -588,11 +678,28 @@ def patchbp(
             pre_method_code,
             post_method_code,
             patched_code,
+            symbol_compat_hints=symbol_compat_hints,
         )
         patched_code = external_result.code
         _log_external_migration_result(external_result)
-
-    failed_signatures = sorted(set(prepare_failed_signatures + solve_failed_signatures))
+        # 避免 source-only .h 里的 static inline 缺失把整次迁移误判成失败
+        failed_signatures, soft_skips = split_source_only_header_inline_failures(
+            target_method_file,
+            prepare_failed_signatures + solve_failed_signatures,
+            external_result,
+            pre_method_code,
+            post_method_code,
+            target_method_code,
+        )
+        failed_signatures = sorted(set(
+            failed_signatures
+            + _external_failure_reasons(external_result)
+        ))
+    else:
+        failed_signatures = sorted(set(prepare_failed_signatures + solve_failed_signatures))
+        soft_skips = []
+    patchbp.last_failed_signatures = failed_signatures
+    patchbp.last_soft_skipped_signatures = soft_skips
     return patched_code
 
 
@@ -686,8 +793,6 @@ def _git_get_commit_changed_files(repo_path: str, commit_id: str) -> list[dict]:
             old_path = parts[1]
             new_path = parts[1]
 
-        if not _is_supported_commit_file_path(new_path):
-            continue
         files.append({
             "status": status[0],
             "old_path": old_path,
@@ -1567,26 +1672,91 @@ def _extract_file_patch(patch_text: str, file_path: str) -> str | None:
         return marker + rest.rstrip("\n") + "\n"
 
 
-def _try_apply_patch(repo_path: str, file_patch: str, file_path: str) -> bool:
-    """Try ``git apply --check`` a single-file patch against a repo.
+@dataclass
+class FastPathResult:
+    ok: bool
+    patch_text: str | None = None
+    reason: str = ""
+    symbol_hints: str = ""
 
-    Returns True if the patch applies cleanly.
-    """
-    import subprocess
-    proc = subprocess.run(
+
+def _git_apply_check(repo_path: str, patch_text: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
         ["git", "apply", "--check", "--verbose", "-"],
         cwd=repo_path,
-        input=file_patch,
+        input=patch_text,
         capture_output=True,
         text=True,
     )
-    if proc.returncode == 0:
-        logging.info(f"  ✅ git apply --check 成功，跳过迁移: {file_path}")
-        return True
-    else:
+
+
+def _try_apply_patch(
+    repo_path: str,
+    file_patch: str,
+    file_path: str,
+    patch_defined_symbols: set[str] | None = None,
+) -> FastPathResult:
+    """Try ``git apply --check`` a single-file patch against a repo.
+
+    Returns a successful result with the patch text that should be appended.
+    ps：会出现能直接应用，但是引入的include语句/函数接口在目标代码仓里面不存在的情况（大概率是已经改名），增加两步校验，如果引入新增include/接口
+    走mystique，使用ctags提供目标仓里候选改名项
+    """
+    # 1. git apply --check检查
+    proc = _git_apply_check(repo_path, file_patch)
+    if proc.returncode != 0:
         stderr_first = proc.stderr.strip().split("\n")[0] if proc.stderr else ""
         logging.info(f"  ❌ git apply --check 失败，走 mystique 流程: {file_path} — {stderr_first}")
-        return False
+        return FastPathResult(False, reason=stderr_first)
+
+    # 2. 检查include，include resolver：负责“能否安全自动 rewrite include”
+    include_result = resolve_patch_includes(file_patch, repo_path, file_path)
+    if not include_result.ok:
+        logging.info(
+            "  ❌ git apply --check 成功但新增 include 不兼容，走 mystique 流程: %s — %s",
+            file_path,
+            "; ".join(include_result.unresolved),
+        )
+        return FastPathResult(False, reason="; ".join(include_result.unresolved))
+
+    patch_to_append = include_result.patch_text
+    if include_result.changed:
+        rewrite_proc = _git_apply_check(repo_path, patch_to_append)
+        if rewrite_proc.returncode != 0:
+            stderr_first = rewrite_proc.stderr.strip().split("\n")[0] if rewrite_proc.stderr else ""
+            logging.info(
+                "  ❌ include provider rewrite 后 git apply --check 失败，走 mystique 流程: %s — %s",
+                file_path,
+                stderr_first,
+            )
+            return FastPathResult(False, reason=stderr_first)
+        for item in include_result.resolved:
+            if item.changed:
+                logging.info("  ✅ include provider rewrite: %s", item.reason)
+
+    # 3. 检查宏、函数、type，symbol resolver：负责“是否需要给 LLM compatibility hint”
+    symbol_result = check_fast_path_symbol_compatibility(
+        patch_to_append,
+        repo_path,
+        file_path,
+        patch_defined_symbols,
+    )
+    if not symbol_result.ok:
+        return FastPathResult(
+            False,
+            reason=symbol_result.reason,
+            symbol_hints=symbol_result.hints,
+        )
+    if symbol_result.hints:
+        return FastPathResult(
+            True,
+            patch_text=patch_to_append,
+            reason=symbol_result.reason,
+            symbol_hints=symbol_result.hints,
+        )
+
+    logging.info(f"  ✅ git apply --check 成功，跳过迁移: {file_path}")
+    return FastPathResult(True, patch_text=patch_to_append)
 
 
 _mystique_env_initialized = False
@@ -1700,7 +1870,7 @@ def main_from_repo(
 
     changed_files = _git_get_commit_changed_files(project_dir, commit_hash)
     if not changed_files:
-        logging.warning(f"commit {commit_hash} 未修改任何 C/H/Java/Kconfig/Makefile 文件")
+        logging.warning(f"commit {commit_hash} 未找到可处理或可标记的改动文件")
         return []
 
     logging.info(f"commit {commit_hash[:8]} 修改了 {len(changed_files)} 个文件:")
@@ -1711,24 +1881,68 @@ def main_from_repo(
     # then use tree-sitter to map those lines to actual function names.
     file_hunk_ranges: dict[str, tuple[set[int], set[int]]] = {}
     file_hunks: dict[str, list[PatchHunk]] = {}
-    if signatures is None and patch_text:
+    if patch_text:
         try:
             file_hunk_ranges = _parse_patch_hunk_ranges(patch_text)
-            file_hunks = _parse_patch_hunks(patch_text)
+            if signatures is None:
+                file_hunks = _parse_patch_hunks(patch_text)
         except Exception as e:
             logging.warning(f"解析 git format-patch 失败，回退到 detect_modified_methods: {e}")
+    post_files_for_patch_definitions: dict[str, str] = {}
+    if patch_text and file_hunk_ranges:
+        for file_info in changed_files:
+            source_path = file_info["new_path"]
+            if source_path.endswith((".c", ".h")):
+                post_content_for_defs = _git_get_file_content(project_dir, commit_hash, source_path)
+                if post_content_for_defs:
+                    post_files_for_patch_definitions[source_path] = post_content_for_defs
+    patch_defined_symbols = collect_patch_defined_symbols_from_post_files(
+        post_files_for_patch_definitions,
+        file_hunk_ranges,
+    )
 
     all_patch_parts: list[str] = []
+    file_symbol_hints: dict[str, str] = {}
     has_required_unresolved_text_config = False
+    has_required_manual_review = False
     results = []
     for file_info in changed_files:
         source_path = file_info["new_path"]
         status = file_info["status"]
+        file_strategy = classify_commit_file(source_path)
+
+        if file_strategy == NEED_HUMAN:
+            target_file_path = _git_find_file_in_target(target_path, target_ref, source_path)
+            if target_file_path:
+                reason = "target file exists but high-risk file type requires manual review"
+            else:
+                target_file_path = source_path
+                reason = "target file not found or ambiguous in target repository"
+            logging.warning(
+                "文件需要人工确认，Mystique 暂不自动迁移: %s: %s",
+                source_path,
+                reason,
+            )
+            results.append(_manual_review_result(
+                source_path,
+                target_file_path,
+                "need_human",
+                reason,
+            ))
+            has_required_manual_review = True
+            continue
 
         if status in ("A", "D"):
             file_patch = _extract_file_patch(patch_text, source_path) if patch_text else None
-            if file_patch and _try_apply_patch(target_path, file_patch, source_path):
-                all_patch_parts.append(file_patch)
+            fast_result = _try_apply_patch(
+                target_path,
+                file_patch,
+                source_path,
+                patch_defined_symbols,
+            ) if file_patch else FastPathResult(False)
+            if fast_result.ok and fast_result.patch_text:
+                # 如果direct apply成功
+                all_patch_parts.append(fast_result.patch_text)
                 action = "新增" if status == "A" else "删除"
                 results.append({
                     "source_file": source_path,
@@ -1737,8 +1951,23 @@ def main_from_repo(
                     "language": _result_language_for_path(source_path),
                 })
             else:
+                # direct apply失败
+                if fast_result.symbol_hints:
+                    file_symbol_hints[source_path] = fast_result.symbol_hints
                 action = "新增" if status == "A" else "删除"
-                logging.warning(f"无法应用{action}文件的补丁: {source_path}，跳过")
+                if file_strategy == DIRECT_APPLY_OPTIONAL:
+                    logging.warning(
+                        "可选文档/元数据%s补丁无法直接应用，跳过该文件: %s",
+                        action,
+                        source_path,
+                    )
+                    results.append(optional_direct_apply_issue_result(source_path, source_path))
+                else:
+                    logging.warning(
+                        "无法应用%s文件的补丁: %s，跳过",
+                        action,
+                        source_path,
+                    )
             continue
 
         pre_content = _git_get_file_content(project_dir, parent_hash, source_path)
@@ -1750,20 +1979,40 @@ def main_from_repo(
 
         target_file_path = _git_find_file_in_target(target_path, target_ref, source_path)
         if not target_file_path:
-            logging.warning(f"目标仓库中未找到对应文件: {source_path}，跳过")
+            logging.warning(f"目标仓库中未找到对应文件: {source_path}，需要人工确认")
+            results.append(_manual_review_result(
+                source_path,
+                source_path,
+                "need_human",
+                "target file not found or ambiguous in target repository",
+            ))
+            has_required_manual_review = True
             continue
 
         target_content = _git_get_file_content(target_path, target_ref, target_file_path)
         if not target_content:
-            logging.warning(f"无法获取目标仓库文件内容: {target_file_path}，跳过")
+            logging.warning(f"无法获取目标仓库文件内容: {target_file_path}，需要人工确认")
+            results.append(_manual_review_result(
+                source_path,
+                target_file_path,
+                "need_human",
+                "unable to read target file content",
+            ))
+            has_required_manual_review = True
             continue
 
         file_patch = _extract_file_patch(patch_text, source_path) if patch_text else None
 
         # ── Fast path: try git apply --check with the original file patch ──
         if patch_text:
-            if file_patch and _try_apply_patch(target_path, file_patch, source_path):
-                all_patch_parts.append(file_patch)
+            fast_result = _try_apply_patch(
+                target_path,
+                file_patch,
+                target_file_path,
+                patch_defined_symbols,
+            ) if file_patch else FastPathResult(False)
+            if fast_result.ok and fast_result.patch_text:
+                all_patch_parts.append(fast_result.patch_text)
                 results.append({
                     "source_file": source_path,
                     "target_file": target_file_path,
@@ -1771,6 +2020,29 @@ def main_from_repo(
                     "language": _result_language_for_path(source_path),
                 })
                 continue
+            if file_strategy == DIRECT_APPLY_OPTIONAL:
+                logging.warning(
+                    "可选文档/元数据补丁无法直接应用，跳过该文件: %s",
+                    source_path,
+                )
+                results.append(optional_direct_apply_issue_result(source_path, target_file_path))
+                continue
+            if fast_result.symbol_hints:
+                file_symbol_hints[source_path] = fast_result.symbol_hints
+            else:
+                hint_text = format_symbol_compatibility_hints(
+                    file_patch,
+                    target_path,
+                    target_file_path,
+                    patch_defined_symbols,
+                )
+                if hint_text:
+                    logging.info(
+                        "  ℹ️ git apply --check 未直接通过，但发现目标符号兼容性线索，将传入 Mystique: %s",
+                        target_file_path,
+                    )
+                    logging.info(hint_text)
+                    file_symbol_hints[source_path] = hint_text
 
         if is_text_config_path(source_path):
             def generate_text_config_patch(code: str) -> str | None:
@@ -1915,7 +2187,10 @@ def main_from_repo(
                 overwrite=False,
                 pre_changed_lines=pre_changed,
                 post_changed_lines=post_changed,
+                symbol_compat_hints=file_symbol_hints.get(source_path, ""),
             )
+            failed_signatures = list(getattr(patchbp, "last_failed_signatures", []) or [])
+            soft_skipped_signatures = list(getattr(patchbp, "last_soft_skipped_signatures", []) or [])
 
         safe_name = source_path.replace("/", "_").replace(".", "_")
 
@@ -1937,6 +2212,36 @@ def main_from_repo(
                 "patched_file": None,
                 "language": language.value,
                 "status": "need_not_ported",
+                "soft_skipped_signatures": soft_skipped_signatures,
+                "warning": (
+                    f"soft-skipped header signatures: {soft_skipped_signatures}"
+                    if soft_skipped_signatures else ""
+                ),
+            })
+            continue
+
+        if failed_signatures:
+            warning = f"unresolved method signatures: {failed_signatures}"
+            logging.warning(
+                "文件 %s 存在未覆盖的 Mystique 迁移项，作为 issue 记录: %s",
+                source_path,
+                failed_signatures,
+            )
+            results.append({
+                "source_file": source_path,
+                "target_file": target_file_path,
+                "patched_file": None,
+                "language": language.value,
+                "status": "unresolved",
+                "failed_signatures": failed_signatures,
+                "soft_skipped_signatures": soft_skipped_signatures,
+                "reason": warning,
+                "issues": [{
+                    "kind": "unresolved_method",
+                    "reason": warning,
+                    "blocks_patch": False,
+                }],
+                "warning": warning,
             })
             continue
 
@@ -2065,9 +2370,17 @@ def main_from_repo(
             "patched_file": result_path,
             "language": language.value,
             "status": "ported",
+            "soft_skipped_signatures": soft_skipped_signatures,
+            "warning": (
+                f"soft-skipped header signatures: {soft_skipped_signatures}"
+                if soft_skipped_signatures else ""
+            ),
         })
 
-    if all_patch_parts and not has_required_unresolved_text_config:
+    if (
+        all_patch_parts
+        and not has_required_unresolved_text_config
+    ):
         combined_patch_path = _build_backported_patch_path(
             result_dir, cve_id, commit_hash, run_timestamp
         )
@@ -2105,6 +2418,10 @@ def main_from_repo(
     elif has_required_unresolved_text_config:
         logging.warning(
             "存在未解决的 text config 迁移，未导出部分成功的 combined patch"
+        )
+    elif has_required_manual_review:
+        logging.warning(
+            "存在需要人工确认的文件，且没有可导出的 combined patch"
         )
 
     for result in results:

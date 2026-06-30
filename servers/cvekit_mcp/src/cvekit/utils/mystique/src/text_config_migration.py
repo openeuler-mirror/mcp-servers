@@ -366,6 +366,51 @@ def _apply_add(
     if not add_lines:
         return current, True, None
 
+    if kind == "kconfig":
+        nonblank = [idx for idx, line in enumerate(add_lines) if line.strip()]
+        if nonblank:
+            first_idx = nonblank[0]
+            last_idx = nonblank[-1]
+            header = add_lines[first_idx].strip()
+            end_line = add_lines[last_idx].strip()
+            expected_end = None
+            if header.startswith("menu "):
+                expected_end = "endmenu"
+            elif header.startswith("if "):
+                expected_end = "endif"
+            elif header.startswith("choice"):
+                expected_end = "endchoice"
+            if expected_end and end_line.startswith(expected_end):
+                inner_lines = add_lines[first_idx + 1 : last_idx]
+                if expected_end == "endchoice" and inner_lines:
+                    prompt = next((line.strip() for line in inner_lines if line.strip()), "")
+                    prompt_matches = [
+                        idx
+                        for idx, line in enumerate(current)
+                        if line.strip() == prompt
+                        and idx > 0
+                        and current[idx - 1].strip() == header
+                    ]
+                    if len(prompt_matches) == 1:
+                        insert_at = prompt_matches[0] + 1
+                        lines_to_insert = inner_lines[1:]
+                        if not lines_to_insert or _find_normalized_sequence(
+                            current, lines_to_insert, insert_at
+                        ):
+                            return current, True, None
+                        current[insert_at:insert_at] = lines_to_insert
+                        return current, True, None
+                elif len([line for line in current if line.strip() == header]) == 1:
+                    bounds = _kconfig_scope_bounds(current, header)
+                    if bounds is not None:
+                        start, end = bounds
+                        if not inner_lines or _find_normalized_sequence(
+                            current, inner_lines, start, end
+                        ):
+                            return current, True, None
+                        current[end:end] = inner_lines
+                        return current, True, None
+
     search_start = 0
     search_end = len(current)
     if kind == "kconfig" and change.scope:
@@ -430,14 +475,23 @@ def _changes_from_diff(pre_code: str, post_code: str, kind: TextConfigKind) -> l
         )
     for hunk in add_hunks:
         assert isinstance(hunk, AddHunk)
+        new_text = _slice_content(post_lines, hunk.b_startline, hunk.b_endline)
         scope = _kconfig_scope_at(pre_lines, hunk.insert_line) if kind == "kconfig" else _make_scope(pre_lines, hunk.insert_line)
+        if kind == "kconfig":
+            added_header = next(
+                (line for line in _split_lines(new_text) if line.strip()),
+                "",
+            )
+            prev_line = pre_lines[hunk.insert_line - 1] if 0 < hunk.insert_line <= len(pre_lines) else ""
+            if KCONFIG_HEADER_RE.match(added_header) and KCONFIG_END_RE.match(prev_line):
+                scope = None
         changes.append(
             TextConfigChange(
                 "add",
                 hunk.insert_line,
                 hunk.insert_line,
                 "",
-                _slice_content(post_lines, hunk.b_startline, hunk.b_endline),
+                new_text,
                 scope,
             )
         )
