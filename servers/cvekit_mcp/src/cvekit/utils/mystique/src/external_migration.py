@@ -1,14 +1,15 @@
 """Migrate file-level C nodes outside Mystique's function pipeline.
 
 This module owns includes, object-like and function-like defines, file-level
-function prototypes, named struct definitions, file-scope comments, and
-conservative single-variable global declarations. Function definitions remain
-owned by the existing Mystique Joern and LLM pipeline.
+function prototypes, named struct definitions, file-scope comments, file-level
+macro-style calls, and conservative single-variable global declarations.
+Function definitions remain owned by the existing Mystique Joern and LLM
+pipeline.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 import re
 
@@ -23,6 +24,7 @@ EXTERNAL_QUERY = """
   (preproc_function_def)
   (declaration)
   (struct_specifier)
+  (expression_statement)
   (comment)
 ] @node
 """
@@ -74,6 +76,93 @@ class ExternalMigrationResult:
     detected: list[ExternalChange]
     applied: list[ExternalChange]
     unresolved: list[UnresolvedChange]
+    missing_coverage: list[ExternalChange] = field(default_factory=list)
+
+
+def _signature_symbol(signature: str) -> str | None:
+    if "#" not in signature:
+        return None
+    symbol = signature.rsplit("#", 1)[-1].strip()
+    return symbol or None
+
+
+def _static_inline_symbols(code: str) -> set[str]:
+    return set(
+        re.findall(
+            r"\bstatic\s+(?:__always_)?inline\b[\s\S]*?\b([A-Za-z_]\w*)\s*\(",
+            code,
+        )
+    )
+
+
+def _contains_symbol(code: str, symbol: str) -> bool:
+    return re.search(rf"\b{re.escape(symbol)}\s*\(", code) is not None
+
+
+def filter_header_prototype_signatures(
+    target_file: str,
+    signatures: list[str],
+    pre_code: str,
+    post_code: str,
+) -> list[str]:
+    if not target_file.endswith(".h") or not signatures:
+        return signatures
+
+    prototype_symbols = {
+        node.key
+        for node in extract_external_nodes(pre_code) + extract_external_nodes(post_code)
+        if node.kind == "prototype"
+    }
+    if not prototype_symbols:
+        return signatures
+
+    filtered = [
+        signature
+        for signature in signatures
+        if _signature_symbol(signature) not in prototype_symbols
+    ]
+    removed = sorted(set(signatures) - set(filtered))
+    if removed:
+        # prototype 没有函数体，应交给 external migration 处理。
+        logging.info("Header prototype signatures will use external migration: %s", removed)
+    return filtered
+
+# target-missing static inline 判定为soft skip而不是直接判定整个patch失败
+def split_source_only_header_inline_failures(
+    target_file: str,
+    failed_signatures: list[str],
+    result: ExternalMigrationResult,
+    pre_code: str,
+    post_code: str,
+    target_code: str,
+) -> tuple[list[str], list[str]]:
+
+    if not target_file.endswith(".h") or result.unresolved:
+        return sorted(set(failed_signatures)), []
+
+    source_static_inline_symbols = _static_inline_symbols(pre_code) | _static_inline_symbols(post_code)
+
+    hard_failures: list[str] = []
+    soft_skips: list[str] = []
+    for signature in failed_signatures:
+        symbol = _signature_symbol(signature)
+        if not symbol:
+            hard_failures.append(signature)
+            continue
+
+        # target 没有该 static inline，通常是 source-only header hunk。
+        if symbol in source_static_inline_symbols and not _contains_symbol(target_code, symbol):
+            soft_skips.append(signature)
+            continue
+
+        hard_failures.append(signature)
+
+    if soft_skips:
+        logging.warning(
+            "Source-only header inline failures were downgraded to soft skips: %s",
+            sorted(set(soft_skips)),
+        )
+    return sorted(set(hard_failures)), sorted(set(soft_skips))
 
 
 DELETE_MARKER = "<<<DELETE>>>"
@@ -159,6 +248,28 @@ def _struct_definition_span(code: str, node) -> tuple[int, int] | None:
     return node.start_byte, end + 1
 
 
+def _macro_call_identity_key(expression_statement) -> str | None:
+    if len(expression_statement.named_children) != 1:
+        return None
+    call = expression_statement.named_children[0]
+    if call.type != "call_expression":
+        return None
+
+    function = call.child_by_field_name("function")
+    arguments = call.child_by_field_name("arguments")
+    if function is None:
+        return None
+
+    function_name = _node_text(function).strip()
+    if not function_name:
+        return None
+
+    if arguments is None:
+        return function_name
+    argument_key = re.sub(r"\s+", "", _node_text(arguments))
+    return f"{function_name}{argument_key}"
+
+
 def extract_external_nodes(code: str, label: str = "") -> list[ExternalNode]:
     """Extract file-level nodes owned by the external migration pipeline."""
     _label = f" [{label}]" if label else ""
@@ -233,6 +344,9 @@ def extract_external_nodes(code: str, label: str = "") -> list[ExternalNode]:
             else:
                 content = ""
             key = content if content else None
+        elif node.type == "expression_statement":
+            kind = "macro_call"
+            key = _macro_call_identity_key(node)
         elif node.type == "declaration":
             declarators = _declaration_declarators(node)
             if len(declarators) != 1:
@@ -324,6 +438,25 @@ def _detect_changes(pre_code: str, post_code: str) -> tuple[list[ExternalChange]
     return sorted(changes, key=sort_key), post_nodes
 
 
+def _missing_added_coverage(
+    changes: list[ExternalChange],
+    final_code: str,
+) -> list[ExternalChange]:
+    final_by_id = {
+        node.identity: node
+        for node in extract_external_nodes(final_code, label="final")
+    }
+    missing: list[ExternalChange] = []
+    for change in changes:
+        if change.action != "add" or change.post_node is None:
+            continue
+        if change.post_node.kind == "comment":
+            continue
+        if change.identity not in final_by_id:
+            missing.append(change)
+    return missing
+
+
 def _prepare_insert_text(code: str, position: int, text: str) -> str:
     encoded = code.encode("utf-8")
     prepared = text
@@ -334,28 +467,64 @@ def _prepare_insert_text(code: str, position: int, text: str) -> str:
     return prepared if prepared.endswith("\n") else prepared + "\n"
 
 
+def _struct_body_ranges(
+    code: str, nodes: list[ExternalNode],
+) -> list[tuple[int, int]]:
+    """Return (open_brace, close_brace) byte ranges for struct bodies in target."""
+    ranges: list[tuple[int, int]] = []
+    encoded = code.encode("utf-8")
+    for node in nodes:
+        if node.kind != "struct":
+            continue
+        brace = encoded.find(b"{", node.start_byte, node.end_byte)
+        if brace < 0:
+            continue
+        depth = 1
+        pos = brace + 1
+        while pos < node.end_byte and depth > 0:
+            if encoded[pos:pos+1] == b"{":
+                depth += 1
+            elif encoded[pos:pos+1] == b"}":
+                depth -= 1
+            pos += 1
+        ranges.append((brace, pos))
+    return ranges
+
+
+def _inside_any_struct_body(ranges: list[tuple[int, int]], byte_pos: int) -> bool:
+    return any(start < byte_pos < end for start, end in ranges)
+
+
 def _find_add_position(
     code: str,
     post_node: ExternalNode,
     post_nodes: list[ExternalNode],
     target_nodes: list[ExternalNode],
+    post_in_struct: bool = False,
 ) -> int | None:
     target_by_id = {node.identity: node for node in target_nodes}
     post_index = post_nodes.index(post_node)
+
+    # Precompute struct body ranges in target to avoid re-parsing per loop.
+    target_struct_bodies = _struct_body_ranges(code, target_nodes)
 
     for neighbor in reversed(post_nodes[:post_index]):
         if neighbor.guard_context != post_node.guard_context:
             continue
         target_neighbor = target_by_id.get(neighbor.identity)
         if target_neighbor is not None:
-            return target_neighbor.end_byte
+            candidate = target_neighbor.end_byte
+            if post_in_struct or not _inside_any_struct_body(target_struct_bodies, candidate):
+                return candidate
 
     for neighbor in post_nodes[post_index + 1 :]:
         if neighbor.guard_context != post_node.guard_context:
             continue
         target_neighbor = target_by_id.get(neighbor.identity)
         if target_neighbor is not None:
-            return target_neighbor.start_byte
+            candidate = target_neighbor.start_byte
+            if post_in_struct or not _inside_any_struct_body(target_struct_bodies, candidate):
+                return candidate
 
     parser = CParser()
     root = parser.parse(code)
@@ -453,6 +622,7 @@ def _validate_llm_node(
 def _resolve_conflict_with_llm(
     change: ExternalChange,
     target_node: ExternalNode,
+    symbol_compat_hints: str = "",
 ) -> str | None:
     pre_text = change.pre_node.text if change.pre_node is not None else "<ABSENT>"
     post_text = change.post_node.text if change.post_node is not None else "<ABSENT>"
@@ -460,7 +630,9 @@ def _resolve_conflict_with_llm(
     assert expected is not None
 
     prompt = f"""\
-You are resolving one conflicting file-level C node during a three-way backport.
+You are adapting one file-level C node during a three-way backport.
+The node may be a true textual conflict, or it may require target-branch
+API/header compatibility adaptation even when the original patch applies cleanly.
 
 Node kind: {expected.kind}
 Node name: {expected.key}
@@ -474,6 +646,8 @@ Patch action: {change.action}
 
 [TARGET]
 {target_node.text}
+
+{symbol_compat_hints + "\n" if symbol_compat_hints else ""}
 
 Merge the semantic intent of POST into TARGET while preserving TARGET-only
 adaptations that do not conflict with the patch. This result will be reviewed
@@ -494,9 +668,146 @@ exactly {DELETE_MARKER}.
     return _validate_llm_node(_clean_llm_node_output(output), expected)
 
 
-def migrate_external_changes(pre_code: str, post_code: str, target_code: str) -> ExternalMigrationResult:
+_ALREADY_EXISTS = -1  # sentinel: node already present, skip insertion
+
+
+def _kind_anchor(kind: str, target_nodes: list[ExternalNode]) -> int:
+    """Return a byte offset for window anchoring based on node kind."""
+    same_kind = [n for n in target_nodes if n.kind == kind]
+    if same_kind:
+        return same_kind[-1].end_byte
+    return 0
+
+
+_WINDOW_CONTEXT_LINES = 35
+
+
+def _extract_window(
+    current: str, center_byte: int,
+) -> tuple[int, int, str]:
+    """Extract a window of +/- _WINDOW_CONTEXT_LINES around center_byte."""
+    lines = current.splitlines(keepends=True)
+    byte_offsets = []
+    offset = 0
+    for line in lines:
+        byte_offsets.append(offset)
+        offset += len(line.encode("utf-8"))
+
+    center_line = 0
+    for i, bo in enumerate(byte_offsets):
+        if bo <= center_byte < bo + len(lines[i].encode("utf-8")):
+            center_line = i
+            break
+        center_line = i
+
+    start_line = max(0, center_line - _WINDOW_CONTEXT_LINES)
+    end_line = min(len(lines), center_line + _WINDOW_CONTEXT_LINES + 1)
+
+    window_start = byte_offsets[start_line]
+    window_end = (byte_offsets[end_line - 1] + len(lines[end_line - 1].encode("utf-8"))
+                  if end_line > start_line else byte_offsets[start_line])
+    window_text = "".join(lines[start_line:end_line])
+    return window_start, window_end, window_text
+
+
+def _resolve_insert_with_llm(
+    current: str,
+    post_node: ExternalNode,
+    change: ExternalChange,
+    target_nodes: list[ExternalNode],
+    symbol_compat_hints: str = "",
+) -> tuple[int, int, str] | int | None:
+    """Use LLM to insert post_node into a target code window.
+
+    Returns (window_start, window_end, modified_window_text) on success,
+    _ALREADY_EXISTS if already present, or None if LLM considers it unsafe.
+    """
+    anchor_byte = _kind_anchor(post_node.kind, target_nodes)
+    window_start, window_end, window_text = _extract_window(current, anchor_byte)
+
+    # Collect existing same-kind nodes in window for context
+    same_kind_nodes = [n for n in target_nodes if n.kind == post_node.kind]
+    existing_list = "\n".join(
+        f"  - {n.key}" for n in same_kind_nodes
+    ) if same_kind_nodes else "  (none)"
+
+    prompt = f"""\
+You are inserting one C-level node into a target file during a kernel backport.
+
+Node kind: {post_node.kind}
+Node name: {post_node.key}
+
+Node to insert:
+```
+{post_node.text}
+```
+
+Existing {post_node.kind} nodes in target:
+{existing_list}
+
+{symbol_compat_hints}
+
+Target window (the section of the file where this node should be inserted):
+```
+{window_text}
+```
+
+Rules:
+- If a node with the same kind and name already exists in the target (compatible content), output exactly:
+  ALREADY_EXISTS
+- If the node can be safely inserted into this window, output the COMPLETE modified window with the new node inserted at an appropriate position. Preserve all existing code exactly.
+- If inserting the node would create broken references (depends on symbols not present in target), output exactly:
+  CANNOT_INSERT
+
+Output ONLY the modified window text, ALREADY_EXISTS, or CANNOT_INSERT. No other text.
+"""
+    output = llm.llm_generate(prompt, temperature=0)
+    if output is None:
+        return None
+
+    stripped = _clean_llm_node_output(output)
+    if stripped == "ALREADY_EXISTS":
+        return _ALREADY_EXISTS
+    if stripped == "CANNOT_INSERT":
+        logging.warning(
+            "LLM 判断节点不可插入: kind=%s key=%s",
+            post_node.kind, post_node.key,
+        )
+        return None
+
+    # Validate: the modified window must not drop existing content.
+    original_line_count = len(window_text.splitlines())
+    modified_line_count = len(stripped.splitlines())
+    MIN_LINE_RATIO = 0.6
+    if modified_line_count < original_line_count * MIN_LINE_RATIO:
+        logging.warning(
+            "LLM 修改后的窗口行数(%d)远少于原始窗口(%d), 可能丢失了代码: kind=%s key=%s",
+            modified_line_count, original_line_count,
+            post_node.kind, post_node.key,
+        )
+        return None
+
+    # Validate: the inserted node's key must appear in the output.
+    if post_node.key not in stripped:
+        logging.warning(
+            "LLM 输出中未找到插入节点的 key '%s', 可能插入失败: kind=%s",
+            post_node.key, post_node.kind,
+        )
+        return None
+
+    # Treat LLM output as the modified window
+    return window_start, window_end, stripped
+
+
+def migrate_external_changes(
+    pre_code: str,
+    post_code: str,
+    target_code: str,
+    symbol_compat_hints: str = "",
+) -> ExternalMigrationResult:
     """Migrate supported file-level changes with conservative three-way rules."""
     changes, post_nodes = _detect_changes(pre_code, post_code)
+    post_struct_body_ranges = _struct_body_ranges(post_code, post_nodes)
     current = target_code
     applied: list[ExternalChange] = []
     unresolved: list[UnresolvedChange] = []
@@ -543,7 +854,11 @@ def migrate_external_changes(pre_code: str, post_code: str, target_code: str) ->
             if target_node is not None:
                 if _normalized(target_node.text) == _normalized(change.post_node.text):
                     continue
-                merged = _resolve_conflict_with_llm(change, target_node)
+                merged = _resolve_conflict_with_llm(
+                    change,
+                    target_node,
+                    symbol_compat_hints=symbol_compat_hints,
+                )
                 if merged is None:
                     unresolved.append(UnresolvedChange(change, "LLM failed to merge conflicting target node"))
                     continue
@@ -563,15 +878,31 @@ def migrate_external_changes(pre_code: str, post_code: str, target_code: str) ->
                     )
                 applied.append(change)
                 continue
-            position = _find_add_position(current, change.post_node, post_nodes, target_nodes)
+            post_node = change.post_node
+            position = _find_add_position(
+                current, change.post_node, post_nodes, target_nodes,
+                post_in_struct=_inside_any_struct_body(post_struct_body_ranges, change.post_node.start_byte),
+            )
             if position is None:
-                unresolved.append(UnresolvedChange(change, "target guard context is missing"))
+                result = _resolve_insert_with_llm(
+                    current, change.post_node, change, target_nodes,
+                    symbol_compat_hints=symbol_compat_hints,
+                )
+                if result == _ALREADY_EXISTS:
+                    applied.append(change)
+                    continue
+                if result is None:
+                    unresolved.append(UnresolvedChange(change, "target guard context is missing"))
+                    continue
+                window_start, window_end, new_text = result
+                current = _replace_bytes(current, window_start, window_end, new_text)
+                applied.append(change)
                 continue
             current = _replace_bytes(
                 current,
                 position,
                 position,
-                _prepare_insert_text(current, position, change.post_node.text),
+                _prepare_insert_text(current, position, post_node.text),
             )
             applied.append(change)
             continue
@@ -580,7 +911,35 @@ def migrate_external_changes(pre_code: str, post_code: str, target_code: str) ->
         if target_node is None:
             if change.action == "delete":
                 continue
-            unresolved.append(UnresolvedChange(change, "target node is missing"))
+            # Treat modify as add when target node is missing
+            assert change.post_node is not None
+            post_node = change.post_node
+            position = _find_add_position(
+                current, post_node, post_nodes, target_nodes,
+                post_in_struct=_inside_any_struct_body(post_struct_body_ranges, post_node.start_byte),
+            )
+            if position is None:
+                result = _resolve_insert_with_llm(
+                    current, post_node, change, target_nodes,
+                    symbol_compat_hints=symbol_compat_hints,
+                )
+                if result == _ALREADY_EXISTS:
+                    applied.append(change)
+                    continue
+                if result is None:
+                    unresolved.append(UnresolvedChange(change, "target node is missing"))
+                    continue
+                window_start, window_end, new_text = result
+                current = _replace_bytes(current, window_start, window_end, new_text)
+                applied.append(change)
+                continue
+            current = _replace_bytes(
+                current,
+                position,
+                position,
+                _prepare_insert_text(current, position, post_node.text),
+            )
+            applied.append(change)
             continue
 
         if change.action == "delete":
@@ -596,7 +955,11 @@ def migrate_external_changes(pre_code: str, post_code: str, target_code: str) ->
                     )
                     applied.append(change)
                     continue
-                merged = _resolve_conflict_with_llm(change, target_node)
+                merged = _resolve_conflict_with_llm(
+                    change,
+                    target_node,
+                    symbol_compat_hints=symbol_compat_hints,
+                )
                 if merged is None:
                     unresolved.append(UnresolvedChange(change, "LLM failed to merge delete conflict"))
                     continue
@@ -643,7 +1006,11 @@ def migrate_external_changes(pre_code: str, post_code: str, target_code: str) ->
             applied.append(change)
             continue
         if _normalized(target_node.text) != _normalized(change.pre_node.text):
-            merged = _resolve_conflict_with_llm(change, target_node)
+            merged = _resolve_conflict_with_llm(
+                change,
+                target_node,
+                symbol_compat_hints=symbol_compat_hints,
+            )
             if merged is None:
                 unresolved.append(UnresolvedChange(change, "LLM failed to merge target diverged from pre and post"))
                 continue
@@ -676,4 +1043,5 @@ def migrate_external_changes(pre_code: str, post_code: str, target_code: str) ->
         detected=changes,
         applied=applied,
         unresolved=unresolved,
+        missing_coverage=_missing_added_coverage(changes, current),
     )
