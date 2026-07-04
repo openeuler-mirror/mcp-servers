@@ -61,11 +61,27 @@ SOURCE_REF_PATTERNS = (
     re.compile(r"(?im)^\s*commit[:\s]+([0-9a-f]{7,40})\s*$"),
     re.compile(r"(?im)^\s*\(?cherry[ -]?picked from commit\s+([0-9a-f]{7,40})\)?\s*$"),
 )
+PATCH_FROM_RE = re.compile(r"(?m)^From\s+([0-9a-f]{7,40})\s+")
+TARGET_COMMIT_HEADER_ALIASES = {
+    "targetcommithash",
+    "targetcommit",
+    "manualcommithash",
+    "manualcommit",
+}
+SOURCE_COMMIT_HEADER_ALIASES = {
+    "commithash",
+    "commit",
+    "commitid",
+    "sourcecommithash",
+    "sourcecommit",
+    "sourcecommitid",
+}
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 # Excel cells have a hard 32,767-character limit. Split oversized text across
 # continuation rows so large patches/log snippets can still be exported.
 EXCEL_CELL_LIMIT = 32767
 LOGGER = logging.getLogger("backport_eval")
+_TARGET_TITLE_INDEX_CACHE: dict[str, dict[str, list[str]]] = {}
 
 
 class EvalError(RuntimeError):
@@ -76,9 +92,19 @@ class EvalError(RuntimeError):
 class SourceCommit:
     describe_index: int
     excel_rows: list[int]
+    target_commits: list[str]
     source_commit: str
     source_title: str
     git_describe: str
+
+
+@dataclass
+class ManualPatchFile:
+    index: int
+    path: Path
+    target_commit: str
+    message: str
+    source_refs: list[str]
 
 
 @dataclass
@@ -106,7 +132,10 @@ class Config:
     source_repo: Path
     source_branch: str
     source_excel: Path | None
+    preprocessed_source_excel: Path | None
     target_repo: Path
+    manual_patch_dir: Path | None
+    manual_input_mode: str
     pr_url: str
     first_pr_commit: str
     last_pr_commit: str
@@ -118,6 +147,7 @@ class Config:
     log_root: Path
     recovery_file: Path
     lock_file: Path
+    api_key: str
     llm_provider: str
     llm_base_url: str
     llm_model_name: str
@@ -171,9 +201,14 @@ def parse_args() -> argparse.Namespace:
         help="描述 source commit 的 Excel；不传时从 PR commit message 中提取源 commit",
     )
     parser.add_argument("--target-repo", default="")
+    parser.add_argument(
+        "--manual-patch-dir",
+        default="",
+        help="人工 backport patch 目录；传入后从 format-patch 文件读取人工提交序列，而不是从 PR commit range 读取",
+    )
     parser.add_argument("--pr-url", default="")
-    parser.add_argument("--first-pr-commit", default="")
-    parser.add_argument("--last-pr-commit", default="")
+    parser.add_argument("--first-pr-commit", default="", help="PR 模式必填；manual patch 目录模式可省略")
+    parser.add_argument("--last-pr-commit", default="", help="PR 模式必填；manual patch 目录模式可省略")
     parser.add_argument("--temp-branch", default=TEMP_BRANCH)
     parser.add_argument("--cvekit", default="")
     parser.add_argument("--cvekit-workdir", default="")
@@ -181,6 +216,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-root", default=str(LOG_ROOT))
     parser.add_argument("--recovery-file", default="")
     parser.add_argument("--lock-file", default="")
+    parser.add_argument(
+        "--api-key",
+        default=os.environ.get("API_KEY") or os.environ.get("OPENAI_KEY", ""),
+        help="LLM API key passed through to cvekit; defaults to API_KEY/OPENAI_KEY",
+    )
     parser.add_argument("--llm-provider", default=os.environ.get("LLM_PROVIDER", ""))
     parser.add_argument("--llm-base-url", default=os.environ.get("LLM_BASE_URL", ""))
     parser.add_argument(
@@ -200,11 +240,19 @@ def build_config(args: argparse.Namespace) -> Config:
         "source_repo": args.source_repo,
         "source_branch": args.source_branch,
         "target_repo": args.target_repo,
-        "pr_url": args.pr_url,
-        "first_pr_commit": args.first_pr_commit,
-        "last_pr_commit": args.last_pr_commit,
         "cvekit": args.cvekit,
     }
+    manual_patch_dir_arg = args.manual_patch_dir.strip()
+    has_pr_range = bool(args.first_pr_commit.strip() and args.last_pr_commit.strip())
+    has_partial_pr_range = bool(args.first_pr_commit.strip()) != bool(args.last_pr_commit.strip())
+    if has_partial_pr_range:
+        raise EvalError("--first-pr-commit and --last-pr-commit must be passed together")
+    if manual_patch_dir_arg:
+        required["manual_patch_dir"] = manual_patch_dir_arg
+    elif has_pr_range:
+        required["pr_url"] = args.pr_url
+    else:
+        required["source_excel"] = args.source_excel
     missing = [name for name, value in required.items() if not str(value).strip()]
     if missing:
         raise EvalError(
@@ -213,6 +261,11 @@ def build_config(args: argparse.Namespace) -> Config:
     eval_name = safe_name(args.eval_name) or EVAL_NAME
     source_repo = Path(args.source_repo).expanduser().resolve()
     target_repo = Path(args.target_repo).expanduser().resolve()
+    manual_patch_dir = (
+        Path(manual_patch_dir_arg).expanduser().resolve()
+        if manual_patch_dir_arg
+        else None
+    )
     source_excel = (
         Path(args.source_excel).expanduser().resolve()
         if args.source_excel.strip()
@@ -236,16 +289,55 @@ def build_config(args: argparse.Namespace) -> Config:
         if args.lock_file
         else LOCK_FILE.with_name(f"{eval_name}.lock")
     )
-    first_pr_commit = git_verify(target_repo, args.first_pr_commit.strip())
-    last_pr_commit = git_verify(target_repo, args.last_pr_commit.strip())
-    pr_baseline = git(target_repo, "rev-parse", f"{first_pr_commit}^")
+    if manual_patch_dir is not None:
+        manual_input_mode = "manual_patch_dir"
+        manual_patches = read_manual_patch_files(target_repo, source_repo, manual_patch_dir)
+        if not manual_patches:
+            raise EvalError(f"no manual patch files found in {manual_patch_dir}")
+        first_pr_commit = manual_patches[0].target_commit
+        last_pr_commit = manual_patches[-1].target_commit
+        pr_url = args.pr_url.strip() or f"manual-patch-dir:{manual_patch_dir}"
+        pr_baseline = git(target_repo, "rev-parse", f"{first_pr_commit}^")
+    elif has_pr_range:
+        manual_input_mode = "pr_range"
+        first_pr_commit = git_verify(target_repo, args.first_pr_commit.strip())
+        last_pr_commit = git_verify(target_repo, args.last_pr_commit.strip())
+        pr_url = args.pr_url.strip()
+        pr_baseline = git(target_repo, "rev-parse", f"{first_pr_commit}^")
+    else:
+        if source_excel is None:
+            raise EvalError(
+                "missing manual input: pass --manual-patch-dir, pass "
+                "--first-pr-commit/--last-pr-commit, or pass --source-excel "
+                "with a target commit hash column"
+            )
+        has_target_commit_col = find_excel_header_column(source_excel, TARGET_COMMIT_HEADER_ALIASES) is not None
+        manual_input_mode = "excel_target_commits" if has_target_commit_col else "excel_title_lookup"
+        target_commits = (
+            read_excel_target_commits(target_repo, source_excel)
+            if has_target_commit_col
+            else read_excel_target_commits_by_title(target_repo, source_excel)
+        )
+        if not target_commits:
+            raise EvalError(
+                "source Excel did not resolve to any target commits; pass --manual-patch-dir "
+                "or --first-pr-commit/--last-pr-commit, add a target commit hash column, "
+                "or make sure commit titles exist on target HEAD"
+            )
+        first_pr_commit = target_commits[0]
+        last_pr_commit = target_commits[-1]
+        pr_url = args.pr_url.strip() or f"{manual_input_mode}:{source_excel}"
+        pr_baseline = git(target_repo, "rev-parse", f"{first_pr_commit}^")
     return Config(
         eval_name=eval_name,
         source_repo=source_repo,
         source_branch=args.source_branch.strip(),
         source_excel=source_excel,
+        preprocessed_source_excel=None,
         target_repo=target_repo,
-        pr_url=args.pr_url.strip(),
+        manual_patch_dir=manual_patch_dir,
+        manual_input_mode=manual_input_mode,
+        pr_url=pr_url,
         first_pr_commit=first_pr_commit,
         last_pr_commit=last_pr_commit,
         pr_baseline=pr_baseline,
@@ -256,6 +348,7 @@ def build_config(args: argparse.Namespace) -> Config:
         log_root=log_root,
         recovery_file=recovery_file,
         lock_file=lock_file,
+        api_key=args.api_key.strip(),
         llm_provider=args.llm_provider.strip(),
         llm_base_url=args.llm_base_url.strip(),
         llm_model_name=args.llm_model_name.strip(),
@@ -290,7 +383,25 @@ def run(
     input_text: str | None = None,
     log_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    LOGGER.debug("run: %s", " ".join(shlex.quote(part) for part in cmd))
+    def redact_cmd(parts: list[str]) -> str:
+        redacted: list[str] = []
+        hide_next = False
+        for part in parts:
+            if hide_next:
+                redacted.append("***")
+                hide_next = False
+                continue
+            if part == "--api-key":
+                redacted.append(part)
+                hide_next = True
+            elif part.startswith("--api-key="):
+                redacted.append("--api-key=***")
+            else:
+                redacted.append(part)
+        return " ".join(shlex.quote(part) for part in redacted)
+
+    safe_cmd = redact_cmd(cmd)
+    LOGGER.debug("run: %s", safe_cmd)
     started = time.monotonic()
     if log_path:
         LOGGER.info("COMMAND START: output=%s", log_path)
@@ -306,7 +417,7 @@ def run(
     if log_path:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(
-            f"$ {' '.join(shlex.quote(part) for part in cmd)}\n\n"
+            f"$ {safe_cmd}\n\n"
             f"--- stdout ---\n{completed.stdout}\n"
             f"--- stderr ---\n{completed.stderr}\n",
             encoding="utf-8",
@@ -320,7 +431,7 @@ def run(
     if check and completed.returncode != 0:
         raise EvalError(
             f"command failed ({completed.returncode}): "
-            f"{' '.join(shlex.quote(part) for part in cmd)}\n"
+            f"{safe_cmd}\n"
             f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
         )
     return completed
@@ -358,6 +469,157 @@ def extract_source_refs(message: str) -> list[str]:
     return refs
 
 
+def patch_file_sort_key(path: Path) -> tuple[int, str]:
+    match = re.match(r"^(\d+)", path.name)
+    return (int(match.group(1)) if match else 10**9, path.name)
+
+
+def read_manual_patch_files(
+    target_repo: Path,
+    source_repo: Path,
+    manual_patch_dir: Path,
+) -> list[ManualPatchFile]:
+    if not manual_patch_dir.is_dir():
+        raise EvalError(f"manual patch dir is not a directory: {manual_patch_dir}")
+    # 按 patch 文件名前缀数字排序，比如 0001-...patch, 0002-...patch 
+    patch_paths = sorted(manual_patch_dir.glob("*.patch"), key=patch_file_sort_key)
+    patches: list[ManualPatchFile] = []
+    for index, path in enumerate(patch_paths, start=1):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        match = PATCH_FROM_RE.search(text)
+        if not match:
+            raise EvalError(f"manual patch has no format-patch From commit line: {path}")
+        target_commit = git_verify(target_repo, match.group(1))
+        refs: list[str] = []
+        for ref in extract_source_refs(text):
+            try:
+                refs.append(git_verify(source_repo, ref))
+            except EvalError:
+                LOGGER.warning(
+                    "manual patch %s references source hash not present locally: %s",
+                    path.name,
+                    ref,
+                )
+        patches.append(
+            ManualPatchFile(
+                index=index,
+                path=path,
+                target_commit=target_commit,
+                message=text,
+                source_refs=refs,
+            )
+        )
+    return patches
+
+
+def normalize_commit_title(title: str) -> str:
+    """Normalize downstream/source title variants for exact subject matching.
+
+    Downstream kernel repos often prefix titles with tags like
+    ``downstream:``, ``openeuler:`` or ``OLK:`` that are not present in the
+    upstream source repo.  Strip those markers and collapse whitespace before
+    comparing target and source subjects.
+    """
+    normalized = normalize_title(title)
+    lower = normalized.lower()
+    known_prefixes = ("downstream:", "openeuler:", "olk:", "!this_is_not_the_commit:")
+    for prefix in known_prefixes:
+        if lower.startswith(prefix):
+            return normalized[len(prefix):].lstrip()
+    return normalized
+
+
+def is_revert_subject(title: str) -> bool:
+    return normalize_title(title).lower().startswith("revert ")
+
+
+def find_source_commits_by_normalized_title(
+    config: Config,
+    target_title: str,
+) -> list[str]:
+    target_title_norm = normalize_commit_title(target_title)
+    grep_title = target_title_norm
+    found = git(
+        config.source_repo,
+        "log",
+        f"{config.source_branch}",
+        "--format=%H%x00%s",
+        "--no-merges",
+        "--fixed-strings",
+        f"--grep={grep_title}",
+        check=False,
+    ).splitlines()
+    commits: list[str] = []
+    for line in found:
+        found_commit, _, subject = line.partition("\x00")
+        if is_revert_subject(subject):
+            continue
+        # 只包含标题完全一样的
+        if normalize_commit_title(subject) != target_title_norm:
+            continue
+        try:
+            full = git_verify(config.source_repo, found_commit)
+        except EvalError:
+            LOGGER.warning(
+                "fallback found commit %s but cannot verify in source repo",
+                found_commit[:12],
+            )
+            continue
+        if full not in commits:
+            commits.append(full)
+    return commits
+
+
+def source_refs_from_target_commit(
+    config: Config,
+    target_commit: str,
+    manual_by_commit: dict[str, ManualCommit],
+) -> list[str]:
+    full_target_commit = git_verify(config.target_repo, target_commit)
+    manual = manual_by_commit.get(full_target_commit)
+    if manual and manual.source_refs:
+        return manual.source_refs
+    message = git(config.target_repo, "show", "-s", "--format=%B", full_target_commit)
+    refs: list[str] = []
+    # target commit -> source commit: 1. commit message里查找upstream sha 
+    for ref in extract_source_refs(message):
+        try:
+            refs.append(git_verify(config.source_repo, ref))
+        except EvalError:
+            LOGGER.warning(
+                "target commit %s references source hash not present locally: %s",
+                full_target_commit[:12],
+                ref,
+            )
+    if not refs:
+        # 匹配不到的话再在源仓库历史里面搜标题
+        title = git(config.target_repo, "show", "-s", "--format=%s", full_target_commit)
+        LOGGER.info(
+            "fallback: searching source repo by normalized title for target commit %s title=%s",
+            full_target_commit[:12],
+            normalize_commit_title(title),
+        )
+        matches = find_source_commits_by_normalized_title(config, title)
+        if matches:
+            # git log returns newest matches first for the selected source branch.
+            refs.append(matches[0])
+            if len(matches) == 1:
+                LOGGER.info(
+                    "fallback found unique source commit %s for target commit %s",
+                    matches[0][:12],
+                    full_target_commit[:12],
+                )
+            else:
+                LOGGER.warning(
+                    "fallback title search found multiple source commits for target commit %s; "
+                    "using first=%s candidates=%s",
+                    full_target_commit[:12],
+                    matches[0][:12],
+                    ", ".join(commit[:12] for commit in matches),
+                )
+    return refs
+
+
 def sort_source_commits(
     config: Config,
     by_commit: dict[str, dict[str, Any]],
@@ -385,6 +647,7 @@ def sort_source_commits(
             SourceCommit(
                 describe_index=index,
                 excel_rows=entry["excel_rows"],
+                target_commits=entry.get("target_commits", []),
                 source_commit=commit,
                 source_title=entry["source_title"],
                 git_describe=str(item.get("git_describe") or ""),
@@ -393,28 +656,242 @@ def sort_source_commits(
     return sources
 
 
-def read_source_commits_from_excel(config: Config) -> tuple[list[SourceCommit], int, str]:
-    if config.source_excel is None:
-        raise EvalError("source Excel is not configured")
-    workbook = openpyxl.load_workbook(config.source_excel, read_only=True, data_only=True)
+def normalize_header(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def find_header_column(headers: list[Any], aliases: set[str]) -> int | None:
+    normalized = [normalize_header(value) for value in headers]
+    for index, header in enumerate(normalized):
+        if header in aliases:
+            return index
+    return None
+
+
+def repo_key(repo: Path) -> str:
+    return str(Path(repo).expanduser().resolve())
+
+
+def find_excel_header_column(source_excel: Path, aliases: set[str]) -> int | None:
+    workbook = openpyxl.load_workbook(source_excel, read_only=True, data_only=True)
     sheet = workbook[workbook.sheetnames[0]]
-    by_commit: dict[str, dict[str, Any]] = {}
-    input_count = 0
+    return find_header_column([cell.value for cell in sheet[1]], aliases)
+
+
+def read_excel_target_commits(target_repo: Path, source_excel: Path) -> list[str]:
+    """Read manual backport commits directly from an Excel target commit column.
+
+    In ``excel_target_commits`` mode, the Excel file is the authoritative
+    evaluation sample list.  Each non-empty ``target commit hash`` cell is a
+    manual backport commit; its parent becomes the case baseline and
+    ``git diff <target>^ <target>`` remains the manual patch used for later
+    comparison.  No PR range or exported format-patch directory is needed.
+    """
+    workbook = openpyxl.load_workbook(source_excel, read_only=True, data_only=True)
+    sheet = workbook[workbook.sheetnames[0]]
+    header_values = [cell.value for cell in sheet[1]]
+    target_commit_col = find_header_column(header_values, TARGET_COMMIT_HEADER_ALIASES)
+    if target_commit_col is None:
+        raise EvalError(
+            "source Excel has no target commit hash column; pass --manual-patch-dir "
+            "or --first-pr-commit/--last-pr-commit, or add a target commit hash column"
+        )
+
+    commits: list[str] = []
+    seen: set[str] = set()
     for row_number, values in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
-        title = normalize_title(str(values[0] or ""))
-        commit_input = str(values[1] or "").strip()
+        commit_input = str(values[target_commit_col] or "").strip()
+        if not commit_input:
+            continue
+        full_commit = git_verify(target_repo, commit_input)
+        if full_commit not in seen:
+            seen.add(full_commit)
+            commits.append(full_commit)
+        else:
+            LOGGER.warning(
+                "Excel row %d repeats target commit %s; keeping the first occurrence",
+                row_number,
+                full_commit[:12],
+            )
+    return commits
+
+
+def read_excel_source_rows(source_excel: Path) -> list[dict[str, str | int]]:
+    workbook = openpyxl.load_workbook(source_excel, read_only=True, data_only=True)
+    sheet = workbook[workbook.sheetnames[0]]
+    header_values = [cell.value for cell in sheet[1]]
+    title_col = find_header_column(header_values, {"committitle", "title", "subject"})
+    commit_col = find_header_column(header_values, SOURCE_COMMIT_HEADER_ALIASES)
+    if title_col is None:
+        title_col = 0
+
+    rows: list[dict[str, str | int]] = []
+    for row_number, values in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+        title = normalize_title(str(values[title_col] or ""))
+        commit_input = (
+            str(values[commit_col] or "").strip()
+            if commit_col is not None and commit_col < len(values)
+            else ""
+        )
         if not title and not commit_input:
             continue
-        input_count += 1
+        rows.append({"row_number": row_number, "title": title, "commit": commit_input})
+    return rows
+
+
+def target_title_index(target_repo: Path) -> dict[str, list[str]]:
+    key = repo_key(target_repo)
+    if key in _TARGET_TITLE_INDEX_CACHE:
+        return _TARGET_TITLE_INDEX_CACHE[key]
+
+    LOGGER.info("building target title index from HEAD: %s", target_repo)
+    completed = subprocess.run(
+        ["git", "-C", str(target_repo), "log", "HEAD", "--format=%H%x00%s"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise EvalError(
+            "git log failed while building target title index: "
+            + completed.stderr.decode("utf-8", errors="replace").strip()
+        )
+    output = completed.stdout.decode("utf-8", errors="replace")
+    index: dict[str, list[str]] = {}
+    for line in output.splitlines():
+        commit, _, subject = line.partition("\x00")
+        if not commit:
+            continue
+        title_norm = normalize_commit_title(subject)
+        if not title_norm:
+            continue
+        commits = index.setdefault(title_norm, [])
+        if commit not in commits:
+            commits.append(commit)
+    _TARGET_TITLE_INDEX_CACHE[key] = index
+    LOGGER.info("target title index built: titles=%d repo=%s", len(index), target_repo)
+    return index
+
+
+def find_target_commit_by_normalized_title(target_repo: Path, title: str) -> str:
+    title_norm = normalize_commit_title(title)
+    matches = target_title_index(target_repo).get(title_norm, [])
+    if not matches:
+        raise EvalError(f"target branch HEAD has no commit matching Excel title: {title}")
+    if len(matches) > 1:
+        LOGGER.warning(
+            "target title matched multiple commits; using newest title=%s candidates=%s",
+            title_norm,
+            ", ".join(commit[:12] for commit in matches),
+        )
+    return matches[0]
+
+
+def read_excel_target_commits_by_title(target_repo: Path, source_excel: Path) -> list[str]:
+    commits: list[str] = []
+    seen: set[str] = set()
+    for row in read_excel_source_rows(source_excel):
+        title = str(row["title"])
+        if not title:
+            raise EvalError(f"Excel row {row['row_number']} has no commit title for target lookup")
+        commit = find_target_commit_by_normalized_title(target_repo, title)
+        if commit not in seen:
+            seen.add(commit)
+            commits.append(commit)
+        else:
+            LOGGER.warning(
+                "Excel row %s maps to repeated target commit %s; keeping the first occurrence",
+                row["row_number"],
+                commit[:12],
+            )
+    return commits
+
+
+def read_source_commits_from_excel(
+    config: Config,
+    manuals: list[ManualCommit],
+    preprocessed_excel_path: Path | None = None,
+) -> tuple[list[SourceCommit], int, str]:
+    if config.source_excel is None:
+        raise EvalError("source Excel is not configured")
+    workbook = openpyxl.load_workbook(config.source_excel)
+    sheet = workbook[workbook.sheetnames[0]]
+    header_values = [cell.value for cell in sheet[1]]
+    title_col = find_header_column(header_values, {"committitle", "title", "subject"})
+    commit_col = find_header_column(header_values, SOURCE_COMMIT_HEADER_ALIASES)
+    target_commit_col = find_header_column(
+        header_values,
+        TARGET_COMMIT_HEADER_ALIASES,
+    )
+    if title_col is None:
+        title_col = 0
+    if commit_col is None:
+        commit_col = len(header_values)
+        sheet.cell(row=1, column=commit_col + 1, value="commit hash")
+
+    manual_by_commit = {manual.commit: manual for manual in manuals}
+    by_commit: dict[str, dict[str, Any]] = {}
+    input_count = 0
+    derived_count = 0
+    skipped_count = 0
+    for row_number in range(2, sheet.max_row + 1):
+        title = normalize_title(str(sheet.cell(row=row_number, column=title_col + 1).value or ""))
+        commit_input = str(sheet.cell(row=row_number, column=commit_col + 1).value or "").strip()
+        target_commit_input = (
+            str(sheet.cell(row=row_number, column=target_commit_col + 1).value or "").strip()
+            if target_commit_col is not None
+            else ""
+        )
+        if not title and not commit_input and not target_commit_input:
+            continue
         if not commit_input:
-            raise EvalError(f"Excel row {row_number} has no commit hash")
+            if not target_commit_input:
+                raise EvalError(
+                    f"Excel row {row_number} has no commit hash and no target commit hash"
+                )
+            full_target_commit = git_verify(config.target_repo, target_commit_input)
+            source_refs = source_refs_from_target_commit(config, full_target_commit, manual_by_commit)
+            if not source_refs:
+                skipped_count += 1
+                LOGGER.warning(
+                    "Excel row %d target commit %s has no source commit reference; skipping",
+                    row_number,
+                    target_commit_input,
+                )
+                continue
+            if len(source_refs) > 1:
+                raise EvalError(
+                    f"Excel row {row_number} target commit {target_commit_input} "
+                    f"maps to multiple source commits: {source_refs}"
+                )
+            commit_input = source_refs[0]
+            sheet.cell(row=row_number, column=commit_col + 1, value=commit_input)
+            derived_count += 1
+        full_target_commit = (
+            git_verify(config.target_repo, target_commit_input)
+            if target_commit_input
+            else ""
+        )
         full_commit = git_verify(config.source_repo, commit_input)
+        input_count += 1
         actual_title = normalize_title(git(config.source_repo, "show", "-s", "--format=%s", full_commit))
         entry = by_commit.setdefault(
             full_commit,
-            {"excel_rows": [], "source_title": actual_title or title},
+            {"excel_rows": [], "target_commits": [], "source_title": actual_title or title},
         )
         entry["excel_rows"].append(row_number)
+        if full_target_commit and full_target_commit not in entry["target_commits"]:
+            entry["target_commits"].append(full_target_commit)
+    if derived_count and preprocessed_excel_path is not None:
+        preprocessed_excel_path.parent.mkdir(parents=True, exist_ok=True)
+        workbook.save(preprocessed_excel_path)
+        config.preprocessed_source_excel = preprocessed_excel_path
+        LOGGER.info(
+            "preprocessed source Excel written: %s; derived commit hash rows=%d skipped rows=%d",
+            preprocessed_excel_path,
+            derived_count,
+            skipped_count,
+        )
     return sort_source_commits(config, by_commit), input_count, "excel"
 
 
@@ -444,6 +921,13 @@ def read_source_commits_from_pr_messages(
 
 
 def read_manual_commits(config: Config) -> list[ManualCommit]:
+    if config.manual_input_mode == "excel_target_commits":
+        return read_manual_commits_from_excel_target_commits(config)
+    if config.manual_input_mode == "excel_title_lookup":
+        return read_manual_commits_from_excel_title_lookup(config)
+    if config.manual_patch_dir is not None:
+        return read_manual_commits_from_patch_dir(config)
+
     chain = git(
         config.target_repo,
         "rev-list",
@@ -483,27 +967,196 @@ def read_manual_commits(config: Config) -> list[ManualCommit]:
     return manuals
 
 
+def read_manual_commits_from_excel_title_lookup(config: Config) -> list[ManualCommit]:
+    if config.source_excel is None:
+        raise EvalError("source Excel is required for excel_title_lookup mode")
+
+    manuals: list[ManualCommit] = []
+    seen_targets: set[str] = set()
+    for row in read_excel_source_rows(config.source_excel):
+        title = str(row["title"])
+        commit_input = str(row["commit"])
+        if not title:
+            raise EvalError(f"Excel row {row['row_number']} has no commit title for target lookup")
+        target_commit = find_target_commit_by_normalized_title(config.target_repo, title)
+        if target_commit in seen_targets:
+            continue
+        seen_targets.add(target_commit)
+
+        refs: list[str] = []
+        if commit_input:
+            refs.append(git_verify(config.source_repo, commit_input))
+        message = git(config.target_repo, "show", "-s", "--format=%B", target_commit)
+        if not refs:
+            for ref in extract_source_refs(message):
+                try:
+                    refs.append(git_verify(config.source_repo, ref))
+                except EvalError:
+                    LOGGER.warning(
+                        "manual commit %s references source hash not present locally: %s",
+                        target_commit[:12],
+                        ref,
+                    )
+        manuals.append(
+            ManualCommit(
+                index=len(manuals) + 1,
+                commit=target_commit,
+                parent=git(config.target_repo, "rev-parse", f"{target_commit}^"),
+                title=normalize_title(git(config.target_repo, "show", "-s", "--format=%s", target_commit)),
+                message=message,
+                source_refs=refs,
+            )
+        )
+    return manuals
+
+
+def read_manual_commits_from_excel_target_commits(config: Config) -> list[ManualCommit]:
+    """Build manual commits from Excel target commit hash cells.
+
+    This mode is for workbooks where every row already names the manual
+    backport commit.  The exported patch directory is intentionally bypassed:
+    the target repository is the source of truth for commit parent, subject,
+    message, and later manual patch diff generation.
+    """
+    if config.source_excel is None:
+        raise EvalError("source Excel is required for excel_target_commits mode")
+    target_commits = read_excel_target_commits(config.target_repo, config.source_excel)
+    manuals: list[ManualCommit] = []
+    for index, commit in enumerate(target_commits, start=1):
+        message = git(config.target_repo, "show", "-s", "--format=%B", commit)
+        refs: list[str] = []
+        for ref in extract_source_refs(message):
+            try:
+                refs.append(git_verify(config.source_repo, ref))
+            except EvalError:
+                LOGGER.warning(
+                    "manual commit %s references source hash not present locally: %s",
+                    commit[:12],
+                    ref,
+                )
+        manuals.append(
+            ManualCommit(
+                index=index,
+                commit=commit,
+                parent=git(config.target_repo, "rev-parse", f"{commit}^"),
+                title=normalize_title(git(config.target_repo, "show", "-s", "--format=%s", commit)),
+                message=message,
+                source_refs=refs,
+            )
+        )
+    return manuals
+
+
+def read_manual_commits_from_patch_dir(config: Config) -> list[ManualCommit]:
+    if config.manual_patch_dir is None:
+        raise EvalError("manual patch dir is not configured")
+    patch_files = read_manual_patch_files(
+        config.target_repo,
+        config.source_repo,
+        config.manual_patch_dir,
+    )
+    if not patch_files:
+        raise EvalError(f"manual patch dir is empty: {config.manual_patch_dir}")
+
+    manuals: list[ManualCommit] = []
+    previous_commit = config.pr_baseline
+    for patch in patch_files:
+        parent = git(config.target_repo, "rev-parse", f"{patch.target_commit}^")
+        if parent != previous_commit:
+            LOGGER.warning(
+                "manual patch commits are not a linear chain in target repo: "
+                "%s parent is %s, previous patch commit is %s; using this patch parent as case baseline",
+                patch.path.name,
+                parent,
+                previous_commit,
+            )
+        title = normalize_title(git(config.target_repo, "show", "-s", "--format=%s", patch.target_commit))
+        message = git(config.target_repo, "show", "-s", "--format=%B", patch.target_commit)
+        refs = list(patch.source_refs)
+        if not refs:
+            for ref in extract_source_refs(message):
+                try:
+                    refs.append(git_verify(config.source_repo, ref))
+                except EvalError:
+                    LOGGER.warning(
+                        "manual commit %s references source hash not present locally: %s",
+                        patch.target_commit[:12],
+                        ref,
+                    )
+        manuals.append(
+            ManualCommit(
+                index=patch.index,
+                commit=patch.target_commit,
+                parent=parent,
+                title=title,
+                message=patch.message or message,
+                source_refs=refs,
+            )
+        )
+        previous_commit = patch.target_commit
+    if manuals[-1].commit != config.last_pr_commit:
+        raise EvalError(
+            f"last manual patch commit is {manuals[-1].commit}, expected {config.last_pr_commit}"
+        )
+    return manuals
+
+
 def build_cases(sources: list[SourceCommit], manuals: list[ManualCommit]) -> list[EvalCase]:
     source_by_commit = {source.source_commit: source for source in sources}
     source_by_title: dict[str, list[SourceCommit]] = {}
     for source in sources:
-        source_by_title.setdefault(normalize_title(source.source_title), []).append(source)
+        source_by_title.setdefault(normalize_commit_title(source.source_title), []).append(source)
 
     manual_by_source: dict[str, ManualCommit] = {}
+
+    def map_manual(source_commit: str, manual: ManualCommit) -> None:
+        existing = manual_by_source.get(source_commit)
+        if existing and existing.commit != manual.commit:
+            source = source_by_commit[source_commit]
+            if source.target_commits:
+                preferred = source.target_commits[0]
+                if manual.commit == preferred:
+                    LOGGER.warning(
+                        "source commit %s maps to multiple manual commits; "
+                        "using Excel target commit %s instead of %s",
+                        source_commit,
+                        manual.commit,
+                        existing.commit,
+                    )
+                    manual_by_source[source_commit] = manual
+                else:
+                    LOGGER.warning(
+                        "source commit %s maps to multiple manual commits; "
+                        "keeping %s and ignoring %s",
+                        source_commit,
+                        existing.commit,
+                        manual.commit,
+                    )
+                return
+            raise EvalError(
+                f"source commit {source_commit} maps to two manual commits: "
+                f"{existing.commit} and {manual.commit}"
+            )
+        manual_by_source[source_commit] = manual
+
+    manual_by_commit = {manual.commit: manual for manual in manuals}
+    for source in sources:
+        for target_commit in source.target_commits:
+            manual = manual_by_commit.get(target_commit)
+            if manual:
+                map_manual(source.source_commit, manual)
+
     for manual in manuals:
         candidates = [ref for ref in manual.source_refs if ref in source_by_commit]
         if not candidates:
-            title_matches = source_by_title.get(normalize_title(manual.title), [])
+            title_matches = source_by_title.get(normalize_commit_title(manual.title), [])
             if len(title_matches) == 1:
                 candidates = [title_matches[0].source_commit]
         for source_commit in candidates:
-            existing = manual_by_source.get(source_commit)
-            if existing and existing.commit != manual.commit:
-                raise EvalError(
-                    f"source commit {source_commit} maps to two manual commits: "
-                    f"{existing.commit} and {manual.commit}"
-                )
-            manual_by_source[source_commit] = manual
+            source = source_by_commit[source_commit]
+            if source.target_commits and manual.commit not in source.target_commits:
+                continue
+            map_manual(source_commit, manual)
 
     next_manual: ManualCommit | None = None
     cases_reversed: list[EvalCase] = []
@@ -581,8 +1234,13 @@ def discovery_payload(
     return {
         "source_repo": str(config.source_repo),
         "source_excel": str(config.source_excel) if config.source_excel else "",
+        "preprocessed_source_excel": (
+            str(config.preprocessed_source_excel) if config.preprocessed_source_excel else ""
+        ),
         "source_input_mode": source_input_mode,
         "target_repo": str(config.target_repo),
+        "manual_patch_dir": str(config.manual_patch_dir) if config.manual_patch_dir else "",
+        "manual_input_mode": config.manual_input_mode,
         "pr_url": config.pr_url,
         "first_pr_commit": config.first_pr_commit,
         "last_pr_commit": config.last_pr_commit,
@@ -660,6 +1318,8 @@ def discovery_signature(payload: dict[str, Any]) -> dict[str, Any]:
     signature = {
         "source_input_mode": payload.get("source_input_mode", ""),
         "source_excel": payload.get("source_excel", ""),
+        "manual_patch_dir": payload.get("manual_patch_dir", ""),
+        "manual_input_mode": payload.get("manual_input_mode", ""),
         "last_pr_commit": payload.get("last_pr_commit") or payload.get("pr_head", ""),
         "pr_baseline": payload["pr_baseline"],
         "input_count": payload["input_count"],
@@ -867,6 +1527,8 @@ def cvekit_command(config: Config, report_or_raw: Path, action: str, apply: str 
         cmd.extend(["--llm-base-url", config.llm_base_url])
     if config.llm_model_name:
         cmd.extend(["--llm-model-name", config.llm_model_name])
+    if config.api_key:
+        cmd.extend(["--api-key", config.api_key])
     if action == "execute":
         cmd.append("--execute")
     elif action == "apply":
@@ -983,6 +1645,7 @@ def run_case(config: Config, case: EvalCase, case_dir: Path) -> tuple[dict[str, 
     execution_status = str(initial_item.get("status") or "")
     apply_success = False
     final_item = initial_item
+    warning = ""
 
     if not initial_merged:
         if initial_conflict:
@@ -1218,8 +1881,13 @@ def write_workbook(
     info = {
         "source_repo": str(config.source_repo),
         "source_excel": str(config.source_excel) if config.source_excel else "",
+        "preprocessed_source_excel": (
+            str(config.preprocessed_source_excel) if config.preprocessed_source_excel else ""
+        ),
         "source_input_mode": payload.get("source_input_mode", ""),
         "target_repo": str(config.target_repo),
+        "manual_patch_dir": str(config.manual_patch_dir) if config.manual_patch_dir else "",
+        "manual_input_mode": config.manual_input_mode,
         "PR URL": config.pr_url,
         "PR first commit": config.first_pr_commit,
         "PR last commit": config.last_pr_commit,
@@ -1303,6 +1971,8 @@ def main() -> int:
     required_paths = [config.source_repo, config.target_repo, config.cvekit]
     if config.source_excel is not None:
         required_paths.append(config.source_excel)
+    if config.manual_patch_dir is not None:
+        required_paths.append(config.manual_patch_dir)
     for path in required_paths:
         if not path.exists():
             raise EvalError(f"required path does not exist: {path}")
@@ -1314,7 +1984,12 @@ def main() -> int:
     manuals = read_manual_commits(config)
     if config.source_excel is not None:
         LOGGER.info("reading and sorting Excel source commits")
-        sources, input_count, source_input_mode = read_source_commits_from_excel(config)
+        preprocessed_excel_path = run_dir / f"{config.source_excel.stem}.with_commit_hash.xlsx"
+        sources, input_count, source_input_mode = read_source_commits_from_excel(
+            config,
+            manuals,
+            preprocessed_excel_path,
+        )
     else:
         LOGGER.info("extracting and sorting source commits from PR commit messages")
         sources, input_count, source_input_mode = read_source_commits_from_pr_messages(config, manuals)
@@ -1326,8 +2001,9 @@ def main() -> int:
     else:
         write_json_atomic(run_dir / "discovery.json", payload)
     LOGGER.info(
-        "discovery validated: source_mode=%s inputs=%d unique=%d manual=%d mapped=%d",
+        "discovery validated: source_mode=%s manual_mode=%s inputs=%d unique=%d manual=%d mapped=%d",
         source_input_mode,
+        config.manual_input_mode,
         input_count,
         len(sources),
         len(manuals),
