@@ -38,6 +38,7 @@ from codefile import CodeFile, create_code_tree
 from common import Language
 from cross_method import (
     _find_functions_containing_lines,
+    build_function_anchor_map,
     build_method_artifacts_for_signatures,
     build_method_dependency_clusters,
     detect_modified_methods,
@@ -132,6 +133,47 @@ def _manual_review_result(
         }],
         "warning": reason,
     }
+
+
+def _unresolved_method_issue(failed_signatures: list[str]) -> dict:
+    reason = f"unresolved method signatures: {failed_signatures}"
+    return {
+        "kind": "unresolved_method",
+        "reason": reason,
+        "blocks_patch": False,
+    }
+
+
+def _ported_file_result(
+    source_path: str,
+    target_file_path: str,
+    result_path: str,
+    language: str,
+    soft_skipped_signatures: list[str] | None = None,
+    failed_signatures: list[str] | None = None,
+) -> dict:
+    soft_skipped_signatures = soft_skipped_signatures or []
+    failed_signatures = failed_signatures or []
+    unresolved_issue = _unresolved_method_issue(failed_signatures) if failed_signatures else None
+    warning_parts = []
+    if soft_skipped_signatures:
+        warning_parts.append(f"soft-skipped header signatures: {soft_skipped_signatures}")
+    if unresolved_issue:
+        warning_parts.append(unresolved_issue["reason"])
+
+    result = {
+        "source_file": source_path,
+        "target_file": target_file_path,
+        "patched_file": result_path,
+        "language": language,
+        "status": "ported",
+        "soft_skipped_signatures": soft_skipped_signatures,
+        "warning": "; ".join(warning_parts),
+    }
+    if failed_signatures:
+        result["failed_signatures"] = failed_signatures
+        result["issues"] = [unresolved_issue]
+    return result
 
 
 def _parse_patch_hunk_ranges(patch_text: str) -> dict[str, tuple[set[int], set[int]]]:
@@ -280,15 +322,44 @@ def _extract_c_method_name(node) -> str | None:
     return name_node.text.decode()
 
 
-def _build_c_signature_line_map(target_code: str, target_filename: str) -> dict[str, tuple[int, int]]:
+def _c_guard_context_for_line(lines: list[str], start_line: int) -> tuple[str, ...]:
+    stack: list[str] = []
+    for line in lines[:max(start_line - 1, 0)]:
+        stripped = line.strip()
+        if stripped.startswith(("#if", "#ifdef", "#ifndef")):
+            stack.append(" ".join(stripped.split()))
+        elif stripped.startswith("#elif"):
+            if stack:
+                stack[-1] = f"{stack[-1].split(' -> ', 1)[0]} -> {' '.join(stripped.split())}"
+        elif stripped.startswith("#else"):
+            if stack:
+                stack[-1] = f"{stack[-1].split(' -> ', 1)[0]} -> #else"
+        elif stripped.startswith("#endif"):
+            if stack:
+                stack.pop()
+    return tuple(stack)
+
+
+def _build_c_signature_line_map(target_code: str, target_filename: str) -> dict[str, list[tuple[int, int, tuple[str, ...]]]]:
+    """从 target 文件文本里找出每个 C 函数真实所在的起止行"""
     from func_parser import parse_functions
 
     funcs = parse_functions(target_code)
-    signature_map: dict[str, tuple[int, int]] = {}
+    target_lines = target_code.splitlines()
+    signature_map: dict[str, list[tuple[int, int, tuple[str, ...]]]] = {}
     confirmed_ranges: list[tuple[int, int]] = []
+
+    def add_candidate(signature: str, start_line: int, end_line: int) -> None:
+        candidates = signature_map.setdefault(signature, [])
+        if any(start_line == start and end_line == end for start, end, _ in candidates):
+            return
+        # 除了起止行，还加上了周围的guard_context，防止遇到
+        # 在#if #else分支里有同名函数
+        candidates.append((start_line, end_line, _c_guard_context_for_line(target_lines, start_line)))
+
     for func in funcs:
         signature = f"{target_filename}#{func.name}"
-        signature_map[signature] = (func.start_line, func.end_line)
+        add_candidate(signature, func.start_line, func.end_line)
         confirmed_ranges.append((func.start_line, func.end_line))
 
     # 正则结果优先；Tree-sitter 只补充正则遗漏的函数行号。
@@ -313,25 +384,126 @@ def _build_c_signature_line_map(target_code: str, target_filename: str) -> dict[
             for confirmed_start, confirmed_end in confirmed_ranges
         ):
             continue
-        signature_map[signature] = (start_line, end_line)
+        add_candidate(signature, start_line, end_line)
         confirmed_ranges.append((start_line, end_line))
     return signature_map
 
 
 def _apply_method_replacements(
     target_code: str,
-    replacements: list[tuple[str, int, int, str]],
+    replacements: list[tuple],
     language: Language,
     target_filename: str,
 ) -> str:
     lines = target_code.splitlines(keepends=True)
     resolved_ranges: list[tuple[int, int, str]] = []
-    raw_line_map: dict[str, tuple[int, int]] = {}
+    raw_line_map: dict[str, list[tuple[int, int, tuple[str, ...]]]] = {}
     if language == Language.C:
+        from func_parser import parse_functions
+
         raw_line_map = _build_c_signature_line_map(target_code, target_filename)
 
-    for signature, fallback_start_line, fallback_end_line, replacement_code in replacements:
-        start_line, end_line = raw_line_map.get(signature, (fallback_start_line, fallback_end_line))
+    for replacement in replacements:
+        if len(replacement) == 5:
+            signature, fallback_start_line, fallback_end_line, replacement_code, guard_context = replacement
+        else:
+            signature, fallback_start_line, fallback_end_line, replacement_code = replacement
+            guard_context = ()
+        start_line, end_line = fallback_start_line, fallback_end_line
+        if language == Language.C and fallback_start_line <= fallback_end_line:
+            candidates = raw_line_map.get(signature, [])
+            exact = [
+                (start, end, guard)
+                for start, end, guard in candidates
+                if start == fallback_start_line and end == fallback_end_line
+            ]
+            if exact:
+                start_line, end_line, _ = exact[0]
+            elif len(candidates) == 1:
+                start_line, end_line, _ = candidates[0]
+            elif candidates and guard_context:
+                guard_matches = [
+                    (start, end, guard)
+                    for start, end, guard in candidates
+                    if guard == guard_context
+                ]
+                if len(guard_matches) == 1:
+                    start_line, end_line, _ = guard_matches[0]
+                else:
+                    near_matches = [
+                        (start, end, guard)
+                        for start, end, guard in candidates
+                        if (
+                            start <= fallback_end_line
+                            and fallback_start_line <= end
+                        )
+                        or abs(start - fallback_start_line) + abs(end - fallback_end_line) <= 6
+                    ]
+                    if len(near_matches) == 1:
+                        start_line, end_line, _ = near_matches[0]
+                        logging.warning(
+                            "⚠️ C函数guard_context未唯一匹配，使用fallback附近唯一候选: signature=%s fallback=%s-%s selected=%s-%s guard=%s",
+                            signature,
+                            fallback_start_line,
+                            fallback_end_line,
+                            start_line,
+                            end_line,
+                            near_matches[0][2],
+                        )
+                    else:
+                        logging.warning(
+                            "❌ C函数替换guard_context无法唯一匹配，跳过: signature=%s guard=%s candidates=%s",
+                            signature,
+                            guard_context,
+                            [(start, end, guard) for start, end, guard in candidates],
+                        )
+                        continue
+            elif candidates:
+                near_matches = [
+                    (start, end, guard)
+                    for start, end, guard in candidates
+                    if (
+                        start <= fallback_end_line
+                        and fallback_start_line <= end
+                    )
+                    or abs(start - fallback_start_line) + abs(end - fallback_end_line) <= 6
+                ]
+                if len(near_matches) == 1:
+                    start_line, end_line, _ = near_matches[0]
+                    logging.warning(
+                        "⚠️ C函数替换存在多个候选，使用fallback附近唯一候选: signature=%s fallback=%s-%s selected=%s-%s guard=%s",
+                        signature,
+                        fallback_start_line,
+                        fallback_end_line,
+                        start_line,
+                        end_line,
+                        near_matches[0][2],
+                    )
+                else:
+                    logging.warning(
+                        "❌ C函数替换存在多个候选且无法靠fallback定位，跳过: signature=%s fallback=%s-%s candidates=%s",
+                        signature,
+                        fallback_start_line,
+                        fallback_end_line,
+                        [(start, end, guard) for start, end, guard in candidates],
+                    )
+                    continue
+            else:
+                target_function = "".join(lines[fallback_start_line - 1:fallback_end_line])
+                replacement_funcs = parse_functions(replacement_code)
+                target_funcs = parse_functions(target_function)
+                replacement_name = replacement_funcs[0].name if len(replacement_funcs) == 1 else None
+                target_name = target_funcs[0].name if len(target_funcs) == 1 else None
+                if replacement_name is None or target_name != replacement_name:
+                    logging.warning(
+                        "❌ C函数替换找不到安全落点，跳过: signature=%s fallback=%s-%s target_name=%s replacement_name=%s",
+                        signature,
+                        fallback_start_line,
+                        fallback_end_line,
+                        target_name,
+                        replacement_name,
+                    )
+                    continue
         resolved_ranges.append((start_line, end_line, replacement_code))
 
     for start_line, end_line, replacement_code in sorted(resolved_ranges, key=lambda x: x[0], reverse=True):
@@ -556,6 +728,13 @@ def patchbp(
     target_project.load_joern_graph(f"{target_dir}/cpg", f"{target_dir}/pdg")
     logging.info(f"  输出: target_project.joern")
 
+    function_anchor_map = build_function_anchor_map(
+        pre_project,
+        post_project,
+        target_project,
+        language,
+    )
+
     if signatures:
         selected_signatures = signatures
     else:
@@ -580,6 +759,7 @@ def patchbp(
                 post_method_code,
                 target_method_code,
                 symbol_compat_hints=symbol_compat_hints,
+                function_anchor_map=function_anchor_map,
             )
             _log_external_migration_result(external_result)
             patchbp.last_failed_signatures = _external_failure_reasons(external_result)
@@ -637,6 +817,7 @@ def patchbp(
                 post_method_code,
                 target_method_code,
                 symbol_compat_hints=symbol_compat_hints,
+                function_anchor_map=function_anchor_map,
             )
             _log_external_migration_result(
                 external_result,
@@ -679,6 +860,7 @@ def patchbp(
             post_method_code,
             patched_code,
             symbol_compat_hints=symbol_compat_hints,
+            function_anchor_map=function_anchor_map,
         )
         patched_code = external_result.code
         _log_external_migration_result(external_result)
@@ -1012,6 +1194,7 @@ def _normalize_patched_formatting(
             apply_repo_clang_format,
             normalize_changed_regions,
             restore_patch_added_blank_lines,
+            restore_target_blank_lines_around_changed_regions,
         )
 
         logging.info("Using changed-region LLM format normalization")
@@ -1027,6 +1210,10 @@ def _normalize_patched_formatting(
                 target_path,
                 target_file_path,
             )
+        normalized = restore_target_blank_lines_around_changed_regions(
+            normalized,
+            target_content,
+        )
         normalized = restore_patch_added_blank_lines(normalized, file_patch)
         return normalized
 
@@ -2220,30 +2407,13 @@ def main_from_repo(
             })
             continue
 
-        if failed_signatures:
-            warning = f"unresolved method signatures: {failed_signatures}"
+        unresolved_issue = _unresolved_method_issue(failed_signatures) if failed_signatures else None
+        if unresolved_issue:
             logging.warning(
-                "文件 %s 存在未覆盖的 Mystique 迁移项，作为 issue 记录: %s",
+                "文件 %s 存在未覆盖的 Mystique 迁移项，将导出已迁移部分并作为 issue 记录: %s",
                 source_path,
                 failed_signatures,
             )
-            results.append({
-                "source_file": source_path,
-                "target_file": target_file_path,
-                "patched_file": None,
-                "language": language.value,
-                "status": "unresolved",
-                "failed_signatures": failed_signatures,
-                "soft_skipped_signatures": soft_skipped_signatures,
-                "reason": warning,
-                "issues": [{
-                    "kind": "unresolved_method",
-                    "reason": warning,
-                    "blocks_patch": False,
-                }],
-                "warning": warning,
-            })
-            continue
 
         # 1. Save raw LLM output (before any formatting)
         patched_code = restore_target_signature_modifiers(
@@ -2353,29 +2523,30 @@ def main_from_repo(
                     "文件 %s 迁移后与目标代码等价，无需导出 diff (need not ported)",
                     source_path,
                 )
-                results.append({
+                result_item = {
                     "source_file": source_path,
                     "target_file": target_file_path,
                     "patched_file": None,
                     "language": language.value,
                     "status": "need_not_ported",
-                })
+                }
+                if failed_signatures:
+                    result_item["failed_signatures"] = failed_signatures
+                    result_item["issues"] = [unresolved_issue]
+                    result_item["warning"] = unresolved_issue["reason"]
+                results.append(result_item)
                 continue
             logging.warning(f"文件 {source_path} 迁移完成，但无法生成 diff")
 
         logging.info(f"文件 {source_path} 迁移完成，结果写入: {result_path}")
-        results.append({
-            "source_file": source_path,
-            "target_file": target_file_path,
-            "patched_file": result_path,
-            "language": language.value,
-            "status": "ported",
-            "soft_skipped_signatures": soft_skipped_signatures,
-            "warning": (
-                f"soft-skipped header signatures: {soft_skipped_signatures}"
-                if soft_skipped_signatures else ""
-            ),
-        })
+        results.append(_ported_file_result(
+            source_path,
+            target_file_path,
+            result_path,
+            language.value,
+            soft_skipped_signatures,
+            failed_signatures,
+        ))
 
     if (
         all_patch_parts

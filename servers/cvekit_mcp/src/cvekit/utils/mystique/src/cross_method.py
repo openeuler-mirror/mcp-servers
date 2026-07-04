@@ -38,6 +38,70 @@ def extract_new_defines(pre_code: str, post_code: str, language: Language) -> li
     return sorted(d.strip() for d in new_defines)
 
 
+def _c_guard_context_for_method(method: Method) -> tuple[str, ...]:
+    if getattr(method, "language", None) != Language.C or not getattr(method.file, "raw_code", None):
+        return ()
+    stack: list[str] = []
+    for line in method.file.raw_code.splitlines()[:max(method.start_line - 1, 0)]:
+        stripped = line.strip()
+        if stripped.startswith(("#if", "#ifdef", "#ifndef")):
+            stack.append(" ".join(stripped.split()))
+        elif stripped.startswith("#elif"):
+            if stack:
+                stack[-1] = f"{stack[-1].split(' -> ', 1)[0]} -> {' '.join(stripped.split())}"
+        elif stripped.startswith("#else"):
+            if stack:
+                stack[-1] = f"{stack[-1].split(' -> ', 1)[0]} -> #else"
+        elif stripped.startswith("#endif"):
+            if stack:
+                stack.pop()
+    return tuple(stack)
+
+
+def _raw_c_method_line_range(method: Method) -> tuple[int, int]:
+    if getattr(method, "language", None) != Language.C or not getattr(method.file, "raw_code", None):
+        return method.start_line, method.end_line
+
+    from func_parser import parse_functions
+
+    raw_code = method.file.raw_code
+    raw_lines = raw_code.splitlines()
+    candidates: list[tuple[float, int, int]] = []
+    for func in parse_functions(raw_code):
+        if func.name != method.name:
+            continue
+        raw_func_code = "\n".join(raw_lines[func.start_line - 1:func.end_line])
+        candidates.append((
+            _method_similarity(method.code, raw_func_code),
+            func.start_line,
+            func.end_line,
+        ))
+
+    if not candidates:
+        return method.start_line, method.end_line
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    if len(candidates) == 1:
+        _, start_line, end_line = candidates[0]
+        return start_line, end_line
+
+    exact_matches = [candidate for candidate in candidates if candidate[0] >= 0.999]
+    if len(exact_matches) == 1:
+        _, start_line, end_line = exact_matches[0]
+        return start_line, end_line
+
+    best_score, start_line, end_line = candidates[0]
+    runner_up = candidates[1][0]
+    if best_score >= 0.80 and best_score - runner_up >= 0.08:
+        return start_line, end_line
+
+    logging.warning(
+        "⚠️ raw C 函数行号候选不唯一，保留现有坐标: signature=%s candidates=%s",
+        method.signature,
+        [(start, end, round(score, 3)) for score, start, end in candidates],
+    )
+    return method.start_line, method.end_line
+
+
 @dataclass
 class MethodPatchArtifacts:
     signature: str
@@ -55,6 +119,8 @@ class MethodPatchArtifacts:
     identifiers: set[str]
     symbol_compat_hints: str = ""
     action: str = "modify"
+    target_signature: str = ""
+    target_guard_context: tuple[str, ...] = ()
 
 
 C_KEYWORDS = {"if", "for", "while", "switch", "return", "sizeof", "case", "do"}
@@ -309,6 +375,7 @@ def _build_added_method_artifact(
         called_names=_extract_called_names(added_code, language),
         identifiers=_extract_identifiers(added_code, language),
         action="add",
+        target_signature=signature,
     )
 
 
@@ -326,6 +393,206 @@ def _method_similarity(lhs: str, rhs: str) -> float:
     if not lhs_norm and not rhs_norm:
         return 1.0
     return difflib.SequenceMatcher(None, lhs_norm, rhs_norm).ratio()
+
+
+_C_TYPE_NOISE_TOKENS = {
+    "static",
+    "inline",
+    "__inline",
+    "__inline__",
+    "extern",
+    "const",
+    "volatile",
+    "register",
+    "restrict",
+    "__restrict",
+    "__restrict__",
+}
+
+
+def _split_c_params(params: str) -> list[str]:
+    result: list[str] = []
+    start = 0
+    depth = 0
+    for idx, ch in enumerate(params):
+        if ch in "([{<":
+            depth += 1
+        elif ch in ")]}>":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            result.append(params[start:idx].strip())
+            start = idx + 1
+    tail = params[start:].strip()
+    if tail:
+        result.append(tail)
+    if result == ["void"]:
+        return []
+    return result
+
+
+def _type_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"\*+|\b[A-Za-z_][A-Za-z0-9_]*\b", text)
+        if token not in _C_TYPE_NOISE_TOKENS
+    }
+
+
+def _drop_c_param_name(param: str) -> str:
+    param = re.sub(r"/\*.*?\*/", " ", param)
+    param = re.sub(r"\[[^\]]*\]", " ", param)
+    match = re.search(r"\b[A-Za-z_][A-Za-z0-9_]*\s*$", param)
+    if not match:
+        return param
+    before = param[:match.start()].rstrip()
+    if not before:
+        return param
+    return before
+
+
+def _c_method_signature_shape(method: Method) -> tuple[set[str], list[set[str]]]:
+    header = method.code.split("{", 1)[0].strip()
+    name_pos = header.rfind(method.name)
+    if name_pos < 0:
+        return set(), []
+    return_tokens = _type_tokens(header[:name_pos])
+    params_start = header.find("(", name_pos + len(method.name))
+    params_end = header.rfind(")")
+    if params_start < 0 or params_end < params_start:
+        return return_tokens, []
+    params = _split_c_params(header[params_start + 1:params_end])
+    param_tokens = [_type_tokens(_drop_c_param_name(param)) for param in params]
+    return return_tokens, param_tokens
+
+
+def _jaccard(left: set[str], right: set[str]) -> float:
+    if not left and not right:
+        return 1.0
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _signature_shape_similarity(source: Method, candidate: Method) -> float:
+    source_ret, source_params = _c_method_signature_shape(source)
+    candidate_ret, candidate_params = _c_method_signature_shape(candidate)
+    if len(source_params) != len(candidate_params):
+        return 0.0
+    param_scores = [
+        _jaccard(source_param, candidate_param)
+        for source_param, candidate_param in zip(source_params, candidate_params)
+    ]
+    params_score = sum(param_scores) / len(param_scores) if param_scores else 1.0
+    return_score = _jaccard(source_ret, candidate_ret)
+    return 0.7 * params_score + 0.3 * return_score
+
+
+def _name_tokens(name: str) -> set[str]:
+    return {
+        token
+        for token in re.split(r"[^A-Za-z0-9]+", name.lower())
+        if len(token) > 1
+    }
+
+
+# 当 pre/post 里有某个被修改函数，但 target 里按原函数名找不到时，
+# 在同一个 target 文件里找一个“高置信的等价/改名函数”。
+def _find_similar_target_method(
+    pre_method: Method,
+    post_method: Method,
+    target_project: Project,
+    language: Language,
+) -> Method | None:
+    if language != Language.C:
+        return None
+
+    candidates: list[tuple[float, float, Method]] = []
+    # 提取标识符、调用函数、函数名 token。
+    source_ids = _extract_identifiers(pre_method.code, language)
+    source_calls = _extract_called_names(pre_method.code, language)
+    source_name_tokens = _name_tokens(post_method.name) or _name_tokens(pre_method.name)
+
+    for file in target_project.files:
+        if file.path != post_method.file.path:
+            continue
+        for candidate in file.methods:
+            if candidate.is_func_decl:
+                continue
+            shape_score = _signature_shape_similarity(post_method, candidate)
+            if shape_score < 0.75:
+                continue
+            body_score = _method_similarity(pre_method.code, candidate.code)
+            name_score = _jaccard(source_name_tokens, _name_tokens(candidate.name))
+            id_score = _jaccard(source_ids, _extract_identifiers(candidate.code, language))
+            call_score = _jaccard(source_calls, _extract_called_names(candidate.code, language))
+            score = (
+                0.50 * body_score
+                + 0.25 * shape_score
+                + 0.15 * name_score
+                + 0.07 * id_score
+                + 0.03 * call_score
+            )
+            candidates.append((score, body_score, candidate))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    best_score, best_body_score, best_method = candidates[0]
+    runner_up_score = candidates[1][0] if len(candidates) > 1 else 0.0
+    if best_score < 0.72 or best_body_score < 0.55:
+        return None
+    if runner_up_score and best_score - runner_up_score < 0.08:
+        logging.warning(
+            "⚠️ Target 方法缺失相似候选不唯一，跳过 remap: %s best=%s %.3f runner_up=%.3f",
+            post_method.signature,
+            best_method.signature,
+            best_score,
+            runner_up_score,
+        )
+        return None
+    logging.info(
+        "🔁 Target 方法缺失，使用相似函数 remap: %s -> %s score=%.3f body=%.3f",
+        post_method.signature,
+        best_method.signature,
+        best_score,
+        best_body_score,
+    )
+    return best_method
+
+
+def build_function_anchor_map(
+    pre_project: Project,
+    post_project: Project,
+    target_project: Project,
+    language: Language,
+) -> dict[str, str]:
+    """Map post-patch function names to renamed target functions for attached comments."""
+    if language != Language.C:
+        return {}
+
+    anchor_map: dict[str, str] = {}
+    for file in post_project.files:
+        for post_method in file.methods:
+            if post_method.is_func_decl:
+                continue
+            pre_method = pre_project.get_method(post_method.signature)
+            if pre_method is None:
+                continue
+            if target_project.get_method(post_method.signature) is not None:
+                continue
+            target_method = _find_similar_target_method(
+                pre_method,
+                post_method,
+                target_project,
+                language,
+            )
+            if target_method is None or target_method.name == post_method.name:
+                continue
+            anchor_map[post_method.name] = target_method.name
+
+    if anchor_map:
+        logging.info("函数前导注释锚点 remap: %s", anchor_map)
+    return anchor_map
 
 
 def _contains_call_to(code: str, func_name: str) -> bool:
@@ -371,12 +638,13 @@ def _build_deleted_method_artifact(
         signature,
         similarity,
     )
+    target_start_line, target_end_line = _raw_c_method_line_range(target_method)
     return MethodPatchArtifacts(
         signature=signature,
         method_dir="",
         file_suffix=target_method.file_suffix,
-        target_start_line=target_method.start_line,
-        target_end_line=target_method.end_line,
+        target_start_line=target_start_line,
+        target_end_line=target_end_line,
         target_method=target_method,
         target_slice_lines=set(),
         patch_code="",
@@ -386,6 +654,8 @@ def _build_deleted_method_artifact(
         called_names=set(),
         identifiers=set(),
         action="delete",
+        target_signature=target_method.signature,
+        target_guard_context=_c_guard_context_for_method(target_method),
     )
 
 
@@ -890,8 +1160,16 @@ def _build_method_artifact(
         if pre_method is not None and post_method is None and target_method is not None:
             logging.info(f" 删除函数，使用删除模式: {signature}")
             return _build_deleted_method_artifact(signature, pre_method, target_method, post_project, language)
-        logging.warning(f"❌ 跳过方法，无法获取 triple methods: {signature}")
-        return None
+        if pre_method is not None and post_method is not None and target_method is None:
+            target_method = _find_similar_target_method(pre_method, post_method, target_project, language)
+            if target_method is not None:
+                triple_methods = (pre_method, post_method, target_method)
+            else:
+                logging.warning(f"❌ 跳过方法，无法获取 triple methods: {signature}")
+                return None
+        else:
+            logging.warning(f"❌ 跳过方法，无法获取 triple methods: {signature}")
+            return None
 
     pre_method, post_method, target_method = triple_methods
     pre_method.counterpart = post_method
@@ -926,16 +1204,19 @@ def _build_method_artifact(
             target_sliced_code_placeholder=target_decl_text,
             called_names=set(),
             identifiers=set(),
+            target_signature=target_method.signature,
+            target_guard_context=_c_guard_context_for_method(target_method),
         )
 
     if pre_method.pdg is None or post_method.pdg is None or target_method.pdg is None:
         logging.warning(f"⚠️ 方法 PDG 缺失，使用 LLM 回退模式: {signature}")
+        target_start_line, target_end_line = _raw_c_method_line_range(target_method)
         return MethodPatchArtifacts(
             signature=signature,
             method_dir="",
             file_suffix=target_method.file_suffix,
-            target_start_line=target_method.start_line,
-            target_end_line=target_method.end_line,
+            target_start_line=target_start_line,
+            target_end_line=target_end_line,
             target_method=target_method,
             target_slice_lines=set(),
             patch_code=_build_fallback_patch(pre_method.code, post_method.code),
@@ -944,6 +1225,8 @@ def _build_method_artifact(
             target_sliced_code_placeholder=target_method.code,
             called_names=_extract_called_names(target_method.code, language),
             identifiers=_extract_identifiers(target_method.code, language),
+            target_signature=target_method.signature,
+            target_guard_context=_c_guard_context_for_method(target_method),
         )
 
     method_dir = Method.init_method_dir(triple_methods, cache_dir)
@@ -988,12 +1271,13 @@ def _build_method_artifact(
     logging.info(f"📋 Target切片带占位符 ({signature}):")
     logging.info(target_sliced_code_placeholder)
 
+    target_start_line, target_end_line = _raw_c_method_line_range(target_method)
     return MethodPatchArtifacts(
         signature=signature,
         method_dir=method_dir,
         file_suffix=target_method.file_suffix,
-        target_start_line=target_method.start_line,
-        target_end_line=target_method.end_line,
+        target_start_line=target_start_line,
+        target_end_line=target_end_line,
         target_method=target_method,
         target_slice_lines=target_slice_lines,
         patch_code=patch_code,
@@ -1002,6 +1286,8 @@ def _build_method_artifact(
         target_sliced_code_placeholder=target_sliced_code_placeholder,
         called_names=_extract_called_names(target_method.code, language),
         identifiers=_extract_identifiers(target_method.code, language),
+        target_signature=target_method.signature,
+        target_guard_context=_c_guard_context_for_method(target_method),
     )
 
 
@@ -1082,15 +1368,12 @@ def solve_cluster_jointly(
             else:
                 final_code = artifact.target_method.recover_placeholder(fixed_code, artifact.target_slice_lines, config.PLACE_HOLDER)
             if final_code is None:
-                # Strip placeholder lines from fixed_code as a last-resort fallback
-                placeholder_text = config.PLACE_HOLDER.strip()
-                stripped_lines = [line for line in fixed_code.splitlines(keepends=True)
-                                  if line.strip() != placeholder_text]
-                final_code = "".join(stripped_lines)
                 logging.warning(
-                    f"⚠️ 签名 {signature} recover_placeholder返回None, "
-                    f"回退为移除占位符后的fixed_code(长度={len(final_code)})"
+                    "⚠️ 签名 %s recover_placeholder返回None，跳过该函数避免生成结构损坏的补丁",
+                    signature,
                 )
+                failed.append(signature)
+                continue
             if artifact.method_dir:
                 utils.write2file(f"{artifact.method_dir}/5.ours{artifact.file_suffix}", final_code)
             solved[signature] = (artifact.target_start_line, artifact.target_end_line, final_code)
@@ -1121,7 +1404,15 @@ def solve_cluster_jointly(
         coalesced_signatures,
     )
 
-    replacements = [(sig, *solved[sig]) for sig in cluster if sig in solved]
+    replacements = [
+        (
+            artifacts_by_signature[sig].target_signature or sig,
+            *solved[sig],
+            artifacts_by_signature[sig].target_guard_context,
+        )
+        for sig in cluster
+        if sig in solved
+    ]
     unresolved = [
         sig for sig in cluster
         if sig not in solved and sig not in coalesced_signatures
