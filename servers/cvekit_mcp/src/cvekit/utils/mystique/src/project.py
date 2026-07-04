@@ -1257,6 +1257,19 @@ class Method:
         print("=" * 80)
         print()
 
+        if self.language == Language.C and not self.is_func_decl:
+            from func_parser import parse_functions
+
+            funcs = parse_functions(result)
+            if len(funcs) != 1 or funcs[0].name != self.name:
+                logging.warning(
+                    "RECOVER_PLACEHOLDER[%s]: 恢复后结构校验失败, funcs=%s expected=%s",
+                    self.name,
+                    [(func.name, func.start_line, func.end_line) for func in funcs],
+                    self.name,
+                )
+                return None
+
         return result
 
     def code_by_exclude_lines(self, lines: set[int], *, placeholder: str | None) -> str:

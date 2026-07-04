@@ -70,6 +70,13 @@ class UnresolvedChange:
     reason: str
 
 
+@dataclass(frozen=True)
+class StructField:
+    name: str
+    type_text: str
+    index: int
+
+
 @dataclass
 class ExternalMigrationResult:
     code: str
@@ -197,11 +204,64 @@ def _declarator_name(node) -> str | None:
     return None
 
 
+def _function_definition_name(node) -> str | None:
+    declarator = node.child_by_field_name("declarator")
+    if declarator is None:
+        return None
+    return _declarator_name(declarator)
+
+
+def _attached_comment_key(code: str, comment_node, root) -> str | None:
+    """如果是紧贴在函数/结构体之前的注释，将该注释与函数/结构体绑定在一起"""
+    siblings = getattr(root, "named_children", [])
+    next_node = None
+    for sibling in siblings:
+        if sibling.start_byte <= comment_node.start_byte:
+            continue
+        next_node = sibling
+        break
+
+    if next_node is None:
+        return None
+
+    if next_node.type == "comment":
+        return None
+
+    gap = code.encode("utf-8")[comment_node.end_byte:next_node.start_byte]
+    if gap.strip():
+        return None
+    if gap.decode("utf-8", errors="replace").count("\n") > 1:
+        return None
+
+    if next_node.type == "function_definition":
+        name = _function_definition_name(next_node)
+        if name:
+            return f"function:{name}"
+
+    if next_node.type == "struct_specifier":
+        name = next_node.child_by_field_name("name")
+        if name is not None:
+            return f"struct:{_node_text(name).strip()}"
+
+    return None
+
+
 def _inside_function(node) -> bool:
     parent = node.parent
     while parent is not None:
         if parent.type == "function_definition":
             return True
+        parent = parent.parent
+    return False
+
+
+def _inside_struct_body(node) -> bool:
+    parent = node.parent
+    while parent is not None:
+        if parent.type == "field_declaration_list":
+            return True
+        if parent.type == "function_definition":
+            return False
         parent = parent.parent
     return False
 
@@ -317,7 +377,8 @@ def extract_external_nodes(code: str, label: str = "") -> list[ExternalNode]:
             )
             continue
         elif node.type == "comment":
-            kind = "comment"
+            if _inside_struct_body(node):
+                continue
             raw = _node_text(node).strip()
             if raw.startswith("//"):
                 content = raw[2:].strip()
@@ -343,7 +404,13 @@ def extract_external_nodes(code: str, label: str = "") -> list[ExternalNode]:
                     content = content.split(" - ", 1)[1]
             else:
                 content = ""
-            key = content if content else None
+            attached_key = _attached_comment_key(code, node, root)
+            if attached_key is not None:
+                kind = "attached_comment"
+                key = f"{attached_key}:{content}" if content else attached_key
+            else:
+                kind = "comment"
+                key = content if content else None
         elif node.type == "expression_statement":
             kind = "macro_call"
             key = _macro_call_identity_key(node)
@@ -395,6 +462,117 @@ def extract_external_nodes(code: str, label: str = "") -> list[ExternalNode]:
 
 def _normalized(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
+def _strip_inline_comments(line: str) -> str:
+    line = re.sub(r"/\*.*?\*/", " ", line)
+    return line.split("//", 1)[0]
+
+
+def _normalize_field_type(type_text: str) -> str:
+    type_text = type_text.replace("*", " * ")
+    return re.sub(r"\s+", " ", type_text).strip()
+
+
+def _extract_simple_struct_fields(struct_text: str) -> dict[str, StructField]:
+    """Extract only simple one-name C struct fields.
+
+    Complex fields are intentionally ignored so coverage checks only fire for
+    high-confidence field swaps like "struct foo *bar;".
+    """
+    body_match = re.search(r"\{(?P<body>.*)\}\s*;?\s*$", struct_text, re.DOTALL)
+    if body_match is None:
+        return {}
+
+    fields: dict[str, StructField] = {}
+    for index, raw_line in enumerate(body_match.group("body").splitlines()):
+        line = _strip_inline_comments(raw_line).strip()
+        if not line or line.startswith("#"):
+            continue
+        if "{" in line or "}" in line or "(" in line or "," in line:
+            continue
+        if not line.endswith(";"):
+            continue
+        line = line[:-1].strip()
+        if not line or ":" in line:
+            continue
+        match = re.match(
+            r"(?P<type>.+?[\s\*])(?P<name>[A-Za-z_]\w*)(?:\s*\[[^\]]*\])*$",
+            line,
+        )
+        if match is None:
+            continue
+        field_type = _normalize_field_type(match.group("type"))
+        if field_type:
+            name = match.group("name")
+            fields[name] = StructField(name=name, type_text=field_type, index=index)
+    return fields
+
+
+def _struct_field_coverage_reason(change: ExternalChange, merged_text: str) -> str | None:
+    if change.action != "modify" or change.pre_node is None or change.post_node is None:
+        return None
+    if change.pre_node.kind != "struct" or change.post_node.kind != "struct":
+        return None
+
+    pre_fields = _extract_simple_struct_fields(change.pre_node.text)
+    post_fields = _extract_simple_struct_fields(change.post_node.text)
+    merged_fields = _extract_simple_struct_fields(merged_text)
+    if not pre_fields or not post_fields or not merged_fields:
+        return None
+
+    added = set(post_fields) - set(pre_fields)
+    deleted = set(pre_fields) - set(post_fields)
+    missing_added = sorted(name for name in added if name not in merged_fields)
+    stale_deleted = sorted(name for name in deleted if name in merged_fields)
+    if not missing_added or not stale_deleted:
+        return None
+
+    return (
+        "high-confidence struct field coverage failed: "
+        f"identity={change.identity}, missing_fields={missing_added}, "
+        f"stale_fields={stale_deleted}"
+    )
+
+
+def _struct_field_migration_checklist(change: ExternalChange, target_node: ExternalNode) -> str:
+    if change.action != "modify" or change.pre_node is None or change.post_node is None:
+        return ""
+    if change.pre_node.kind != "struct" or change.post_node.kind != "struct":
+        return ""
+
+    pre_fields = _extract_simple_struct_fields(change.pre_node.text)
+    post_fields = _extract_simple_struct_fields(change.post_node.text)
+    target_fields = _extract_simple_struct_fields(target_node.text)
+    if not pre_fields or not post_fields or not target_fields:
+        return ""
+
+    added = sorted(set(post_fields) - set(pre_fields), key=lambda name: post_fields[name].index)
+    deleted = sorted(set(pre_fields) - set(post_fields), key=lambda name: pre_fields[name].index)
+    target_only = sorted(set(target_fields) - set(pre_fields), key=lambda name: target_fields[name].index)
+    if not added and not deleted and not target_only:
+        return ""
+
+    lines = [
+        "[STRUCT_FIELD_MIGRATION_CHECKLIST]",
+        "Apply these field-level constraints when merging this struct:",
+    ]
+    if added:
+        lines.append("- MUST include POST-added fields: " + ", ".join(added))
+    if deleted:
+        lines.append("- MUST remove PRE-deleted fields unless TARGET independently changed their meaning: " + ", ".join(deleted))
+    if target_only:
+        lines.append("- Preserve TARGET-only fields unless they conflict with POST: " + ", ".join(target_only))
+    return "\n".join(lines)
+
+
+def _symbol_hints_for_external_node(
+    symbol_compat_hints: str,
+    expected: ExternalNode,
+) -> str:
+    if expected.kind == "struct":
+        return ""
+    return symbol_compat_hints
 
 
 def _detect_changes(pre_code: str, post_code: str) -> tuple[list[ExternalChange], list[ExternalNode]]:
@@ -450,7 +628,7 @@ def _missing_added_coverage(
     for change in changes:
         if change.action != "add" or change.post_node is None:
             continue
-        if change.post_node.kind == "comment":
+        if change.post_node.kind in {"comment", "attached_comment"}:
             continue
         if change.identity not in final_by_id:
             missing.append(change)
@@ -495,13 +673,66 @@ def _inside_any_struct_body(ranges: list[tuple[int, int]], byte_pos: int) -> boo
     return any(start < byte_pos < end for start, end in ranges)
 
 
+def _attached_comment_target(node: ExternalNode) -> tuple[str, str] | None:
+    if node.kind != "attached_comment":
+        return None
+    parts = node.key.split(":", 2)
+    if len(parts) < 2:
+        return None
+    anchor_kind, anchor_name = parts[0], parts[1]
+    if anchor_kind not in {"function", "struct"} or not anchor_name:
+        return None
+    return anchor_kind, anchor_name
+
+
+def _find_attached_comment_position(
+    code: str,
+    node: ExternalNode,
+    function_anchor_map: dict[str, str],
+) -> int | None:
+    """新增 external node 时，如果发现 node kind 是 attached_comment
+    找到锚点超入到位置前"""
+    target = _attached_comment_target(node)
+    if target is None:
+        return None
+
+    anchor_kind, anchor_name = target
+    parser = CParser()
+    root = parser.parse(code)
+
+    if anchor_kind == "function":
+        anchor_name = function_anchor_map.get(anchor_name, anchor_name)
+        for candidate in parser.query_all(root, "(function_definition) @function"):
+            if _function_definition_name(candidate) == anchor_name:
+                return candidate.start_byte
+        return None
+
+    for candidate in parser.query_all(root, "(struct_specifier) @struct"):
+        name = candidate.child_by_field_name("name")
+        if name is not None and _node_text(name).strip() == anchor_name:
+            span = _struct_definition_span(code, candidate)
+            if span is not None:
+                return span[0]
+    return None
+
+
 def _find_add_position(
     code: str,
     post_node: ExternalNode,
     post_nodes: list[ExternalNode],
     target_nodes: list[ExternalNode],
     post_in_struct: bool = False,
+    function_anchor_map: dict[str, str] | None = None,
 ) -> int | None:
+    if post_node.kind == "attached_comment":
+        position = _find_attached_comment_position(
+            code,
+            post_node,
+            function_anchor_map or {},
+        )
+        if position is not None:
+            return position
+
     target_by_id = {node.identity: node for node in target_nodes}
     post_index = post_nodes.index(post_node)
 
@@ -628,6 +859,8 @@ def _resolve_conflict_with_llm(
     post_text = change.post_node.text if change.post_node is not None else "<ABSENT>"
     expected = change.post_node or change.pre_node
     assert expected is not None
+    node_symbol_hints = _symbol_hints_for_external_node(symbol_compat_hints, expected)
+    struct_checklist = _struct_field_migration_checklist(change, target_node)
 
     prompt = f"""\
 You are adapting one file-level C node during a three-way backport.
@@ -647,7 +880,8 @@ Patch action: {change.action}
 [TARGET]
 {target_node.text}
 
-{symbol_compat_hints + "\n" if symbol_compat_hints else ""}
+{struct_checklist + "\n" if struct_checklist else ""}
+{node_symbol_hints + "\n" if node_symbol_hints else ""}
 
 Merge the semantic intent of POST into TARGET while preserving TARGET-only
 adaptations that do not conflict with the patch. This result will be reviewed
@@ -730,6 +964,7 @@ def _resolve_insert_with_llm(
     existing_list = "\n".join(
         f"  - {n.key}" for n in same_kind_nodes
     ) if same_kind_nodes else "  (none)"
+    node_symbol_hints = _symbol_hints_for_external_node(symbol_compat_hints, post_node)
 
     prompt = f"""\
 You are inserting one C-level node into a target file during a kernel backport.
@@ -745,7 +980,7 @@ Node to insert:
 Existing {post_node.kind} nodes in target:
 {existing_list}
 
-{symbol_compat_hints}
+{node_symbol_hints}
 
 Target window (the section of the file where this node should be inserted):
 ```
@@ -804,11 +1039,13 @@ def migrate_external_changes(
     post_code: str,
     target_code: str,
     symbol_compat_hints: str = "",
+    function_anchor_map: dict[str, str] | None = None,
 ) -> ExternalMigrationResult:
     """Migrate supported file-level changes with conservative three-way rules."""
     changes, post_nodes = _detect_changes(pre_code, post_code)
     post_struct_body_ranges = _struct_body_ranges(post_code, post_nodes)
     current = target_code
+    function_anchor_map = function_anchor_map or {}
     applied: list[ExternalChange] = []
     unresolved: list[UnresolvedChange] = []
 
@@ -862,6 +1099,10 @@ def migrate_external_changes(
                 if merged is None:
                     unresolved.append(UnresolvedChange(change, "LLM failed to merge conflicting target node"))
                     continue
+                coverage_reason = _struct_field_coverage_reason(change, merged)
+                if coverage_reason:
+                    unresolved.append(UnresolvedChange(change, coverage_reason))
+                    continue
                 if merged == DELETE_MARKER:
                     current = _replace_bytes(
                         current,
@@ -882,6 +1123,7 @@ def migrate_external_changes(
             position = _find_add_position(
                 current, change.post_node, post_nodes, target_nodes,
                 post_in_struct=_inside_any_struct_body(post_struct_body_ranges, change.post_node.start_byte),
+                function_anchor_map=function_anchor_map,
             )
             if position is None:
                 result = _resolve_insert_with_llm(
@@ -917,6 +1159,7 @@ def migrate_external_changes(
             position = _find_add_position(
                 current, post_node, post_nodes, target_nodes,
                 post_in_struct=_inside_any_struct_body(post_struct_body_ranges, post_node.start_byte),
+                function_anchor_map=function_anchor_map,
             )
             if position is None:
                 result = _resolve_insert_with_llm(
@@ -1013,6 +1256,10 @@ def migrate_external_changes(
             )
             if merged is None:
                 unresolved.append(UnresolvedChange(change, "LLM failed to merge target diverged from pre and post"))
+                continue
+            coverage_reason = _struct_field_coverage_reason(change, merged)
+            if coverage_reason:
+                unresolved.append(UnresolvedChange(change, coverage_reason))
                 continue
             if merged == DELETE_MARKER:
                 current = _replace_bytes(

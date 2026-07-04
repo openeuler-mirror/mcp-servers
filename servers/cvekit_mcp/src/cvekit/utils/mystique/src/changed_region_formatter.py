@@ -502,7 +502,7 @@ def apply_repo_clang_format(
 
 
 def restore_patch_added_blank_lines(patched_code: str, file_patch: str | None) -> str:
-    """Restore only blank lines explicitly added by the upstream patch."""
+    """恢复 upstream patch 显式新增的 + 空行，file_patch + patched_code"""
     if not file_patch:
         return patched_code
 
@@ -551,3 +551,76 @@ def restore_patch_added_blank_lines(patched_code: str, file_patch: str | None) -
     if restored:
         logging.info("Restored %d blank line(s) explicitly added by upstream patch", restored)
     return "\n".join(lines)
+
+
+def restore_target_blank_lines_around_changed_regions(
+    patched_code: str,
+    target_content: str,
+) -> str:
+    """恢复 target 原本就有、但被格式化/LLM 去掉的空行，数据源target_content + patched_code"""
+    target_lines = target_content.split("\n")
+    patched_lines = patched_code.split("\n")
+
+    target_pairs: dict[tuple[str, str], int] = {}
+    duplicate_pairs: set[tuple[str, str]] = set()
+    for index, line in enumerate(target_lines):
+        before_key = _line_match_key(line)
+        if not before_key:
+            continue
+        next_index = index + 1
+        while next_index < len(target_lines) and not target_lines[next_index].strip():
+            next_index += 1
+        if next_index >= len(target_lines):
+            continue
+        blank_count = next_index - index - 1
+        if blank_count <= 0:
+            continue
+        after_key = _line_match_key(target_lines[next_index])
+        if not after_key:
+            continue
+        pair = (before_key, after_key)
+        if pair in target_pairs:
+            duplicate_pairs.add(pair)
+            continue
+        target_pairs[pair] = blank_count
+
+    for pair in duplicate_pairs:
+        target_pairs.pop(pair, None)
+    if not target_pairs:
+        return patched_code
+
+    restored = 0
+    result: list[str] = []
+    index = 0
+    while index < len(patched_lines):
+        line = patched_lines[index]
+        before_key = _line_match_key(line)
+        if not before_key:
+            result.append(line)
+            index += 1
+            continue
+
+        next_index = index + 1
+        while next_index < len(patched_lines) and not patched_lines[next_index].strip():
+            next_index += 1
+        if next_index >= len(patched_lines):
+            result.append(line)
+            index += 1
+            continue
+
+        after_key = _line_match_key(patched_lines[next_index])
+        desired_blank_count = target_pairs.get((before_key, after_key))
+        current_blank_count = next_index - index - 1
+        if desired_blank_count is not None and desired_blank_count > current_blank_count:
+            result.append(line)
+            result.extend([""] * desired_blank_count)
+            restored += desired_blank_count - current_blank_count
+            index = next_index
+            continue
+
+        result.append(line)
+        index += 1
+
+    if restored:
+        logging.info("Restored %d target blank line(s) lost during formatting", restored)
+    return "\n".join(result)

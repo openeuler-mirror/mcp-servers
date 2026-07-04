@@ -94,9 +94,8 @@ class SymbolCompatibilityResult:
         body = "\n\n".join(hint.format_for_prompt() for hint in self.hints)
         return (
             "[TARGET_SYMBOL_COMPATIBILITY_HINTS]\n"
-            "The patch adds symbols that were not found in the target scope.\n\n"
-            "The direct patch may apply cleanly, but it was routed through Mystique because "
-            "the added symbols/includes must be adapted to APIs available in the target branch.\n\n"
+            "The patch references symbols that were not found in the scanned target scope.\n"
+            "These are weak compatibility hints, not required rewrites.\n\n"
             f"{body}\n\n"
             "Use candidates only if they preserve the patch intent and target API contract.\n"
             "Do not mechanically rename symbols."
@@ -620,14 +619,44 @@ def _candidate_reason(missing: str, candidate: SymbolLocation) -> str:
     return " and ".join(reasons)
 
 
-def _rank_candidates(missing: str, locations: list[SymbolLocation], limit: int = 3) -> tuple[SymbolCandidate, ...]:
+def _location_kind_matches(missing_kind: str, location_kind: str) -> bool:
+    kind = location_kind.lower()
+    if missing_kind == "function":
+        return kind in {"f", "p", "function", "prototype"}
+    if missing_kind == "macro":
+        return kind in {"d", "macro", "define"}
+    if missing_kind == "type":
+        return kind in {"s", "t", "e", "u", "struct", "typedef", "enum", "union"}
+    return False
+
+
+def _is_high_confidence_candidate(missing: str, missing_kind: str, candidate: SymbolLocation) -> tuple[bool, float, int]:
+    if not _location_kind_matches(missing_kind, candidate.kind):
+        return False, 0.0, 0
+
+    ratio = difflib.SequenceMatcher(None, missing, candidate.symbol).ratio()
+    prefix = _common_prefix_score(missing, candidate.symbol)
+    missing_head = missing.split("_", 1)[0]
+    candidate_head = candidate.symbol.split("_", 1)[0]
+    same_head = len(missing_head) >= 3 and missing_head == candidate_head
+
+    if missing_kind == "macro":
+        return ratio >= 0.86 and (prefix >= 4 or same_head), ratio, prefix
+    return ratio >= 0.78 and (prefix >= 4 or same_head), ratio, prefix
+
+
+def _rank_candidates(
+    missing: str,
+    missing_kind: str,
+    locations: list[SymbolLocation],
+    limit: int = 3,
+) -> tuple[SymbolCandidate, ...]:
     scored: list[tuple[float, int, SymbolLocation]] = []
     for loc in locations:
         if loc.symbol == missing:
             continue
-        ratio = difflib.SequenceMatcher(None, missing, loc.symbol).ratio()
-        prefix = _common_prefix_score(missing, loc.symbol)
-        if ratio < 0.45 and prefix < 4:
+        high_confidence, ratio, prefix = _is_high_confidence_candidate(missing, missing_kind, loc)
+        if not high_confidence:
             continue
         scored.append((ratio, prefix, loc))
     scored.sort(key=lambda item: (-item[0], -item[1], item[2].path, item[2].symbol))
@@ -669,12 +698,8 @@ def check_patch_symbol_compatibility(
 
     scopes = _select_symbol_scopes(target_repo_path, file_patch, current_file_path)
     if not scopes:
-        return SymbolCompatibilityResult(
-            [
-                SymbolCompatibilityHint(symbol, kind)
-                for symbol, kind in sorted(symbols.items())
-            ]
-        )
+        logging.debug("symbol compatibility skipped: no target scopes for %s", current_file_path)
+        return SymbolCompatibilityResult()
 
     locations = _run_ctags(target_repo_path, scopes)
     by_symbol: dict[str, list[SymbolLocation]] = {}
@@ -686,11 +711,19 @@ def check_patch_symbol_compatibility(
     for symbol, kind in sorted(symbols.items()):
         if symbol in by_symbol:
             continue
+        candidates = _rank_candidates(symbol, kind, all_locations)
+        if not candidates:
+            logging.debug(
+                "symbol compatibility hint suppressed due to no high-confidence candidates: %s (%s)",
+                symbol,
+                kind,
+            )
+            continue
         hints.append(
             SymbolCompatibilityHint(
                 missing_symbol=symbol,
                 kind=kind,
-                candidates=_rank_candidates(symbol, all_locations),
+                candidates=candidates,
             )
         )
     return SymbolCompatibilityResult(hints)
@@ -731,20 +764,12 @@ def check_fast_path_symbol_compatibility(
         return FastPathSymbolCompatibility()
 
     reason = "target symbol compatibility hints found"
-    if _is_added_file_patch(file_patch):
-        logging.warning(
-            "  ⚠️ git apply --check 成功但存在新增符号兼容提示，仅记录 warning: %s",
-            current_file_path or "<unknown>",
-        )
-        logging.info(hint_text)
-        return FastPathSymbolCompatibility(True, hint_text, reason)
-
-    logging.info(
-        "  ❌ git apply --check 成功但新增符号在目标范围内不可用，走 mystique 流程: %s",
+    logging.warning(
+        "  ⚠️ git apply --check 成功但存在新增符号兼容提示，仅记录 warning: %s",
         current_file_path or "<unknown>",
     )
     logging.info(hint_text)
-    return FastPathSymbolCompatibility(False, hint_text, reason)
+    return FastPathSymbolCompatibility(True, hint_text, reason)
 
 
 def resolve_include_text(
