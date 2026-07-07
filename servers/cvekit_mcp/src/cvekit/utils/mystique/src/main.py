@@ -64,6 +64,7 @@ from target_compat_resolver import (
 )
 from project import Project
 from preprocessor_guard import restore_lost_preprocessor_guards
+from replacement_metadata import successful_target_names_from_replacements
 from semantic_sanitizer import repair_broken_string_newlines
 from signature_modifiers import restore_target_signature_modifiers
 from text_config_migration import (
@@ -610,6 +611,8 @@ def patchbp(
 ) -> str:
     patchbp.last_failed_signatures = []
     patchbp.last_soft_skipped_signatures = []
+    patchbp.last_successful_signatures = []
+    patchbp.last_successful_target_names = []
     pre_method_file = _resolve_input_path(pre_method_file)
     post_method_file = _resolve_input_path(post_method_file)
     target_method_file = _resolve_input_path(target_method_file)
@@ -853,6 +856,15 @@ def patchbp(
         os.path.basename(target_method_file),
     )
     logging.info(f"  输出: patched_code={len(patched_code)} chars")
+    successful_signatures = sorted({signature for signature, *_ in replacements})
+    successful_target_names = successful_target_names_from_replacements(
+        replacements,
+        artifacts_by_signature,
+        language,
+    )
+    patchbp.last_successful_signatures = successful_signatures
+    patchbp.last_successful_target_names = sorted(successful_target_names)
+    logging.info("成功迁移 target 函数: %s", patchbp.last_successful_target_names)
 
     if language == Language.C:
         external_result = migrate_external_changes(
@@ -1175,6 +1187,7 @@ def _normalize_patched_formatting(
     target_content: str,
     language: Language,
     file_signatures: list[str] | None = None,
+    successful_target_names: list[str] | None = None,
     target_path: str | None = None,
     target_file_path: str | None = None,
     file_patch: str | None = None,
@@ -1190,32 +1203,18 @@ def _normalize_patched_formatting(
         return patched_code
 
     if config.FORMAT_NORMALIZATION_MODE == "changed_regions":
-        from changed_region_formatter import (
-            apply_repo_clang_format,
-            normalize_changed_regions,
-            restore_patch_added_blank_lines,
-            restore_target_blank_lines_around_changed_regions,
-        )
+        from format_pipeline import normalize_patched_formatting
 
-        logging.info("Using changed-region LLM format normalization")
-        normalized = normalize_changed_regions(
+        return normalize_patched_formatting(
             patched_code,
             target_content,
-            file_signatures,
+            language,
+            file_signatures=file_signatures,
+            successful_target_names=successful_target_names,
+            target_path=target_path,
+            target_file_path=target_file_path,
+            file_patch=file_patch,
         )
-        if target_path and target_file_path:
-            normalized = apply_repo_clang_format(
-                normalized,
-                target_content,
-                target_path,
-                target_file_path,
-            )
-        normalized = restore_target_blank_lines_around_changed_regions(
-            normalized,
-            target_content,
-        )
-        normalized = restore_patch_added_blank_lines(normalized, file_patch)
-        return normalized
 
     logging.info(
         "Starting format normalization: patched=%d chars, target=%d chars",
@@ -2378,6 +2377,7 @@ def main_from_repo(
             )
             failed_signatures = list(getattr(patchbp, "last_failed_signatures", []) or [])
             soft_skipped_signatures = list(getattr(patchbp, "last_soft_skipped_signatures", []) or [])
+            successful_target_names = list(getattr(patchbp, "last_successful_target_names", []) or [])
 
         safe_name = source_path.replace("/", "_").replace(".", "_")
 
@@ -2437,6 +2437,7 @@ def main_from_repo(
             target_content,
             language,
             file_signatures,
+            successful_target_names,
             target_path,
             target_file_path,
             file_patch,
@@ -2460,55 +2461,33 @@ def main_from_repo(
             and config.FORMAT_NORMALIZATION_MODE == "changed_regions"
             and os.path.isfile(checkpatch_path)
         ):
-            from checkpatch_formatter import (
-                parse_code_style_diagnostics,
-                refine_with_checkpatch_feedback,
-                run_checkpatch,
-            )
+            from format_pipeline import refine_with_checkpatch_pipeline
 
-            _, checkpatch_output = run_checkpatch(checkpatch_path, patch_diff)
-            diagnostics = parse_code_style_diagnostics(
-                checkpatch_output, target_file_path
-            )
-            if diagnostics:
-                refined_code = refine_with_checkpatch_feedback(
-                    target_content,
-                    patched_code,
-                    target_file_path,
-                    file_signatures,
-                    diagnostics,
-                )
-                refined_diff = _generate_unified_patch(
+            def generate_refined_patch(refined_code: str) -> str | None:
+                return _generate_unified_patch(
                     target_path,
                     target_ref,
                     target_file_path,
                     refined_code,
                     simplified_target=target_content,
                 )
-                if refined_diff:
-                    _, refined_checkpatch_output = run_checkpatch(
-                        checkpatch_path, refined_diff
-                    )
-                    refined_diagnostics = parse_code_style_diagnostics(
-                        refined_checkpatch_output, target_file_path
-                    )
-                    if len(refined_diagnostics) < len(diagnostics):
-                        logging.info(
-                            "Checkpatch-guided formatting reduced %s issues from %d to %d",
-                            target_file_path,
-                            len(diagnostics),
-                            len(refined_diagnostics),
-                        )
-                        patched_code = refined_code
-                        patch_diff = refined_diff
-                        with open(normalized_path, "w") as f:
-                            f.write(patched_code)
-                    else:
-                        logging.info(
-                            "Checkpatch-guided formatting did not reduce issues for %s; "
-                            "keeping previous formatting",
-                            target_file_path,
-                        )
+
+            refinement = refine_with_checkpatch_pipeline(
+                patched_code,
+                patch_diff,
+                target_content,
+                target_path,
+                target_file_path,
+                file_signatures,
+                successful_target_names,
+                file_patch,
+                generate_refined_patch,
+            )
+            if refinement.changed:
+                patched_code = refinement.code
+                patch_diff = refinement.diff
+                with open(normalized_path, "w") as f:
+                    f.write(patched_code)
         if patch_diff:
             all_patch_parts.append(patch_diff)
             logging.info(f"文件 {source_path} 迁移完成，已生成 diff")
