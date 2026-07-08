@@ -224,6 +224,25 @@ def main():
         default=None,
         help='仅在 backport-batch 下使用：选择回移植引擎；默认读取配置，未配置时使用 portgpt',
     )
+    backport_group.add_argument(
+        '--target-config-layout',
+        choices=['none', 'anolis'],
+        default='',
+        help=(
+            '仅在 backport-batch 下使用：目标仓配置文件布局；'
+            'none 为默认行为（不处理 defconfig），'
+            'anolis 将 openEuler defconfig 改动适配到 anolis/configs 拆分配置'
+        ),
+    )
+    backport_group.add_argument(
+        '--target-config-layout-opts',
+        type=str,
+        default='',
+        help=(
+            '仅在 backport-batch 下使用：目标仓配置布局的额外选项（JSON 格式）；'
+            '例如: \'{"default_level":"L2-OPTIONAL"}\''
+        ),
+    )
     backport_group.add_argument('--patch-dataset-dir', type=str,
                                help='补丁数据集目录 (也可通过PATCH_DATASET_DIR环境变量设置)')
     backport_group.add_argument('--error-message', type=str,

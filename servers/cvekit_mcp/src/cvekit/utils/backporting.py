@@ -16,6 +16,7 @@ import datetime
 import logging
 import os
 import shutil
+import subprocess
 import time
 from types import SimpleNamespace
 
@@ -26,6 +27,7 @@ from .agent.invoke_llm import do_backport, initial_agent
 from .check.usage import get_usage
 from .tools.logger import add_file_handler, logger
 from .tools.project import Project, safe_git_reset_hard
+from cvekit.utils.config_layout import get_registry, ConfigError, TargetConfigLayoutError
 
 
 def _sync_remote_branch_and_rev_parse(
@@ -812,7 +814,61 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
             logger.info(f"原始补丁文件已保存: {original_patch_path}")
         except Exception as e:
             logger.warning(f"从网络获取或保存原始补丁文件失败: {str(e)}")
-    
+
+    # ---- Target Config Layout 适配 ----
+    target_config_layout = config_dict.get("target_config_layout", "none")
+    target_config_layout_opts = config_dict.get("target_config_layout_opts", {})
+    adapt_result = None
+
+    if target_config_layout and target_config_layout != "none":
+        try:
+            registry = get_registry()
+            adapter = registry.resolve(target_config_layout)
+            target_repo_path = (
+                getattr(data, "target_path", "")
+                or config_dict.get("target_path", "")
+            )
+            target_ref = (
+                getattr(data, "target_release", "")
+                or config_dict.get("target_release", "")
+            )
+            if target_repo_path and target_ref and original_patch_content:
+                adapt_result = adapter.adapt(
+                    original_patch_content,
+                    target_repo_path,
+                    target_ref,
+                    **target_config_layout_opts,
+                )
+                if adapt_result.unresolved:
+                    logger.warning(
+                        "[target-config-layout] %d 个配置项无法自动处理: %s",
+                        len(adapt_result.unresolved),
+                        adapt_result.unresolved,
+                    )
+                if adapt_result.config_patches:
+                    logger.info(
+                        "[target-config-layout] 生成了配置 patch（%d bytes）",
+                        len(adapt_result.config_patches),
+                    )
+            else:
+                logger.warning(
+                    "[target-config-layout] 缺少 target_path/release 或 patch，跳过适配"
+                )
+        except TargetConfigLayoutError:
+            raise  # Fail fast for all config/layout errors
+        except Exception as exc:
+            logger.error(
+                "[target-config-layout] adapter failed: %s, falling back to original flow",
+                str(exc),
+            )
+            adapt_result = None
+    # ---- 适配结束 ----
+
+    # 确定传递给 LLM 的有效补丁：如果有适配器，使用剥离 defconfig 后的 filtered_patch
+    effective_source_patch = (
+        adapt_result.filtered_patch if adapt_result is not None else None
+    )
+
     try:
         backport_ok = do_backport(
             agent_executor,
@@ -821,6 +877,7 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
             llm,
             logfile,
             skip_cherry_pick=skip_cherry_pick,
+            source_patch_override=effective_source_patch,
         )
         if not backport_ok:
             raise RuntimeError("backport did not reach successful terminal state")
@@ -841,6 +898,91 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
             project, data, original_patch_content or "", original_patch_path
         )
 
+        # B1: When backported_patch_path is None (pure defconfig commit),
+        # write config_patches to a standalone file.
+        config_patches_dropped = False
+        config_patches_written = False
+        config_patches_already_written = False
+        config_only_path = None
+        if adapt_result and adapt_result.config_patches and not backported_patch_path:
+            import os as _os
+            dataset_dir = getattr(data, "patch_dataset_dir", None) or ""
+            tag = getattr(data, "tag", "") or config_dict.get("tag", "")
+            if dataset_dir and tag:
+                config_only_path = _os.path.join(
+                    dataset_dir, f"config_only_{tag}.patch"
+                )
+                with open(config_only_path, "w", encoding="utf-8") as f:
+                    f.write(adapt_result.config_patches)
+                backported_patch_path = config_only_path
+                config_patches_written = True
+                config_patches_already_written = True
+                logger.info(
+                    "[target-config-layout] config-only patch written: %s",
+                    config_only_path,
+                )
+                # Validate the standalone config patch
+                try:
+                    subprocess.run(
+                        ["git", "-C", str(data.target_path), "apply", "--check",
+                         backported_patch_path],
+                        capture_output=True, text=True, check=True,
+                    )
+                    logger.info(
+                        "[target-config-layout] config-only patch validated: %s",
+                        backported_patch_path,
+                    )
+                except subprocess.CalledProcessError as exc:
+                    logger.warning(
+                        "[target-config-layout] config-only patch validation failed: %s\n%s",
+                        backported_patch_path,
+                        exc.stderr.strip()[:500],
+                    )
+                    config_patches_dropped = True
+            if not config_patches_written:
+                logger.error(
+                    "[target-config-layout] config_patches exist but cannot be written: "
+                    "dataset_dir=%s, tag=%s",
+                    dataset_dir, tag,
+                )
+                config_patches_dropped = True
+
+        elif adapt_result and adapt_result.config_patches and backported_patch_path:
+            try:
+                with open(backported_patch_path, "r", encoding="utf-8") as f:
+                    existing = f.read()
+                if not existing.endswith("\n"):
+                    existing += "\n"
+                merged = existing + adapt_result.config_patches
+                with open(backported_patch_path, "w", encoding="utf-8") as f:
+                    f.write(merged)
+
+                # Validate merged patch
+                try:
+                    subprocess.run(
+                        ["git", "-C", str(data.target_path), "apply", "--check",
+                         backported_patch_path],
+                        capture_output=True, text=True, check=True,
+                    )
+                    logger.info(
+                        "[target-config-layout] config_patches merged and validated: %s",
+                        backported_patch_path,
+                    )
+                except subprocess.CalledProcessError as exc:
+                    logger.warning(
+                        "[target-config-layout] merged patch validation failed, rolling back: %s\n%s",
+                        backported_patch_path,
+                        exc.stderr.strip()[:500],
+                    )
+                    with open(backported_patch_path, "w", encoding="utf-8") as f:
+                        f.write(existing)
+                    # Mark that config_patches were dropped
+                    config_patches_dropped = True
+            except OSError as exc:
+                logger.warning(
+                    "[target-config-layout] merge config_patches failed: %s", exc
+                )
+
         result = {
             "status": "success",
             "logfile": logfile,
@@ -851,6 +993,26 @@ def run_backport_from_config(config_dict: dict, debug_mode: bool = False):
             "empty_patch": empty_patch,
             "equivalent_exists": equivalent_exists,
         }
+        # B2: Warn if config_patches were dropped due to validation failure
+        if config_patches_dropped:
+            if not backported_patch_path or backported_patch_path == config_only_path:
+                # Config-only commit with failed validation -> fail
+                result["status"] = "failed"
+                result["error"] = (
+                    "target_config_layout config_patches validation failed, "
+                    "no valid patch produced"
+                )
+            else:
+                result["target_config_layout_status"] = "dropped"
+                result["target_config_layout_warning"] = (
+                    "config_patches validation failed, split-config changes dropped. "
+                    "Code changes present but config migration incomplete."
+                )
+
+        # target config layout 元数据
+        if adapt_result is not None:
+            result["target_config_layout_unresolved"] = adapt_result.unresolved
+            result["target_config_layout_handled_paths"] = adapt_result.handled_source_paths
         _attach_usage_stats(result, data, before_usage, after_usage)
         logger.info(f"This patch total cost time: {int(end_time - start_time)} Seconds.")
         return result

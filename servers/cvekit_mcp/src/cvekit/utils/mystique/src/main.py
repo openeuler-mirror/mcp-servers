@@ -1981,6 +1981,8 @@ def main_from_repo(
     cve_id: str | None = None,
     skip_cherry_pick: bool = False,
     debug: bool = False,
+    patch_text_override: str | None = None,
+    skip_file_paths: list[str] | None = None,
 ) -> list[dict]:
     run_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     logfile = _init_mystique_env(debug=debug, cve_id=cve_id, timestamp=run_timestamp)
@@ -2013,9 +2015,13 @@ def main_from_repo(
     else:
         result_dir = os.path.abspath(os.path.join(os.getcwd(), "patched_output"))
     os.makedirs(result_dir, exist_ok=True)
-    patch_text, original_patch_path = _save_original_patch(
-        project_dir, result_dir, commit_hash
-    )
+    if patch_text_override is not None:
+        patch_text = patch_text_override
+        original_patch_path = None
+    else:
+        patch_text, original_patch_path = _save_original_patch(
+            project_dir, result_dir, commit_hash
+        )
 
     # ── Fast path: git cherry-pick before the per-file LLM pipeline ──
     if not skip_cherry_pick:
@@ -2094,6 +2100,15 @@ def main_from_repo(
     results = []
     for file_info in changed_files:
         source_path = file_info["new_path"]
+
+        # Skip files already handled by target config layout adapter
+        if skip_file_paths and source_path in skip_file_paths:
+            logging.info(
+                "[target-config-layout] skip already-handled file: %s",
+                source_path,
+            )
+            continue
+
         status = file_info["status"]
         file_strategy = classify_commit_file(source_path)
 
