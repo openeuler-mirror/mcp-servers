@@ -599,6 +599,56 @@ def _contains_call_to(code: str, func_name: str) -> bool:
     return re.search(rf"\b{re.escape(func_name)}\s*\(", code) is not None
 
 
+def _source_method_name_from_signature(signature: str) -> str:
+    return signature.rsplit("#", 1)[-1] if "#" in signature else signature
+
+
+def _target_function_mapping_note(artifact: MethodPatchArtifacts) -> str:
+    source_name = _source_method_name_from_signature(artifact.signature)
+    target_name = getattr(artifact.target_method, "name", "")
+    if not source_name or not target_name or source_name == target_name:
+        return ""
+    return (
+        "[TARGET_FUNCTION_MAPPING]\n"
+        f"Source/post function `{source_name}` corresponds to target function `{target_name}`.\n"
+        f"Migrate the semantic change into the target-side function `{target_name}`.\n"
+        "Your output must be the complete target-side function with the target name and signature, "
+        "not the source/post function name or signature.\n\n"
+    )
+
+
+def _repair_target_side_function_header(
+    fixed_code: str,
+    artifact: MethodPatchArtifacts,
+    language: Language,
+) -> str:
+    if language != Language.C or getattr(artifact.target_method, "is_func_decl", False):
+        return fixed_code
+
+    source_name = _source_method_name_from_signature(artifact.signature)
+    target_name = getattr(artifact.target_method, "name", "")
+    target_code = getattr(artifact.target_method, "code", "")
+    if not source_name or not target_name or source_name == target_name or not target_code:
+        return fixed_code
+
+    try:
+        from func_parser import parse_functions
+
+        funcs = parse_functions(fixed_code)
+    except Exception:
+        funcs = []
+    if len(funcs) != 1 or funcs[0].name != source_name:
+        return fixed_code
+    if "{" not in fixed_code or "{" not in target_code:
+        return fixed_code
+
+    target_header = target_code.split("{", 1)[0].rstrip()
+    fixed_body = fixed_code.split("{", 1)[1]
+    repaired = f"{target_header}\n{{{fixed_body}"
+    logging.info("🔧 异名函数输出头修正: %s -> %s", source_name, target_name)
+    return repaired
+
+
 def _project_contains_call_to(project: Project, func_name: str) -> bool:
     return any(_contains_call_to(file.code, func_name) for file in project.files)
 
@@ -1361,6 +1411,7 @@ def solve_cluster_jointly(
                 logging.warning(f"⚠️ 签名 {signature} 未在LLM结果中找到, llm_result keys={list(llm_result.keys())}")
                 failed.append(signature)
                 continue
+            fixed_code = _repair_target_side_function_header(fixed_code, artifact, language)
             if artifact.method_dir:
                 utils.write2file(f"{artifact.method_dir}/5.ours@sp{artifact.file_suffix}", fixed_code)
             if not artifact.target_slice_lines:
@@ -1656,6 +1707,7 @@ def _build_joint_fix_prompt(
     has_placeholder = any(artifact.target_slice_lines for artifact in artifacts_by_signature.values() if artifact.signature in signatures)
     for signature in signatures:
         artifact = artifacts_by_signature[signature]
+        mapping_note = _target_function_mapping_note(artifact)
         hints_section = (
             f"\n\n{artifact.symbol_compat_hints}\n"
             if artifact.symbol_compat_hints
@@ -1667,6 +1719,7 @@ def _build_joint_fix_prompt(
                     f"## METHOD {signature}\n"
                     f"[PRE_CODE]\n{artifact.pre_sliced_code}\n\n"
                     f"[PATCH]\n{artifact.patch_code}\n\n"
+                    f"{mapping_note}"
                     f"[TARGET_CODE]\n{artifact.target_sliced_code_placeholder}"
                     f"{hints_section}\n"
                 )
@@ -1677,6 +1730,7 @@ def _build_joint_fix_prompt(
                     f"## METHOD {signature}\n"
                     f"[PRE_SLICED]\n{artifact.pre_sliced_code}\n\n"
                     f"[PATCH]\n{artifact.patch_code}\n\n"
+                    f"{mapping_note}"
                     f"[TARGET_WITH_PLACEHOLDER]\n{artifact.target_sliced_code_placeholder}"
                     f"{hints_section}\n"
                 )

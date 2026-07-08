@@ -48,7 +48,7 @@ _CONTROL_KEYWORDS = frozenset({
 # Group "sig": function_name(params...)
 # Group "name": the actual function name
 _FUNC_RE = re.compile(
-    r"^(?P<ret>(?:[\w\*]+\s+)+)"      # return type: word(s) + space(s)
+    r"^(?P<ret>(?:[\w]+\s+)*(?:\*+\s*)?)"  # return type, allowing *name style
     r"(?P<sig>(?P<name>\w+)\s*\([^;]*)",  # func_name( ... )
 )
 

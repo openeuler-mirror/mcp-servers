@@ -1,6 +1,7 @@
 """Preserve target-side preprocessor guards during whole-function replacement."""
 
 from collections import Counter, defaultdict
+import re
 
 
 _PREPROCESSOR_PREFIXES = (
@@ -23,6 +24,15 @@ def _line_key(line: str) -> str:
     if not stripped or _is_preprocessor_guard(line):
         return ""
     return "".join(stripped.split())
+
+
+def _call_names(line: str) -> set[str]:
+    """Return likely function-like call names from a C line."""
+    return {
+        match.group(1)
+        for match in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", line)
+        if match.group(1) not in {"if", "for", "while", "switch", "return", "sizeof"}
+    }
 
 
 def _occurrence_before(target_keys: list[str], index: int, key: str) -> int:
@@ -102,6 +112,15 @@ def restore_lost_preprocessor_guards(target_function: str, replacement_function:
     replacement_lines = replacement_function.splitlines(keepends=True)
 
     target_guard_counts = Counter(line.strip() for line in target_lines if _is_preprocessor_guard(line))
+    if target_guard_counts:
+        replacement_lines = [
+            line
+            for line in replacement_lines
+            if not (
+                _is_preprocessor_guard(line)
+                and line.strip() in target_guard_counts
+            )
+        ]
     replacement_guard_counts = Counter(line.strip() for line in replacement_lines if _is_preprocessor_guard(line))
     missing_guard_counts = target_guard_counts - replacement_guard_counts
     if not missing_guard_counts:
@@ -121,6 +140,12 @@ def restore_lost_preprocessor_guards(target_function: str, replacement_function:
     # Without this check, the guard restoration places the opening and closing
     # guards at unrelated positions, breaking compilation.
     _skip_restore: set[int] = set()
+    _restore_pair_around_replacement: dict[tuple[int, int], tuple[int, int]] = {}
+    replacement_call_names_by_line = [
+        _call_names(line)
+        for line in replacement_lines
+    ]
+    replacement_call_names = set().union(*replacement_call_names_by_line) if replacement_call_names_by_line else set()
     for i, line in enumerate(target_lines):
         stripped = line.strip()
         if not stripped.startswith("#endif"):
@@ -141,11 +166,45 @@ def restore_lost_preprocessor_guards(target_function: str, replacement_function:
             if not _is_preprocessor_guard(target_lines[j])
         )
         if not has_content:
+            guarded_call_names = set().union(*(
+                _call_names(target_lines[j])
+                for j in range(pair_idx + 1, i)
+                if not _is_preprocessor_guard(target_lines[j])
+            ))
+            matching_call_names = guarded_call_names & replacement_call_names
+            matching_repl_lines = [
+                repl_index
+                for repl_index, call_names in enumerate(replacement_call_names_by_line)
+                if call_names & matching_call_names
+            ]
+            has_content = bool(matching_repl_lines)
+            if matching_repl_lines:
+                _restore_pair_around_replacement[(pair_idx, i)] = (
+                    matching_repl_lines[0],
+                    matching_repl_lines[-1],
+                )
+        if not has_content:
+            has_content = any(
+                _call_names(target_lines[j]) & replacement_call_names
+                for j in range(pair_idx + 1, i)
+                if not _is_preprocessor_guard(target_lines[j])
+            )
+        if not has_content:
             _skip_restore.add(pair_idx)
             _skip_restore.add(i)
 
     before: dict[int, list[str]] = defaultdict(list)
     after: dict[int, list[str]] = defaultdict(list)
+
+    for (open_index, close_index), (first_repl, last_repl) in _restore_pair_around_replacement.items():
+        open_guard = target_lines[open_index].strip()
+        close_guard = target_lines[close_index].strip()
+        if missing_guard_counts.get(open_guard, 0) > 0:
+            before[first_repl].append(target_lines[open_index])
+            missing_guard_counts[open_guard] -= 1
+        if missing_guard_counts.get(close_guard, 0) > 0:
+            after[last_repl].append(target_lines[close_index])
+            missing_guard_counts[close_guard] -= 1
 
     for index, line in enumerate(target_lines):
         guard = line.strip()

@@ -17,10 +17,44 @@ from collections.abc import Callable
 import llm
 from ast_parser import ASTParser
 from common import Language
-from func_parser import parse_functions_with_tree_sitter
+from func_parser import parse_functions, parse_functions_with_tree_sitter
 
 
 FormatGenerator = Callable[[str], str | None]
+
+
+def _signature_names(signatures_or_names: list[str] | set[str] | tuple[str, ...] | None) -> set[str]:
+    names: set[str] = set()
+    for item in signatures_or_names or ():
+        names.add(item.rsplit("#", 1)[-1] if "#" in item else item)
+    return names
+
+
+def _allowed_function_ranges(
+    code: str,
+    allowed_function_names: list[str] | set[str] | tuple[str, ...] | None,
+) -> list[tuple[int, int]]:
+    names = _signature_names(allowed_function_names)
+    if not names:
+        return []
+    return [
+        (func.start_line, func.end_line)
+        for func in parse_functions(code)
+        if func.name in names
+    ]
+
+
+def _range_overlaps_any(start: int, end: int, ranges: list[tuple[int, int]]) -> bool:
+    return any(start <= range_end and end >= range_start for range_start, range_end in ranges)
+
+
+def _index_pair_in_any_range(index: int, ranges: list[tuple[int, int]]) -> bool:
+    line_no = index + 1
+    next_line_no = index + 2
+    return any(
+        range_start <= line_no and next_line_no <= range_end
+        for range_start, range_end in ranges
+    )
 
 
 def _restore_equivalent_function_header(
@@ -121,6 +155,12 @@ Format only EDITABLE_CODE so it matches the surrounding TARGET context.
 
 You may change whitespace, indentation, and line breaks only.
 Never change identifiers, literals, comments, operators, braces, or statements.
+Follow Linux kernel C style: use tabs for block indentation, indent every
+statement inside braces one level deeper than its enclosing block, and keep
+continuation lines aligned with the surrounding TARGET code.
+Preserve existing blank lines that separate declarations, checks, loops,
+returns, and logical statement groups unless the TARGET context clearly uses a
+different local style.
 Output only EDITABLE_CODE after formatting. Do not output the context.
 
 === TARGET_CONTEXT_BEFORE (read only) ===
@@ -208,6 +248,12 @@ The read-only region shows the complete control-flow structure between edits.
 Use it to determine indentation, but never change it.
 Preserve every MYSTIQUE marker and output the complete marked code only.
 You may change whitespace and line breaks inside editable regions only.
+Follow Linux kernel C style: use tabs for block indentation, indent every
+statement inside braces one level deeper than its enclosing block, and keep
+continuation lines aligned with the surrounding TARGET code.
+Preserve existing blank lines that separate declarations, checks, loops,
+returns, and logical statement groups unless the TARGET context clearly uses a
+different local style.
 
 === TARGET_CONTEXT_BEFORE (read only) ===
 {chr(10).join(before_context)}
@@ -434,6 +480,7 @@ def apply_repo_clang_format(
     target_content: str,
     repo_path: str,
     target_file_path: str,
+    allowed_function_names: list[str] | set[str] | tuple[str, ...] | None = None,
 ) -> str:
     """Use the target repository's clang-format style on changed lines only."""
     style_path = os.path.join(repo_path, ".clang-format")
@@ -447,12 +494,19 @@ def apply_repo_clang_format(
 
     target_lines = target_content.splitlines()
     patched_lines = patched_code.splitlines()
+    allowed_ranges = _allowed_function_ranges(patched_code, allowed_function_names)
+    if allowed_function_names and not allowed_ranges:
+        logging.info("Skipping local clang-format: no successful migrated function ranges found")
+        return patched_code
+
     matcher = difflib.SequenceMatcher(None, target_lines, patched_lines, autojunk=False)
     ranges: list[tuple[int, int]] = []
     for tag, _, _, pi1, pi2 in matcher.get_opcodes():
         if tag not in {"insert", "replace"} or pi1 == pi2:
             continue
         start, end = pi1 + 1, pi2
+        if allowed_ranges and not _range_overlaps_any(start, end, allowed_ranges):
+            continue
         if ranges and start <= ranges[-1][1] + 1:
             ranges[-1] = (ranges[-1][0], max(ranges[-1][1], end))
         else:
@@ -501,9 +555,18 @@ def apply_repo_clang_format(
     return formatted
 
 
-def restore_patch_added_blank_lines(patched_code: str, file_patch: str | None) -> str:
+def restore_patch_added_blank_lines(
+    patched_code: str,
+    file_patch: str | None,
+    allowed_function_names: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> str:
     """恢复 upstream patch 显式新增的 + 空行，file_patch + patched_code"""
     if not file_patch:
+        return patched_code
+
+    allowed_ranges = _allowed_function_ranges(patched_code, allowed_function_names)
+    if allowed_function_names and not allowed_ranges:
+        logging.info("Skipping upstream blank-line restore: no successful migrated function ranges found")
         return patched_code
 
     patch_lines = file_patch.splitlines()
@@ -542,6 +605,7 @@ def restore_patch_added_blank_lines(patched_code: str, file_patch: str | None) -
             for index in range(len(lines) - 1)
             if _line_match_key(lines[index]) == before_key
             and _line_match_key(lines[index + 1]) == after_key
+            and (not allowed_ranges or _index_pair_in_any_range(index, allowed_ranges))
         ]
         if len(matches) != 1:
             continue
@@ -553,40 +617,52 @@ def restore_patch_added_blank_lines(patched_code: str, file_patch: str | None) -
     return "\n".join(lines)
 
 
-def restore_target_blank_lines_around_changed_regions(
+def _restore_blank_lines_from_reference(
     patched_code: str,
-    target_content: str,
+    reference_code: str,
+    label: str,
+    allowed_function_names: list[str] | set[str] | tuple[str, ...] | None = None,
 ) -> str:
-    """恢复 target 原本就有、但被格式化/LLM 去掉的空行，数据源target_content + patched_code"""
-    target_lines = target_content.split("\n")
+    """Restore blank lines from a reference only when both anchors are unique."""
+    reference_lines = reference_code.split("\n")
     patched_lines = patched_code.split("\n")
+    allowed_ranges = _allowed_function_ranges(patched_code, allowed_function_names)
+    reference_allowed_ranges = _allowed_function_ranges(reference_code, allowed_function_names)
+    if allowed_function_names and not allowed_ranges:
+        logging.info("Skipping %s blank-line restore: no successful migrated function ranges found", label)
+        return patched_code
+    if allowed_function_names and not reference_allowed_ranges:
+        logging.info("Skipping %s blank-line restore: no reference function ranges found", label)
+        return patched_code
 
-    target_pairs: dict[tuple[str, str], int] = {}
+    reference_pairs: dict[tuple[str, str], int] = {}
     duplicate_pairs: set[tuple[str, str]] = set()
-    for index, line in enumerate(target_lines):
+    for index, line in enumerate(reference_lines):
+        if reference_allowed_ranges and not _index_pair_in_any_range(index, reference_allowed_ranges):
+            continue
         before_key = _line_match_key(line)
         if not before_key:
             continue
         next_index = index + 1
-        while next_index < len(target_lines) and not target_lines[next_index].strip():
+        while next_index < len(reference_lines) and not reference_lines[next_index].strip():
             next_index += 1
-        if next_index >= len(target_lines):
+        if next_index >= len(reference_lines):
             continue
         blank_count = next_index - index - 1
         if blank_count <= 0:
             continue
-        after_key = _line_match_key(target_lines[next_index])
+        after_key = _line_match_key(reference_lines[next_index])
         if not after_key:
             continue
         pair = (before_key, after_key)
-        if pair in target_pairs:
+        if pair in reference_pairs:
             duplicate_pairs.add(pair)
             continue
-        target_pairs[pair] = blank_count
+        reference_pairs[pair] = blank_count
 
     for pair in duplicate_pairs:
-        target_pairs.pop(pair, None)
-    if not target_pairs:
+        reference_pairs.pop(pair, None)
+    if not reference_pairs:
         return patched_code
 
     restored = 0
@@ -595,7 +671,7 @@ def restore_target_blank_lines_around_changed_regions(
     while index < len(patched_lines):
         line = patched_lines[index]
         before_key = _line_match_key(line)
-        if not before_key:
+        if not before_key or (allowed_ranges and not _index_pair_in_any_range(index, allowed_ranges)):
             result.append(line)
             index += 1
             continue
@@ -609,7 +685,7 @@ def restore_target_blank_lines_around_changed_regions(
             continue
 
         after_key = _line_match_key(patched_lines[next_index])
-        desired_blank_count = target_pairs.get((before_key, after_key))
+        desired_blank_count = reference_pairs.get((before_key, after_key))
         current_blank_count = next_index - index - 1
         if desired_blank_count is not None and desired_blank_count > current_blank_count:
             result.append(line)
@@ -622,5 +698,35 @@ def restore_target_blank_lines_around_changed_regions(
         index += 1
 
     if restored:
-        logging.info("Restored %d target blank line(s) lost during formatting", restored)
+        logging.info("Restored %d %s blank line(s) lost during formatting", restored, label)
     return "\n".join(result)
+
+
+def restore_reference_blank_lines_around_changed_regions(
+    patched_code: str,
+    reference_code: str,
+    *,
+    label: str = "reference",
+    allowed_function_names: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> str:
+    """恢复某个已格式化参考版本中存在、但后续格式化/LLM 去掉的空行。"""
+    return _restore_blank_lines_from_reference(
+        patched_code,
+        reference_code,
+        label,
+        allowed_function_names,
+    )
+
+
+def restore_target_blank_lines_around_changed_regions(
+    patched_code: str,
+    target_content: str,
+    allowed_function_names: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> str:
+    """恢复 target 原本就有、但被格式化/LLM 去掉的空行，数据源target_content + patched_code"""
+    return _restore_blank_lines_from_reference(
+        patched_code,
+        target_content,
+        "target",
+        allowed_function_names,
+    )
