@@ -22,6 +22,7 @@ from .commit_message_template import (
     build_commit_message_preview,
     normalize_commit_message_source,
 )
+from .config_layout import get_registry, ConfigError, TargetConfigLayoutError
 from .locales import i18n
 from .backport_sort import resolve_sorted_backport_items
 from tabulate import tabulate
@@ -104,6 +105,58 @@ def _resolve_backport_engine(args, item_config: dict, base_config: dict) -> str:
             f"不支持的 backport_engine: {engine!r}，请选择 portgpt 或 mystique"
         )
     return engine
+
+
+def _resolve_target_config_layout(args, item_config: dict, base_config: dict) -> str:
+    """解析 target_config_layout 配置。
+
+    优先级: per-commit > CLI > 顶层 YAML > "none"
+    """
+    layout = (
+        str(item_config.get("target_config_layout") or "").strip().lower()
+        or str(getattr(args, "target_config_layout", "") or "").strip().lower()
+        or str(base_config.get("target_config_layout") or "").strip().lower()
+        or "none"
+    )
+    get_registry().resolve(layout)
+    return layout
+
+
+def _resolve_target_config_layout_opts(
+    args, item_config: dict, base_config: dict
+) -> dict:
+    """解析 target_config_layout_opts 配置。
+
+    CLI 参数为 JSON 字符串；YAML 中为原生 dict。
+    合并策略: per-commit 浅合并到顶层（per-commit 覆盖同名字段）。
+    """
+    import json
+
+    result: dict = {}
+
+    # 顶层 YAML
+    base_opts = base_config.get("target_config_layout_opts")
+    if isinstance(base_opts, dict):
+        result.update(base_opts)
+
+    # CLI（JSON 字符串）
+    cli_raw = str(getattr(args, "target_config_layout_opts", "") or "").strip()
+    if cli_raw:
+        try:
+            cli_opts = json.loads(cli_raw)
+        except json.JSONDecodeError as exc:
+            raise ConfigError(
+                f"--target-config-layout-opts 不是有效的 JSON: {exc}"
+            ) from exc
+        if isinstance(cli_opts, dict):
+            result.update(cli_opts)
+
+    # per-commit（最高优先级）
+    item_opts = item_config.get("target_config_layout_opts")
+    if isinstance(item_opts, dict):
+        result.update(item_opts)
+
+    return result
 
 
 @dataclass
@@ -1932,6 +1985,7 @@ def _append_remaining_pending_items(
     is_report_config,
     base_config,
     default_target_branch,
+    args=None,
 ):
     logger.info(
         "[backport-batch] 追加剩余 pending 项: count=%d, is_report=%s",
@@ -1991,6 +2045,16 @@ def _append_remaining_pending_items(
         }
         if remaining_item_config.get("backport_engine"):
             pending_item["backport_engine"] = remaining_item_config["backport_engine"]
+        pending_item["target_config_layout"] = _resolve_target_config_layout(
+            args,
+            remaining_item_config,
+            base_config,
+        )
+        pending_item["target_config_layout_opts"] = _resolve_target_config_layout_opts(
+            args,
+            remaining_item_config,
+            base_config,
+        )
         report_items.append(pending_item)
 
 
@@ -2384,6 +2448,8 @@ def _build_backport_runtime_config(
         ),
         "commit_message_source": _resolve_commit_message_source(args, item_config, base_config),
         "backport_engine": _resolve_backport_engine(args, item_config, base_config),
+        "target_config_layout": _resolve_target_config_layout(args, item_config, base_config),
+        "target_config_layout_opts": _resolve_target_config_layout_opts(args, item_config, base_config),
         "format_mode": (
             item_config.get("format_mode")
             or base_config.get("format_mode")
@@ -2398,6 +2464,19 @@ def _build_backport_runtime_config(
     if item_config.get("sanitizer") or base_config.get("sanitizer") or args.sanitizer:
         config_dict["sanitizer"] = item_config.get("sanitizer") or base_config.get("sanitizer") or args.sanitizer
     return config_dict
+
+
+def _get_source_patch_content(project_dir: str, commit_id: str) -> str:
+    """通过 git show 获取源 commit 的完整 patch。"""
+    result = subprocess.run(
+        ["git", "-C", project_dir, "show", commit_id],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git show {commit_id} 失败: {result.stderr.strip()}"
+        )
+    return result.stdout
 
 
 def _run_mystique_from_config(config_dict: dict, debug_mode: bool = False) -> dict:
@@ -2416,6 +2495,46 @@ def _run_mystique_from_config(config_dict: dict, debug_mode: bool = False) -> di
     )
     mystique_config.configure_format_normalization(config_dict.get("format_mode"))
 
+    # ---- Target Config Layout 适配 ----
+    target_config_layout = config_dict.get("target_config_layout", "none")
+    target_config_layout_opts = config_dict.get("target_config_layout_opts", {})
+    adapt_result = None
+
+    if target_config_layout and target_config_layout != "none":
+        try:
+            source_patch = _get_source_patch_content(
+                config_dict["project_dir"],
+                config_dict["new_patch"],
+            )
+            registry = get_registry()
+            adapter = registry.resolve(target_config_layout)
+            adapt_result = adapter.adapt(
+                source_patch,
+                config_dict["target_path"],
+                config_dict["target_release"],
+                **target_config_layout_opts,
+            )
+            if adapt_result.unresolved:
+                logger.warning(
+                    "[target-config-layout] %d 个配置项无法自动处理: %s",
+                    len(adapt_result.unresolved),
+                    adapt_result.unresolved,
+                )
+            if adapt_result.config_patches:
+                logger.info(
+                    "[target-config-layout] 生成了配置 patch（%d bytes）",
+                    len(adapt_result.config_patches),
+                )
+        except TargetConfigLayoutError:
+            raise  # Fail fast for all config/layout errors
+        except Exception as exc:
+            logger.error(
+                "[target-config-layout] adapter failed: %s, falling back to original flow",
+                str(exc),
+            )
+            adapt_result = None
+    # ---- 适配结束 ----
+
     start_time = time.time()
     results = mystique_main.main_from_repo(
         project_dir=config_dict["project_dir"],
@@ -2427,6 +2546,12 @@ def _run_mystique_from_config(config_dict: dict, debug_mode: bool = False) -> di
         cve_id=str(config_dict.get("tag") or config_dict["new_patch"]),
         skip_cherry_pick=bool(config_dict.get("skip_cherry_pick", False)),
         debug=debug_mode,
+        patch_text_override=(
+            adapt_result.filtered_patch if adapt_result is not None else None
+        ),
+        skip_file_paths=(
+            adapt_result.handled_source_paths if adapt_result is not None else None
+        ),
     )
     original_patch_path = next(
         (item.get("original_patch_path") for item in results if item.get("original_patch_path")),
@@ -2472,6 +2597,96 @@ def _run_mystique_from_config(config_dict: dict, debug_mode: bool = False) -> di
         return str(item.get("status") or "need_human")
 
     status = "success" if backported_patch_path or empty_patch else "failed"
+
+    # B1: When no backported_patch_path (pure config commit with skipped defconfig),
+    # write config_patches to a standalone file.
+    config_patches_dropped = False
+    config_patches_written = False
+    config_patches_already_written = False
+    config_only_path = None
+    if adapt_result and adapt_result.config_patches and not backported_patch_path:
+        output_dir = config_dict.get("patch_dataset_dir") or ""
+        tag = str(config_dict.get("tag") or config_dict["new_patch"])
+        if output_dir and tag:
+            config_only_path = os.path.join(output_dir, f"config_only_{tag}.patch")
+            with open(config_only_path, "w", encoding="utf-8") as f:
+                f.write(adapt_result.config_patches)
+            backported_patch_path = config_only_path
+            config_patches_written = True
+            config_patches_already_written = True
+            logger.info(
+                "[target-config-layout] config-only patch written: %s",
+                config_only_path,
+            )
+            # Validate the standalone config patch
+            try:
+                subprocess.run(
+                    ["git", "-C", config_dict["target_path"], "apply", "--check",
+                     backported_patch_path],
+                    capture_output=True, text=True, check=True,
+                )
+                logger.info(
+                    "[target-config-layout] config-only patch validated: %s",
+                    backported_patch_path,
+                )
+            except subprocess.CalledProcessError as exc:
+                logger.warning(
+                    "[target-config-layout] config-only patch validation failed: %s\n%s",
+                    backported_patch_path,
+                    exc.stderr.strip()[:500],
+                )
+                config_patches_dropped = True
+
+        if not config_patches_written:
+            logger.error(
+                "[target-config-layout] config_patches exist but cannot be written: "
+                "output_dir=%s, tag=%s",
+                output_dir, tag,
+            )
+            config_patches_dropped = True
+
+        # Status correction: config_patches alone is a valid result
+        if config_patches_written and not config_patches_dropped:
+            status = "success"
+
+    elif adapt_result and adapt_result.config_patches and backported_patch_path:
+
+        # 将适配器生成的 config_patches 合并到回移植补丁文件末尾
+        try:
+            with open(backported_patch_path, "r", encoding="utf-8") as f:
+                existing = f.read()
+            if not existing.endswith("\n"):
+                existing += "\n"
+            merged = existing + adapt_result.config_patches
+            with open(backported_patch_path, "w", encoding="utf-8") as f:
+                f.write(merged)
+
+            # Validate merged patch
+            try:
+                subprocess.run(
+                    ["git", "-C", config_dict["target_path"], "apply", "--check",
+                     backported_patch_path],
+                    capture_output=True, text=True, check=True,
+                )
+                logger.info(
+                    "[target-config-layout] config_patches merged and validated: %s",
+                    backported_patch_path,
+                )
+            except subprocess.CalledProcessError as exc:
+                logger.warning(
+                    "[target-config-layout] merged patch validation failed, rolling back: %s\n%s",
+                    backported_patch_path,
+                    exc.stderr.strip()[:500],
+                )
+                with open(backported_patch_path, "w", encoding="utf-8") as f:
+                    f.write(existing)
+                # Mark that config_patches were dropped
+                config_patches_dropped = True
+        except OSError as exc:
+            logger.warning(
+                "[target-config-layout] merge config_patches failed: %s", exc
+            )
+
     result = {
         "status": status,
         "original_patch_path": original_patch_path,
@@ -2495,6 +2710,27 @@ def _run_mystique_from_config(config_dict: dict, debug_mode: bool = False) -> di
             result["error"] = f"Mystique 遇到需要人工处理的文件: {details}"
         else:
             result["error"] = "Mystique 未生成回移植补丁"
+
+    # B2: Warn if config_patches were dropped due to validation failure
+    if config_patches_dropped:
+        if not backported_patch_path or backported_patch_path == config_only_path:
+            # Config-only commit with failed validation -> fail
+            result["status"] = "failed"
+            result["error"] = (
+                "target_config_layout config_patches validation failed, "
+                "no valid patch produced"
+            )
+        else:
+            result["target_config_layout_status"] = "dropped"
+            result["target_config_layout_warning"] = (
+                "config_patches validation failed, split-config changes dropped. "
+                "Code changes present but config migration incomplete."
+            )
+    # target config layout 元数据
+    if adapt_result is not None:
+        result["target_config_layout_unresolved"] = adapt_result.unresolved
+        result["target_config_layout_handled_paths"] = adapt_result.handled_source_paths
+
     return result
 
 
@@ -2507,6 +2743,23 @@ def _run_selected_backport_engine(config_dict: dict, debug_mode: bool = False) -
     if engine == "mystique":
         return _run_mystique_from_config(config_dict, debug_mode=debug_mode)
     raise ValueError(f"不支持的 backport_engine: {engine!r}")
+
+
+def _patch_contains_defconfig(patch_path: str) -> bool:
+    """检查补丁文件是否包含 defconfig 文件变更。"""
+    if not patch_path or not os.path.exists(patch_path):
+        return False
+    try:
+        with open(patch_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        # 用 diff --git 行匹配，覆盖增/改/删三种操作
+        return bool(re.search(
+            r"^diff --git a/arch/[^/]+/configs/[^/]*defconfig ",
+            content,
+            re.MULTILINE,
+        ))
+    except Exception:
+        return False
 
 
 def _execute_backport_batch_action(
@@ -2707,6 +2960,29 @@ def _execute_backport_batch_action(
                     fixed_commit,
                     target_branch,
                 )
+
+                # 检查 target_config_layout: 如果启用且补丁包含 defconfig 变更，走回移植引擎
+                target_config_layout = config_dict.get("target_config_layout", "none")
+                if target_config_layout != "none" and _patch_contains_defconfig(patch_path):
+                    logger.info(
+                        "[backport-batch] 检测到 defconfig 变更且 target_config_layout=%s，"
+                        "走回移植引擎路径以确保拆分配置适配",
+                        target_config_layout,
+                    )
+                    did_backport = True
+                    backport_engine_result = _run_selected_backport_engine(config_dict, debug_mode=args.debug)
+                    logger.info(
+                        "[backport-batch] 回移植引擎返回: tag=%s, status=%s, empty_patch=%s, "
+                        "equivalent=%s, backported_patch=%s, error=%s",
+                        tag or commit_id,
+                        backport_engine_result.get("status"),
+                        backport_engine_result.get("empty_patch"),
+                        backport_engine_result.get("equivalent_exists"),
+                        backport_engine_result.get("backported_patch_path"),
+                        backport_engine_result.get("error"),
+                    )
+                    return backport_engine_result, did_backport, refreshed_status
+
                 commit_message_source = _infer_original_patch_path(item_config) or patch_path
                 commit_message_preview = _resolve_commit_message_fields(
                     patch_path=commit_message_source,
@@ -2790,6 +3066,29 @@ def _execute_backport_batch_action(
                 "time_cost": 0,
                 "error": "缺少 patch_path，无法应用补丁",
             }, did_backport, refreshed_status
+
+        # 检查 target_config_layout: 如果启用且补丁包含 defconfig 变更，走回移植引擎
+        target_config_layout = config_dict.get("target_config_layout", "none")
+        if target_config_layout != "none" and _patch_contains_defconfig(patch_path):
+            logger.info(
+                "[backport-batch] 检测到 defconfig 变更且 target_config_layout=%s，"
+                "走回移植引擎路径以确保拆分配置适配",
+                target_config_layout,
+            )
+            did_backport = True
+            backport_engine_result = _run_selected_backport_engine(config_dict, debug_mode=args.debug)
+            logger.info(
+                "[backport-batch] 回移植引擎返回: tag=%s, status=%s, empty_patch=%s, "
+                "equivalent=%s, backported_patch=%s, error=%s",
+                tag or commit_id,
+                backport_engine_result.get("status"),
+                backport_engine_result.get("empty_patch"),
+                backport_engine_result.get("equivalent_exists"),
+                backport_engine_result.get("backported_patch_path"),
+                backport_engine_result.get("error"),
+            )
+            return backport_engine_result, did_backport, refreshed_status
+
         commit_message_source = _infer_original_patch_path(item_config) or patch_path
         commit_message_preview = _resolve_commit_message_fields(
             patch_path=commit_message_source,
@@ -2958,6 +3257,12 @@ def _build_backport_batch_report_item(
         "git_describe": git_describe,
         "target_branch": target_branch,
         "backport_engine": _resolve_backport_engine(args, item_config, base_config),
+        "target_config_layout": _resolve_target_config_layout(args, item_config, base_config),
+        "target_config_layout_opts": _resolve_target_config_layout_opts(args, item_config, base_config),
+        "target_config_layout_unresolved": backport_result.get("target_config_layout_unresolved"),
+        "target_config_layout_handled_paths": backport_result.get("target_config_layout_handled_paths"),
+        "target_config_layout_status": backport_result.get("target_config_layout_status"),
+        "target_config_layout_warning": backport_result.get("target_config_layout_warning"),
         "status": backport_result.get("status"),
         "merged_in_target": effective_merged_in_target,
         "merged_check_error": merged_check_error,
@@ -3524,6 +3829,7 @@ def _execute_backport_batch_items(
                 is_report_config=is_report_config,
                 base_config=base_config,
                 default_target_branch=default_target_branch,
+                args=args,
             )
             break
         if (
@@ -3537,6 +3843,7 @@ def _execute_backport_batch_items(
                 is_report_config=is_report_config,
                 base_config=base_config,
                 default_target_branch=default_target_branch,
+                args=args,
             )
             break
         if processed.get("did_backport"):
@@ -3547,6 +3854,7 @@ def _execute_backport_batch_items(
                 is_report_config=is_report_config,
                 base_config=base_config,
                 default_target_branch=default_target_branch,
+                args=args,
             )
             break
     logger.info(

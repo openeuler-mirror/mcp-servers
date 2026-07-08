@@ -1,3 +1,4 @@
+import json
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -14,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from cvekit.utils import backport_batch
 from cvekit.utils import commit_message_template
+from cvekit.utils.config_layout import ConfigError
 
 
 def _write_test_patch(path: Path, subject: str) -> None:
@@ -776,6 +778,8 @@ def test_append_remaining_pending_items_preserves_report_fields_in_report_mode()
             "patch_path": "/tmp/original.patch",
             "error": None,
             "backport_engine": "mystique",
+            "target_config_layout": "none",
+            "target_config_layout_opts": {},
         }
     ]
 
@@ -925,3 +929,169 @@ def test_write_backport_batch_report_overwrites_report_config_in_place(tmp_path)
     backport_batch._write_backport_batch_report(str(config_path), True, report)
 
     assert yaml.safe_load(config_path.read_text(encoding="utf-8")) == report
+
+
+class TestResolveTargetConfigLayout:
+    def test_priority_per_commit_over_cli(self):
+        args = SimpleNamespace(target_config_layout="anolis")
+        item = {"target_config_layout": "none"}
+        base = {}
+        result = backport_batch._resolve_target_config_layout(args, item, base)
+        assert result == "none"
+
+    def test_priority_cli_over_yaml(self):
+        args = SimpleNamespace(target_config_layout="anolis")
+        item = {}
+        base = {"target_config_layout": "none"}
+        result = backport_batch._resolve_target_config_layout(args, item, base)
+        assert result == "anolis"
+
+    def test_priority_yaml_over_default(self):
+        args = SimpleNamespace(target_config_layout="")
+        item = {}
+        base = {"target_config_layout": "anolis"}
+        result = backport_batch._resolve_target_config_layout(args, item, base)
+        assert result == "anolis"
+
+    def test_default_is_none(self):
+        args = SimpleNamespace(target_config_layout="")
+        item = {}
+        base = {}
+        result = backport_batch._resolve_target_config_layout(args, item, base)
+        assert result == "none"
+
+    def test_rejects_unknown_value(self):
+        args = SimpleNamespace(target_config_layout="unknown")
+        with pytest.raises(ConfigError, match="未知的 target_config_layout"):
+            backport_batch._resolve_target_config_layout(args, {}, {})
+
+    def test_case_insensitive_normalization(self):
+        args = SimpleNamespace(target_config_layout="ANOLIS")
+        result = backport_batch._resolve_target_config_layout(args, {}, {})
+        assert result == "anolis"
+
+
+class TestResolveTargetConfigLayoutOpts:
+    def test_parses_cli_json(self):
+        args = SimpleNamespace(
+            target_config_layout_opts='{"default_level":"L2-OPTIONAL"}'
+        )
+        result = backport_batch._resolve_target_config_layout_opts(args, {}, {})
+        assert result == {"default_level": "L2-OPTIONAL"}
+
+    def test_merges_per_commit_over_base(self):
+        args = SimpleNamespace(target_config_layout_opts="")
+        item = {"target_config_layout_opts": {"default_level": "L0-MANDATORY"}}
+        base = {"target_config_layout_opts": {"default_level": "L1-RECOMMEND"}}
+        result = backport_batch._resolve_target_config_layout_opts(args, item, base)
+        assert result == {"default_level": "L0-MANDATORY"}
+
+    def test_empty_when_no_config(self):
+        args = SimpleNamespace(target_config_layout_opts="")
+        result = backport_batch._resolve_target_config_layout_opts(args, {}, {})
+        assert result == {}
+
+    def test_invalid_json_raises(self):
+        args = SimpleNamespace(target_config_layout_opts="{bad json}")
+        with pytest.raises(ConfigError, match="JSON"):
+            backport_batch._resolve_target_config_layout_opts(args, {}, {})
+
+
+class TestTargetConfigLayoutPropagation:
+    def test_layout_in_runtime_config(self):
+        """验证 target_config_layout 出现在运行时配置字典中。"""
+        args = SimpleNamespace(
+            target_config_layout="anolis",
+            target_config_layout_opts='{"default_level":"L2-OPTIONAL"}',
+            api_key="test-key",
+            patch_dataset_dir="/tmp/test",
+            commit_message_source="",
+            commit_message_template="",
+            backport_engine="",
+            signer_name="",
+            signer_email="",
+            linux_repo_path="",
+            llm_provider="",
+            error_message="",
+            sanitizer="",
+        )
+        item_config = {"commit_id": "abc123"}
+        base_config = {
+            "project": "linux",
+            "project_dir": "/tmp/test_project",
+            "target_path": "/tmp/test_target",
+            "project_url": "https://example.com",
+        }
+        runtime = backport_batch._build_backport_runtime_config(
+            item_config=item_config,
+            base_config=base_config,
+            base_project_dir="/tmp/test_project",
+            base_target_path="/tmp/test_target",
+            fixed_commit="abc123",
+            target_branch="devel-6.6",
+            tag="test-tag",
+            commit_id="abc123",
+            args=args,
+        )
+        assert runtime["target_config_layout"] == "anolis"
+        assert runtime["target_config_layout_opts"] == {"default_level": "L2-OPTIONAL"}
+
+
+class TestPatchContainsDefconfig:
+    def test_modify_defconfig(self, tmp_path):
+        """修改 defconfig 的 patch 应返回 True。"""
+        patch = tmp_path / "modify.patch"
+        patch.write_text(
+            "\n".join([
+                "diff --git a/arch/arm64/configs/defconfig b/arch/arm64/configs/defconfig",
+                "index abc..def 100644",
+                "--- a/arch/arm64/configs/defconfig",
+                "+++ b/arch/arm64/configs/defconfig",
+                "@@ -1 +1,2 @@",
+                " CONFIG_BASE=y",
+                "+CONFIG_FOO=y",
+            ]),
+            encoding="utf-8",
+        )
+        assert backport_batch._patch_contains_defconfig(str(patch)) is True
+
+    def test_delete_defconfig(self, tmp_path):
+        """删除 defconfig 的 patch 应返回 True。"""
+        patch = tmp_path / "delete.patch"
+        patch.write_text(
+            "\n".join([
+                "diff --git a/arch/x86/configs/i386_defconfig b/arch/x86/configs/i386_defconfig",
+                "deleted file mode 100644",
+                "--- a/arch/x86/configs/i386_defconfig",
+                "+++ /dev/null",
+                "@@ -1,1 +0,0 @@",
+                "-CONFIG_BASE=y",
+            ]),
+            encoding="utf-8",
+        )
+        assert backport_batch._patch_contains_defconfig(str(patch)) is True
+
+    def test_no_defconfig(self, tmp_path):
+        """不含 defconfig 的 patch 应返回 False。"""
+        patch = tmp_path / "code.patch"
+        patch.write_text(
+            "\n".join([
+                "diff --git a/kernel/sched/core.c b/kernel/sched/core.c",
+                "index 111..222 100644",
+                "--- a/kernel/sched/core.c",
+                "+++ b/kernel/sched/core.c",
+                "@@ -1 +1,2 @@",
+                " old",
+                "+new",
+            ]),
+            encoding="utf-8",
+        )
+        assert backport_batch._patch_contains_defconfig(str(patch)) is False
+
+    def test_missing_file(self):
+        """不存在的文件应返回 False。"""
+        assert backport_batch._patch_contains_defconfig("/nonexistent/patch.patch") is False
+
+    def test_empty_path(self):
+        """空路径应返回 False。"""
+        assert backport_batch._patch_contains_defconfig("") is False

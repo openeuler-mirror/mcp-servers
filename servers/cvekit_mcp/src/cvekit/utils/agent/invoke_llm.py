@@ -545,10 +545,11 @@ def do_backport(
     llm: ChatOpenAI,
     logfile: str,
     skip_cherry_pick: bool = False,
+    source_patch_override: str | None = None,
 ):
     logger.debug("[do_backport] 开始执行补丁回移植")
     log_handler = FileCallbackHandler(logfile)
-    patch = project._get_patch(data.new_patch)
+    patch = source_patch_override if source_patch_override is not None else project._get_patch(data.new_patch)
 
     cherry_pick_ok = False
     cherry_pick_patch = None
