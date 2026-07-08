@@ -8,6 +8,8 @@ from typing import Any
 
 import git
 
+from . import git_subject_index_cache
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_COMMIT_SORT = "describe"
@@ -32,11 +34,24 @@ def sort_commit_items(
     upstream_ref: str = "master",
     commit_sort: str | None = None,
     upstream_repo_path: str | None = None,
+    use_disk_subject_index_cache: bool = True,
 ):
     mode = normalize_commit_sort(commit_sort)
     if mode == "describe":
-        return sort_commit_items_by_describe(commit_items, project_dir, upstream_ref, upstream_repo_path)
-    return sort_commit_items_by_gitlog(commit_items, project_dir, upstream_ref, upstream_repo_path)
+        return sort_commit_items_by_describe(
+            commit_items,
+            project_dir,
+            upstream_ref,
+            upstream_repo_path,
+            use_disk_subject_index_cache=use_disk_subject_index_cache,
+        )
+    return sort_commit_items_by_gitlog(
+        commit_items,
+        project_dir,
+        upstream_ref,
+        upstream_repo_path,
+        use_disk_subject_index_cache=use_disk_subject_index_cache,
+    )
 
 
 def resolve_commit_sort(config_sort: str | None = None, cli_sort: str | None = None) -> str:
@@ -69,6 +84,7 @@ def resolve_sorted_backport_items(
         base_config.get("source_branch") or "master",
         commit_sort,
         None,
+        use_disk_subject_index_cache=not bool(getattr(args, "no_cache", False)),
     )
     logger.info(
         "[backport-batch] 排序完成: mode=%s, ok=%d, errors=%d",
@@ -113,7 +129,65 @@ def _looks_like_commit_sha(value: str) -> bool:
     return all(ch in "0123456789abcdef" for ch in candidate)
 
 
-def _build_commit_subject_index(repo: git.Repo, source_ref: str):
+def _build_commit_subject_index(
+    repo: git.Repo,
+    source_ref: str,
+    subject_allowlist: set[str] | frozenset[str] | None = None,
+    use_disk_subject_index_cache: bool = True,
+):
+    allowlist = frozenset(
+        title.strip()
+        for title in (subject_allowlist or set())
+        if str(title or "").strip()
+    )
+    repo_path = repo.working_tree_dir or repo.working_dir
+    if allowlist and use_disk_subject_index_cache and repo_path:
+        try:
+            source_ref_sha = repo.commit(source_ref).hexsha
+            ensure_status = git_subject_index_cache.ensure_subject_index(
+                repo_path=repo_path,
+                ref_name=source_ref,
+                ref_sha=source_ref_sha,
+                index_kind=git_subject_index_cache.INDEX_KIND_SOURCE_SUBJECT_NO_MERGES,
+                no_merges=True,
+            )
+            disk_matches = git_subject_index_cache.load_subject_matches(
+                repo_path=repo_path,
+                ref_name=source_ref,
+                ref_sha=source_ref_sha,
+                subjects=allowlist,
+                index_kind=git_subject_index_cache.INDEX_KIND_SOURCE_SUBJECT_NO_MERGES,
+            )
+            if ensure_status in {"built", "incremental"}:
+                logger.info(
+                    "[backport-batch] source subject disk cache %s repo=%s ref=%s sha=%s subjects=%d matched=%d",
+                    ensure_status,
+                    repo_path,
+                    source_ref,
+                    source_ref_sha,
+                    len(allowlist),
+                    sum(1 for commits in (disk_matches or {}).values() if commits),
+                )
+            else:
+                logger.info(
+                    "[backport-batch] source subject disk cache hit repo=%s ref=%s sha=%s subjects=%d matched=%d",
+                    repo_path,
+                    source_ref,
+                    source_ref_sha,
+                    len(allowlist),
+                    sum(1 for commits in disk_matches.values() if commits),
+                )
+            if disk_matches is not None:
+                rows = [
+                    (commit_id, subject, subject.lower())
+                    for subject, commit_ids in disk_matches.items()
+                    for commit_id in commit_ids
+                ]
+                if rows:
+                    return rows, None
+        except Exception as exc:
+            logger.warning("[backport-batch] source subject disk cache unavailable: %s", exc)
+
     try:
         log_output = repo.git.log(source_ref, "--no-merges", "--format=%H%x00%s")
     except Exception as exc:
@@ -128,12 +202,23 @@ def _build_commit_subject_index(repo: git.Repo, source_ref: str):
     return index, None
 
 
-def _resolve_commit_id_by_title(repo: git.Repo, commit_title: str, commit_index=None):
+def _resolve_commit_id_by_title(
+    repo: git.Repo,
+    commit_title: str,
+    commit_index=None,
+    source_ref: str = "master",
+    use_disk_subject_index_cache: bool = True,
+):
     normalized_title = _normalize_commit_title(commit_title)
     if not normalized_title:
         return None, "commit title 为空，无法解析"
     if commit_index is None:
-        commit_index, index_error = _build_commit_subject_index(repo)
+        commit_index, index_error = _build_commit_subject_index(
+            repo,
+            source_ref,
+            {normalized_title},
+            use_disk_subject_index_cache=use_disk_subject_index_cache,
+        )
         if index_error:
             return None, index_error
     matches = [sha for sha, subject, _ in commit_index if subject == normalized_title]
@@ -161,11 +246,20 @@ def _parse_commit_items(
     project_dir: str,
     upstream_ref: str = "master",
     upstream_repo_path: str | None = None,
+    use_disk_subject_index_cache: bool = True,
 ):
     if not project_dir or not os.path.isdir(project_dir):
         raise ValueError("backport-batch 需要提供有效的 project_dir 以按 commit 排序")
     repo = git.Repo(project_dir)
     commit_index = None
+    title_allowlist = set()
+    for item in commit_items:
+        commit_id, commit_title, _ = _extract_commit_item(item)
+        normalized_title = _normalize_commit_title(commit_title)
+        if commit_id and not normalized_title and not _looks_like_commit_sha(commit_id):
+            normalized_title = _normalize_commit_title(commit_id)
+        if normalized_title:
+            title_allowlist.add(normalized_title)
 
     parsed_items = []
     errors = []
@@ -188,10 +282,40 @@ def _parse_commit_items(
             commit_error = None
             if normalized_title:
                 if commit_index is None:
-                    commit_index, index_error = _build_commit_subject_index(repo, upstream_ref)
+                    commit_index, index_error = _build_commit_subject_index(
+                        repo,
+                        upstream_ref,
+                        title_allowlist,
+                        use_disk_subject_index_cache=use_disk_subject_index_cache,
+                    )
                     if index_error:
                         raise ValueError(index_error)
-                resolved_sha, _ = _resolve_commit_id_by_title(repo, normalized_title, commit_index)
+                resolved_sha, _ = _resolve_commit_id_by_title(
+                    repo,
+                    normalized_title,
+                    commit_index,
+                    source_ref=upstream_ref,
+                    use_disk_subject_index_cache=use_disk_subject_index_cache,
+                )
+                if not resolved_sha:
+                    # SQLite 快路径只查当前 allowlist 的精确 subject；如果没命中，
+                    # 回退旧的全量 git log 逻辑，保留大小写/包含匹配兜底行为。
+                    fallback_index, fallback_error = _build_commit_subject_index(
+                        repo,
+                        upstream_ref,
+                        use_disk_subject_index_cache=False,
+                    )
+                    if fallback_error:
+                        raise ValueError(fallback_error)
+                    resolved_sha, _ = _resolve_commit_id_by_title(
+                        repo,
+                        normalized_title,
+                        fallback_index,
+                        source_ref=upstream_ref,
+                        use_disk_subject_index_cache=False,
+                    )
+                    if resolved_sha:
+                        commit_index = fallback_index
                 if resolved_sha:
                     commit_obj = repo.commit(resolved_sha)
                     commit_id = commit_obj.hexsha
@@ -292,8 +416,15 @@ def sort_commit_items_by_describe(
     project_dir: str,
     upstream_ref: str = "master",
     upstream_repo_path: str | None = None,
+    use_disk_subject_index_cache: bool = True,
 ):
-    repo, parsed_items, errors = _parse_commit_items(commit_items, project_dir, upstream_ref, upstream_repo_path)
+    repo, parsed_items, errors = _parse_commit_items(
+        commit_items,
+        project_dir,
+        upstream_ref,
+        upstream_repo_path,
+        use_disk_subject_index_cache=use_disk_subject_index_cache,
+    )
     if not parsed_items:
         return [], errors
 
@@ -334,6 +465,7 @@ def sort_commit_items_by_gitlog(
     project_dir: str,
     upstream_ref: str = "master",
     upstream_repo_path: str | None = None,
+    use_disk_subject_index_cache: bool = True,
 ):
     """
     根据 commit 在 git log 中的位置进行排序（两阶段优化版本）
@@ -343,7 +475,13 @@ def sort_commit_items_by_gitlog(
       2. committed_datetime（次键）：时间戳不同时的排序依据
       3. 原始输入顺序（三键）：保证排序稳定性
     """
-    _, parsed_items, errors = _parse_commit_items(commit_items, project_dir, upstream_ref, upstream_repo_path)
+    _, parsed_items, errors = _parse_commit_items(
+        commit_items,
+        project_dir,
+        upstream_ref,
+        upstream_repo_path,
+        use_disk_subject_index_cache=use_disk_subject_index_cache,
+    )
     if not parsed_items:
         return [], errors
 

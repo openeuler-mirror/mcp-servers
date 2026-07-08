@@ -23,6 +23,7 @@ from .commit_message_template import (
     normalize_commit_message_source,
 )
 from .config_layout import get_registry, ConfigError, TargetConfigLayoutError
+from . import git_subject_index_cache
 from .locales import i18n
 from .backport_sort import resolve_sorted_backport_items
 from tabulate import tabulate
@@ -173,6 +174,8 @@ class BackportBatchContext:
     filtered_subject_index_cache: FilteredSubjectIndexCache
     target_title_allowlist: frozenset[str]
     target_title_index_cache: FilteredTitleIndexCache
+    target_title_index_ref_branch: str
+    target_title_index_ref_sha: str
     prepared_patch_batch_token: str
 
 
@@ -378,6 +381,8 @@ def handle_backport_batch(args):
         filtered_subject_index_cache=context.filtered_subject_index_cache,
         target_title_allowlist=context.target_title_allowlist,
         target_title_index_cache=context.target_title_index_cache,
+        target_title_index_ref_branch=context.target_title_index_ref_branch,
+        target_title_index_ref_sha=context.target_title_index_ref_sha,
         prepared_patch_batch_token=context.prepared_patch_batch_token,
         args=args,
     )
@@ -453,6 +458,7 @@ def _build_commit_message_report_fields(
             commit_message_source=_resolve_commit_message_source(args, item_config, base_config),
             subject_allowlist=linux_subject_allowlist,
             filtered_subject_index_cache=filtered_subject_index_cache,
+            use_disk_subject_index_cache=not bool(getattr(args, "no_cache", False)),
         )
         result["_profile"] = profile
         result["_profile"].setdefault("linux_grep_seconds", 0.0)
@@ -1437,6 +1443,8 @@ def _filtered_commit_title_index_in_target(
     target_branch: str,
     title_allowlist: set[str] | frozenset[str] | None,
     cache: FilteredTitleIndexCache | None = None,
+    use_disk_subject_index_cache: bool = True,
+    index_ref_sha: str | None = None,
 ) -> dict[str, tuple[tuple[str, str, str], ...]]:
     allowlist = frozenset(
         title.strip()
@@ -1446,7 +1454,7 @@ def _filtered_commit_title_index_in_target(
     if not allowlist:
         return {}
 
-    branch_sha = target_repo.commit(target_branch).hexsha
+    branch_sha = str(index_ref_sha or "").strip() or target_repo.commit(target_branch).hexsha
     cache_key = (
         os.path.abspath(target_repo.working_tree_dir or target_repo.working_dir or ""),
         branch_sha,
@@ -1457,6 +1465,73 @@ def _filtered_commit_title_index_in_target(
 
     started_at = time.perf_counter()
     normalized_allowlist = {_normalize_commit_title_text(title): title for title in allowlist}
+    query_subjects = set(allowlist)
+    for title in allowlist:
+        query_subjects.add(f'Revert "{title}"')
+        query_subjects.add(f'Revert: "{title}"')
+
+    if use_disk_subject_index_cache:
+        try:
+            ensure_status = git_subject_index_cache.ensure_subject_index(
+                repo_path=target_repo.working_tree_dir or target_repo.working_dir,
+                ref_name=target_branch,
+                ref_sha=branch_sha,
+                index_kind=git_subject_index_cache.INDEX_KIND_TARGET_SUBJECT,
+            )
+            disk_matches = git_subject_index_cache.load_subject_matches(
+                repo_path=target_repo.working_tree_dir or target_repo.working_dir,
+                ref_name=target_branch,
+                ref_sha=branch_sha,
+                subjects=query_subjects,
+                index_kind=git_subject_index_cache.INDEX_KIND_TARGET_SUBJECT,
+            )
+            if ensure_status in {"built", "incremental"}:
+                disk_elapsed = time.perf_counter() - started_at
+                if cache is not None:
+                    cache.pending_build_seconds += disk_elapsed
+                logger.info(
+                    "[backport-batch] target subject disk cache %s repo=%s branch=%s branch_sha=%s titles=%d elapsed=%s",
+                    ensure_status,
+                    target_repo.working_tree_dir or target_repo.working_dir,
+                    target_branch,
+                    branch_sha,
+                    len(allowlist),
+                    _format_profile_seconds(disk_elapsed),
+                )
+            else:
+                logger.info(
+                    "[backport-batch] target subject disk cache hit repo=%s branch=%s branch_sha=%s titles=%d",
+                    target_repo.working_tree_dir or target_repo.working_dir,
+                    target_branch,
+                    branch_sha,
+                    len(allowlist),
+                )
+            if disk_matches is not None:
+                matches: dict[str, list[tuple[str, str, str]]] = {}
+                for subject, commit_ids in disk_matches.items():
+                    if subject in allowlist:
+                        for commit_id in commit_ids:
+                            matches.setdefault(subject, []).append(("match", commit_id, subject))
+                        continue
+                    reverted_title = _reverted_commit_title_from_subject(subject)
+                    if not reverted_title:
+                        continue
+                    matched_title = normalized_allowlist.get(_normalize_commit_title_text(reverted_title))
+                    if not matched_title:
+                        continue
+                    for commit_id in commit_ids:
+                        matches.setdefault(matched_title, []).append(("revert", commit_id, subject))
+                finalized = {
+                    subject: tuple(events)
+                    for subject, events in matches.items()
+                }
+                if cache is not None:
+                    cache.key = cache_key
+                    cache.value = finalized
+                return finalized
+        except Exception as exc:
+            logger.warning("[backport-batch] target subject disk cache unavailable: %s", exc)
+
     matches: dict[str, list[tuple[str, str, str]]] = {}
     try:
         with subprocess.Popen(
@@ -1465,7 +1540,7 @@ def _filtered_commit_title_index_in_target(
                 "-C",
                 target_repo.working_tree_dir or target_repo.working_dir,
                 "log",
-                target_branch,
+                branch_sha,
                 "--format=%H%x00%s",
             ],
             stdout=subprocess.PIPE,
@@ -1590,6 +1665,8 @@ def _find_commit_title_in_target(
     commit_title: str,
     title_allowlist: set[str] | frozenset[str] | None = None,
     title_index_cache: FilteredTitleIndexCache | None = None,
+    use_disk_subject_index_cache: bool = True,
+    title_index_ref_sha: str | None = None,
 ):
     title = str(commit_title or "").strip()
     if not title:
@@ -1608,6 +1685,8 @@ def _find_commit_title_in_target(
             target_branch,
             title_allowlist,
             title_index_cache,
+            use_disk_subject_index_cache=use_disk_subject_index_cache,
+            index_ref_sha=title_index_ref_sha,
         ).get(title, ())
     )
 
@@ -1640,6 +1719,8 @@ def _is_commit_merged_in_target(
     commit_title: str | None = None,
     title_allowlist: set[str] | frozenset[str] | None = None,
     title_index_cache: FilteredTitleIndexCache | None = None,
+    use_disk_subject_index_cache: bool = True,
+    title_index_ref_sha: str | None = None,
 ):
     started_at = time.perf_counter()
     try:
@@ -1664,6 +1745,8 @@ def _is_commit_merged_in_target(
                 title,
                 title_allowlist=title_allowlist,
                 title_index_cache=title_index_cache,
+                use_disk_subject_index_cache=use_disk_subject_index_cache,
+                title_index_ref_sha=title_index_ref_sha,
             )
             if matched_sha:
                 return True, f"matched by commit title: {matched_sha}", time.perf_counter() - started_at
@@ -2205,6 +2288,7 @@ def _resolve_merge_and_conflict_status(
     commit_title,
     target_title_allowlist,
     title_index_cache,
+    target_title_index_ref_sha,
     tag,
     commit_id,
     merged_in_target,
@@ -2212,6 +2296,7 @@ def _resolve_merge_and_conflict_status(
     has_conflict,
     conflict_check_method,
     conflict_check_error,
+    args,
 ):
     profile = {
         "merged_check_seconds": 0.0,
@@ -2293,6 +2378,8 @@ def _resolve_merge_and_conflict_status(
         commit_title=commit_title,
         title_allowlist=target_title_allowlist,
         title_index_cache=title_index_cache,
+        use_disk_subject_index_cache=not bool(getattr(args, "no_cache", False)),
+        title_index_ref_sha=target_title_index_ref_sha,
     )
     profile["target_index_build_seconds"] = _consume_target_title_index_build_seconds(title_index_cache)
     profile["merged_check_seconds"] = max(
@@ -2784,6 +2871,7 @@ def _execute_backport_batch_action(
     filtered_subject_index_cache,
     target_title_allowlist,
     title_index_cache,
+    target_title_index_ref_sha,
     profile,
     args,
 ):
@@ -2862,6 +2950,8 @@ def _execute_backport_batch_action(
                 commit_title=commit_title,
                 title_allowlist=target_title_allowlist,
                 title_index_cache=title_index_cache,
+                use_disk_subject_index_cache=not bool(getattr(args, "no_cache", False)),
+                title_index_ref_sha=target_title_index_ref_sha,
             )
             logger.info(
                 "[backport-batch] 冲突复检 merge-base: tag=%s, merged=%s, error=%s",
@@ -3333,6 +3423,8 @@ def _process_backport_batch_item(
     target_title_index_cache,
     prepared_patch_batch_token,
     args,
+    target_title_index_ref_branch="",
+    target_title_index_ref_sha="",
 ):
     total_started_at = time.perf_counter()
     profile = {
@@ -3420,6 +3512,11 @@ def _process_backport_batch_item(
         commit_title=commit_title,
         target_title_allowlist=target_title_allowlist,
         title_index_cache=target_title_index_cache,
+        target_title_index_ref_sha=(
+            target_title_index_ref_sha
+            if target_branch == target_title_index_ref_branch
+            else ""
+        ),
         tag=tag,
         commit_id=commit_id,
         merged_in_target=merged_in_target,
@@ -3427,6 +3524,7 @@ def _process_backport_batch_item(
         has_conflict=has_conflict,
         conflict_check_method=conflict_check_method,
         conflict_check_error=conflict_check_error,
+        args=args,
     )
     profile.update(status_profile)
 
@@ -3466,6 +3564,11 @@ def _process_backport_batch_item(
             filtered_subject_index_cache=filtered_subject_index_cache,
             target_title_allowlist=target_title_allowlist,
             title_index_cache=target_title_index_cache,
+            target_title_index_ref_sha=(
+                target_title_index_ref_sha
+                if target_branch == target_title_index_ref_branch
+                else ""
+            ),
             profile=profile,
             args=args,
         )
@@ -3673,6 +3776,22 @@ def _write_backport_batch_report(config_path, is_report_config, report):
     logger.info("[backport-batch] report 已写入: %s", report_path)
 
 
+def _resolve_target_title_index_ref_sha(target_path: str, target_branch: str | None) -> str:
+    if not target_path or not target_branch:
+        return ""
+    try:
+        repo = git.Repo(target_path)
+        return repo.commit(target_branch).hexsha
+    except Exception as exc:
+        logger.warning(
+            "[backport-batch] target title index baseline sha unavailable: target=%s branch=%s error=%s",
+            target_path,
+            target_branch,
+            exc,
+        )
+        return ""
+
+
 def _prepare_backport_batch_context(args):
     config, commit_items = _load_backport_batch_config(args.backport_config)
     is_report_config = _is_report_config(args.backport_config, commit_items)
@@ -3722,6 +3841,21 @@ def _prepare_backport_batch_context(args):
         prepared_patch_batch_token=prepared_patch_batch_token,
         generate_missing_patch=bool(is_report_config and getattr(args, "stop_at_first_conflict", False)),
     )
+    target_title_index_ref_branch = (
+        getattr(args, "branch", None) or base_config.get("target_branch") or base_config.get("target_release")
+    )
+    target_title_index_ref_sha = str(base_config.get("target_title_index_ref_sha") or "").strip()
+    if target_title_index_ref_sha:
+        logger.info(
+            "[backport-batch] 使用 report 固定的 target title index baseline: branch=%s sha=%s",
+            target_title_index_ref_branch,
+            target_title_index_ref_sha,
+        )
+    else:
+        target_title_index_ref_sha = _resolve_target_title_index_ref_sha(
+            base_target_path,
+            target_title_index_ref_branch,
+        )
     logger.info(
         "[backport-batch] 排序完成: total_items=%d, sorted_items=%d, sort_errors=%d",
         len(commit_items),
@@ -3741,6 +3875,8 @@ def _prepare_backport_batch_context(args):
         filtered_subject_index_cache=FilteredSubjectIndexCache(),
         target_title_allowlist=target_title_allowlist,
         target_title_index_cache=FilteredTitleIndexCache(),
+        target_title_index_ref_branch=target_title_index_ref_branch or "",
+        target_title_index_ref_sha=target_title_index_ref_sha,
         prepared_patch_batch_token=prepared_patch_batch_token,
     )
 
@@ -3759,6 +3895,8 @@ def _execute_backport_batch_items(
     target_title_index_cache,
     prepared_patch_batch_token,
     args,
+    target_title_index_ref_branch="",
+    target_title_index_ref_sha="",
 ):
     results = []
     report_items = []
@@ -3809,6 +3947,8 @@ def _execute_backport_batch_items(
             filtered_subject_index_cache=filtered_subject_index_cache,
             target_title_allowlist=target_title_allowlist,
             target_title_index_cache=target_title_index_cache,
+            target_title_index_ref_branch=target_title_index_ref_branch,
+            target_title_index_ref_sha=target_title_index_ref_sha,
             prepared_patch_batch_token=prepared_patch_batch_token,
             args=args,
         )
