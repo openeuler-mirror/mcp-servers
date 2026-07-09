@@ -104,9 +104,10 @@ def refine_with_checkpatch_pipeline(
         restore_target_blank_lines_around_changed_regions,
     )
     from checkpatch_formatter import (
-        _function_names_for_diagnostics,
         apply_deterministic_checkpatch_fixes,
         apply_function_level_clang_format_for_diagnostics,
+        function_names_for_diagnostics,
+        parse_code_style_diagnostics,
         parse_target_diagnostics,
         refine_with_checkpatch_feedback,
         run_checkpatch,
@@ -126,7 +127,11 @@ def refine_with_checkpatch_pipeline(
         patch_diff = pre_formatted.diff
 
     _, checkpatch_output = run_checkpatch(checkpatch_path, patch_diff)
-    diagnostics = parse_target_diagnostics(
+    target_diagnostics = parse_target_diagnostics(
+        checkpatch_output,
+        target_file_path,
+    )
+    diagnostics = parse_code_style_diagnostics(
         checkpatch_output,
         target_file_path,
     )
@@ -147,7 +152,7 @@ def refine_with_checkpatch_pipeline(
         ),
     )
     diagnostic_function_names = sorted(
-        _function_names_for_diagnostics(
+        function_names_for_diagnostics(
             patched_code,
             diagnostics,
             allowed_function_names=successful_target_names,
@@ -163,7 +168,7 @@ def refine_with_checkpatch_pipeline(
         patched_code,
         patch_diff,
         diagnostics,
-        diagnostics,
+        _diagnostic_keys(target_diagnostics),
         checkpatch_path,
         target_file_path,
         generate_patch,
@@ -176,14 +181,18 @@ def refine_with_checkpatch_pipeline(
             checkpatch_path,
             patch_diff or "",
         )
-        diagnostics = parse_target_diagnostics(
+        target_diagnostics = parse_target_diagnostics(
+            checkpatch_output,
+            target_file_path,
+        )
+        diagnostics = parse_code_style_diagnostics(
             checkpatch_output,
             target_file_path,
         )
         if not diagnostics:
             return deterministic_first
         diagnostic_function_names = sorted(
-            _function_names_for_diagnostics(
+            function_names_for_diagnostics(
                 patched_code,
                 diagnostics,
                 allowed_function_names=successful_target_names,
@@ -244,7 +253,11 @@ def refine_with_checkpatch_pipeline(
         checkpatch_path,
         refined_diff,
     )
-    refined_diagnostics = parse_target_diagnostics(
+    refined_target_diagnostics = parse_target_diagnostics(
+        refined_checkpatch_output,
+        target_file_path,
+    )
+    refined_diagnostics = parse_code_style_diagnostics(
         refined_checkpatch_output,
         target_file_path,
     )
@@ -252,7 +265,7 @@ def refine_with_checkpatch_pipeline(
         refined_code,
         refined_diff,
         refined_diagnostics,
-        refined_diagnostics,
+        _diagnostic_keys(refined_target_diagnostics),
         checkpatch_path,
         target_file_path,
         generate_patch,
@@ -265,18 +278,20 @@ def refine_with_checkpatch_pipeline(
             checkpatch_path,
             refined_diff or "",
         )
-        refined_diagnostics = parse_target_diagnostics(
+        refined_target_diagnostics = parse_target_diagnostics(
+            refined_checkpatch_output,
+            target_file_path,
+        )
+        refined_diagnostics = parse_code_style_diagnostics(
             refined_checkpatch_output,
             target_file_path,
         )
 
-    original_diagnostic_keys = {
-        (item.level, item.message) for item in diagnostics
-    }
+    original_diagnostic_keys = _diagnostic_keys(target_diagnostics)
     introduced_diagnostics = [
         item
-        for item in refined_diagnostics
-        if (item.level, item.message) not in original_diagnostic_keys
+        for item in refined_target_diagnostics
+        if _diagnostic_key(item) not in original_diagnostic_keys
     ]
     if len(refined_diagnostics) < len(diagnostics) and not introduced_diagnostics:
         logging.info(
@@ -306,7 +321,7 @@ def _try_deterministic_checkpatch_pass(
     code: str,
     diff: str | None,
     diagnostics: list,
-    all_diagnostics: list,
+    original_diagnostic_keys: set[tuple[str, str]],
     checkpatch_path: str,
     target_file_path: str,
     generate_patch: GeneratePatch,
@@ -319,13 +334,11 @@ def _try_deterministic_checkpatch_pass(
 
     from checkpatch_formatter import (
         apply_deterministic_checkpatch_fixes,
+        parse_code_style_diagnostics,
         parse_target_diagnostics,
         run_checkpatch,
     )
 
-    original_keys = {
-        (item.level, item.message) for item in all_diagnostics
-    }
     current_code = code
     current_diff = diff
     current_diagnostics = diagnostics
@@ -352,14 +365,18 @@ def _try_deterministic_checkpatch_pass(
                 checkpatch_path,
                 candidate_diff,
             )
-            candidate_diagnostics = parse_target_diagnostics(
+            candidate_target_diagnostics = parse_target_diagnostics(
+                candidate_checkpatch_output,
+                target_file_path,
+            )
+            candidate_diagnostics = parse_code_style_diagnostics(
                 candidate_checkpatch_output,
                 target_file_path,
             )
             introduced = [
                 item
-                for item in candidate_diagnostics
-                if (item.level, item.message) not in original_keys
+                for item in candidate_target_diagnostics
+                if _diagnostic_key(item) not in original_diagnostic_keys
             ]
             if introduced or len(candidate_diagnostics) >= len(current_diagnostics):
                 continue
@@ -390,6 +407,14 @@ def _try_deterministic_checkpatch_pass(
         )
 
     return CheckpatchRefinementResult(code, diff, changed=False)
+
+
+def _diagnostic_key(diagnostic) -> tuple[str, str]:
+    return diagnostic.level, diagnostic.message
+
+
+def _diagnostic_keys(diagnostics: list) -> set[tuple[str, str]]:
+    return {_diagnostic_key(item) for item in diagnostics}
 
 
 def _try_function_level_clang_format_pass(

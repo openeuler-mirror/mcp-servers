@@ -49,19 +49,35 @@ _LABELS_INDENTED_MESSAGE = "labels should not be indented"
 _DECLARATION_START_RE = re.compile(
     r"^\s*(?:struct|union|enum)\b|^\s*(?:static\s+)?[A-Za-z_][\w\s\*]*\([^;]*\)\s*\{?\s*$"
 )
+_C_STATEMENT_KEYWORDS = (
+    "if",
+    "for",
+    "while",
+    "switch",
+    "return",
+    "goto",
+    "break",
+    "continue",
+    "case",
+    "default",
+    "else",
+    "do",
+)
 _C_DECLARATION_RE = re.compile(
-    r"^\s*(?:"
-    r"(?:const\s+|volatile\s+|static\s+|unsigned\s+|signed\s+|long\s+|short\s+)*"
-    r"(?:struct\s+\w+|union\s+\w+|enum\s+\w+|bool|char|u8|u16|u32|u64|s8|s16|s32|s64|"
-    r"int|unsigned|size_t|ssize_t|void|dma_addr_t|phys_addr_t|uintptr_t|"
-    r"[A-Za-z_]\w*(?:_t)?)"
-    r"(?:\s+|\s*\*)"
+    r"^\s*"
+    r"(?!(?:if|for|while|switch|return|goto|break|continue|case|default|else|do)\b)"
+    r"(?:const\s+|volatile\s+|static\s+|extern\s+|register\s+|"
+    r"unsigned\s+|signed\s+|long\s+|short\s+)*"
+    r"(?:struct\s+\w+|union\s+\w+|enum\s+\w+|bool|char|u8|u16|u32|u64|"
+    r"s8|s16|s32|s64|int|long|short|size_t|ssize_t|void|dma_addr_t|"
+    r"phys_addr_t|uintptr_t|[A-Za-z_]\w*(?:_t)?)"
+    r"(?:\s+|\s*\*+)"
     r"[A-Za-z_]\w*"
-    r")"
-    r".*;\s*$"
+    r"(?:\s*\[[^\]]*\])?"
+    r"(?:\s*(?:[,=].*)?)?;\s*$"
 )
 _CONTROL_OR_STATEMENT_RE = re.compile(
-    r"^\s*(?:if|for|while|switch|return|goto|break|continue|case|default|else|do)\b"
+    r"^\s*(?:" + "|".join(_C_STATEMENT_KEYWORDS) + r")\b"
 )
 # 用于修复 labels should not be indented，把 err: 这类 label 顶到行首
 _LABEL_RE = re.compile(r"^\s+([A-Za-z_]\w*:\s*(?:/\*.*\*/\s*)?)$")
@@ -231,7 +247,7 @@ def apply_function_level_clang_format_for_diagnostics(
     allowed_function_names: list[str] | set[str] | tuple[str, ...] | None = None,
 ) -> str:
     """Format whole successful functions that contain checkpatch style diagnostics."""
-    function_names = _function_names_for_diagnostics(
+    function_names = function_names_for_diagnostics(
         patched_code,
         diagnostics,
         allowed_function_names,
@@ -322,7 +338,7 @@ def apply_function_level_clang_format_for_functions(
     return formatted
 
 
-def _function_names_for_diagnostics(
+def function_names_for_diagnostics(
     patched_code: str,
     diagnostics: list[CheckpatchDiagnostic],
     allowed_function_names: list[str] | set[str] | tuple[str, ...] | None = None,
@@ -348,6 +364,9 @@ def _function_names_for_diagnostics(
     return names
 
 
+_function_names_for_diagnostics = function_names_for_diagnostics
+
+
 def _should_insert_declaration_blank_line(lines: list[str], index: int) -> bool:
     """判断是否应该修复 Please use a blank line after function/struct/union/enum declarations，
         即顶层 declaration/function/struct/union/enum 之间缺空行"""
@@ -370,6 +389,8 @@ def _should_insert_blank_after_function_declarations(lines: list[str], index: in
     if not current.strip() or not previous.strip():
         return False
     if current.lstrip().startswith(("#", "}", "/*", "*", "//")):
+        return False
+    if _CONTROL_OR_STATEMENT_RE.match(previous):
         return False
     if not _C_DECLARATION_RE.match(previous):
         return False

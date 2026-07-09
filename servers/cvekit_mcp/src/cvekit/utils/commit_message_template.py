@@ -11,6 +11,7 @@ from typing import Any
 import git
 
 from .apply_patch import extract_commit_message_from_patch
+from . import git_subject_index_cache
 
 logger = logging.getLogger(__name__)
 
@@ -248,12 +249,14 @@ class SourceDetector:
         linux_repo_path: str | None = None,
         subject_allowlist: set[str] | frozenset[str] | None = None,
         filtered_subject_index_cache: FilteredSubjectIndexCache | None = None,
+        use_disk_subject_index_cache: bool = True,
     ) -> None:
         self.linux_repo_path = os.path.expanduser(linux_repo_path or DEFAULT_LINUX_REPO_PATH)
         self.subject_allowlist = frozenset(
             subject.strip() for subject in (subject_allowlist or set()) if str(subject or "").strip()
         )
         self.filtered_subject_index_cache = filtered_subject_index_cache
+        self.use_disk_subject_index_cache = use_disk_subject_index_cache
         self._last_profile = {
             "commit_exists_seconds": 0.0,
             "linux_grep_seconds": 0.0,
@@ -374,8 +377,57 @@ class SourceDetector:
         if cache is not None and cache.key == cache_key and cache.value is not None:
             return cache.value
 
-        started_at = time.perf_counter()
         allowlist = self.subject_allowlist
+        repo_path = repo.working_tree_dir or self.linux_repo_path
+        if self.use_disk_subject_index_cache:
+            disk_started_at = time.perf_counter()
+            try:
+                ensure_status = git_subject_index_cache.ensure_subject_index(
+                    repo_path=repo_path,
+                    ref_name=master_ref,
+                    ref_sha=master_ref_sha,
+                    index_kind=git_subject_index_cache.INDEX_KIND_LINUX_SUBJECT,
+                )
+                disk_matches = git_subject_index_cache.load_subject_matches(
+                    repo_path=repo_path,
+                    ref_name=master_ref,
+                    ref_sha=master_ref_sha,
+                    subjects=allowlist,
+                    index_kind=git_subject_index_cache.INDEX_KIND_LINUX_SUBJECT,
+                )
+                if ensure_status in {"built", "incremental"}:
+                    self._last_profile["linux_index_build_seconds"] += time.perf_counter() - disk_started_at
+                    logger.info(
+                        "source detection: linux subject disk cache %s repo=%s master_ref=%s master_sha=%s subjects=%d matched=%d",
+                        ensure_status,
+                        self.linux_repo_path,
+                        master_ref,
+                        master_ref_sha,
+                        len(allowlist),
+                        sum(1 for commits in (disk_matches or {}).values() if commits),
+                    )
+                else:
+                    logger.info(
+                        "source detection: linux subject disk cache hit repo=%s master_ref=%s master_sha=%s subjects=%d matched=%d",
+                        self.linux_repo_path,
+                        master_ref,
+                        master_ref_sha,
+                        len(allowlist),
+                        sum(1 for commits in disk_matches.values() if commits),
+                    )
+                if disk_matches is not None:
+                    finalized = {
+                        subject: tuple(dict.fromkeys(commit_ids))
+                        for subject, commit_ids in disk_matches.items()
+                    }
+                    if cache is not None:
+                        cache.key = cache_key
+                        cache.value = finalized
+                    return finalized
+            except Exception as exc:
+                logger.warning("source detection: linux subject disk cache unavailable: %s", exc)
+
+        started_at = time.perf_counter()
         matches: dict[str, list[str]] = {}
         try:
             # allowlist 模式的优化前提是调用方提供可复用的 cache；
@@ -384,7 +436,7 @@ class SourceDetector:
                 [
                     "git",
                     "-C",
-                    repo.working_tree_dir or self.linux_repo_path,
+                    repo_path,
                     "log",
                     master_ref,
                     "--format=%H%x00%s",
@@ -524,6 +576,7 @@ def build_commit_message_preview(
     commit_message_source: str | None = None,
     subject_allowlist: set[str] | frozenset[str] | None = None,
     filtered_subject_index_cache: FilteredSubjectIndexCache | None = None,
+    use_disk_subject_index_cache: bool = True,
 ) -> tuple[dict[str, Any], dict[str, float]]:
     parser = CommitMessageParser()
     parsed = parser.parse_patch_file(patch_path)
@@ -538,6 +591,7 @@ def build_commit_message_preview(
             linux_repo_path,
             subject_allowlist=subject_allowlist,
             filtered_subject_index_cache=filtered_subject_index_cache,
+            use_disk_subject_index_cache=use_disk_subject_index_cache,
         )
         detection = detector.detect(parsed, openeuler_commit_id)
         profile = detector.consume_profile()
