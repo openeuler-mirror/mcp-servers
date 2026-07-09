@@ -89,7 +89,8 @@ def create_pr(
     fork_repo_url: str,
     repo_url: str,
     branch: str,
-    clone_dir: str
+    clone_dir: str,
+    target_path: str = None,
     ):
     """创建PR
     Args:
@@ -99,7 +100,8 @@ def create_pr(
         fork_repo_url: fork仓库地址
         repo_url: 提交PR仓库目标地址
         branch: 处理的分支
-        clone_dir: 本地克隆目录
+        clone_dir: 本地克隆目录（回退使用）
+        target_path: 目标仓库路径（优先使用，默认空则使用 clone_dir 推导）
 
     Returns:
         PR创建结果字典
@@ -122,7 +124,7 @@ def create_pr(
     issue_num = os.path.basename(issue_url)
     fix_branch = f"fix-{branch}-{issue_num}"
 
-    repo_path = os.path.join(clone_dir, base_repo_name)
+    repo_path = target_path if (target_path and os.path.exists(target_path)) else os.path.join(clone_dir, base_repo_name)
     repo = git.Repo(repo_path)
     temp_remote_name = fix_branch
 

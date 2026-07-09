@@ -74,6 +74,10 @@ def run_cvekit(action: str, params: dict) -> dict:
                 cmd.append(f'--clone-dir={params["clone_dir"]}')
             if 'fork_repo_url' in params:
                 cmd.append(f'--fork-repo-url={params["fork_repo_url"]}')
+            if params.get('project_dir'):
+                cmd.append(f'--project-dir={params["project_dir"]}')
+            if params.get('target_path'):
+                cmd.append(f'--target-path={params["target_path"]}')
         
         elif action in  ('backport', 'mystique'):
             if 'cve_id' in params:
@@ -114,11 +118,17 @@ def run_cvekit(action: str, params: dict) -> dict:
                 cmd.append(f'--signer-name={params["signer_name"]}')
             if 'signer_email' in params:
                 cmd.append(f'--signer-email={params["signer_email"]}')
+            if params.get('project_dir'):
+                cmd.append(f'--project-dir={params["project_dir"]}')
+            if params.get('target_path'):
+                cmd.append(f'--target-path={params["target_path"]}')
 
         elif action == 'get-commits':
             if 'clone_dir' in params:
                 cmd.append(f'--clone-dir={params["clone_dir"]}')
-                
+            if params.get('project_dir'):
+                cmd.append(f'--project-dir={params["project_dir"]}')
+
         elif action == 'create-pr':
             if 'branch' in params:
                 cmd.append(f'--branch={params["branch"]}')
@@ -128,6 +138,8 @@ def run_cvekit(action: str, params: dict) -> dict:
                 cmd.append(f'--repo-url={params["repo_url"]}')
             if 'clone_dir' in params:
                 cmd.append(f'--clone-dir={params["clone_dir"]}')
+            if params.get('target_path'):
+                cmd.append(f'--target-path={params["target_path"]}')
 
         result = subprocess.run(
             cmd,
@@ -296,12 +308,14 @@ def setup_env(
 def get_commits(
     cve_id: str = Field(..., description="cve id"),
     clone_dir: str = Field(None, description=i18n("克隆目录(可选)")),
-    gitee_token: str = Field(None, description=i18n("Gitee访问令牌(可选)"))
+    gitee_token: str = Field(None, description=i18n("Gitee访问令牌(可选)")),
+    project_dir: str = Field(default="", description=i18n("源仓库路径（默认空则使用 clone_dir/linux）"))
 ) -> str:
     result = run_cvekit('get-commits', {
         'cve_id': cve_id,
         'gitee_token': gitee_token,
-        'clone_dir': clone_dir
+        'clone_dir': clone_dir,
+        'project_dir': project_dir,
     })
     
     # Check for errors first
@@ -353,13 +367,15 @@ def analyze_branches(
     api_key: Optional[str] = Field(None, description=i18n("LLM API密钥(可选，用于自动调整补丁)")),
     llm_provider: Optional[str] = Field(None, description=i18n("LLM提供商(默认openai)")),
     llm_base_url: str = Field(None, description=i18n("LLM API基础地址(覆盖默认配置)")),
-    llm_model_name: str = Field(None, description=i18n("LLM模型名称(覆盖默认配置)"))
+    llm_model_name: str = Field(None, description=i18n("LLM模型名称(覆盖默认配置)")),
+    project_dir: str = Field(default="", description=i18n("源仓库路径（默认同 clone_dir）")),
+    target_path: str = Field(default="", description=i18n("目标仓库路径（默认同 clone_dir）")),
+    backport_engine: str = Field(default="", description=i18n("回移植引擎：portgpt 或 mystique（空则使用服务启动参数）"))
 ) -> str:
     # 使用全局变量作为默认值
     if not gitee_token:
         gitee_token = default_gitee_token
     if api_key is None:
-        # 若未显式传入 api_key，则回退到全局默认值（可能为空字符串，用于本地免鉴权模型）
         api_key = default_api_key
     if not llm_provider:
         llm_provider = default_llm_provider or 'openai'
@@ -367,9 +383,14 @@ def analyze_branches(
         llm_base_url = default_llm_base_url
     if llm_model_name is None:
         llm_model_name = default_llm_model_name
+    if not project_dir:
+        project_dir = clone_dir or ""
+    if not target_path:
+        target_path = clone_dir or ""
+    engine = backport_engine if backport_engine in ("portgpt", "mystique") else args.backport_engine
     
     sorted_branches = sorted([branch.strip() for branch in branches.split(",")])
-    cache_key = _get_cache_key(cve_id, ",".join(sorted_branches))
+    cache_key = _get_cache_key(cve_id, ",".join(sorted_branches), project_dir, target_path)
     cached_result = get_cached_data(BRANCHES_ANALYSIS_CACHE, cache_key)
    
     if cached_result:
@@ -381,7 +402,9 @@ def analyze_branches(
         'branches': branches,
         'gitee_token': gitee_token,
         'clone_dir': clone_dir,
-        'fork_repo_url': fork_repo_url
+        'fork_repo_url': fork_repo_url,
+        'project_dir': project_dir,
+        'target_path': target_path,
     })
     
     if 'error' in result:
@@ -410,15 +433,13 @@ def analyze_branches(
                     # 保持适配状态为“需要调整”，提示用户手动处理
                     continue
 
-                # 回移植引擎由 MCP 服务启动参数固定，避免暴露给模型选择。
+                # 回移植引擎优先使用调用方传入的 backport_engine，否则使用服务启动参数
                 backport_result = run_cvekit(
-                    'backport' if args.backport_engine == 'portgpt' else 'mystique',
+                    'backport' if engine == 'portgpt' else 'mystique',
                     {
                         'cve_id': cve_id,
                         'branch': target_branch,
                         'clone_dir': clone_dir,
-                        # 这里使用统一的 api_key 命名，run_cvekit 会映射为 --api-key 传给 cvekit CLI，
-                        # 再由 CLI 映射为内部 openai_key 配置字段。
                         'api_key': api_key,
                         'llm_provider': llm_provider,
                         'llm_base_url': llm_base_url,
@@ -426,6 +447,8 @@ def analyze_branches(
                         'format_mode': args.format_mode,
                         'fork_repo_url': fork_repo_url,
                         'gitee_token': gitee_token,
+                        'project_dir': project_dir,
+                        'target_path': target_path,
                     },
                 )
                 
@@ -614,7 +637,9 @@ def apply_patch(
     clone_dir: str = Field(..., description=i18n("克隆目录(与第四步保持一致)")),
     signer_name: str = Field(description=i18n("提交者姓名")),
     signer_email: str = Field(None, description=i18n("提交者邮箱")),
-    gitee_token: str = Field(None, description=i18n("Gitee访问令牌"))
+    gitee_token: str = Field(None, description=i18n("Gitee访问令牌")),
+    project_dir: str = Field(default="", description=i18n("源仓库路径（默认空则使用 clone_dir/linux）")),
+    target_path: str = Field(default="", description=i18n("目标仓库路径（默认空则使用 clone_dir 推导）"))
 ) -> str:
     
     if not patch_path or not os.path.exists(patch_path):
@@ -641,7 +666,9 @@ def apply_patch(
         'clone_dir': clone_dir,
         'signer_name': signer_name,
         'signer_email': signer_email,
-        'gitee_token': gitee_token
+        'gitee_token': gitee_token,
+        'project_dir': project_dir,
+        'target_path': target_path,
     })
 
     if 'error' in result or 'error' in result.get('status'):
@@ -686,7 +713,8 @@ def create_pr(
     fork_repo_url: str = Field(None, description=i18n("fork仓库url")),
     repo_url: str = Field(..., description=i18n("目标仓库url")),
     clone_dir: str = Field(None, description=i18n("克隆目录(与第四/第五步保持一致)")),
-    gitee_token: str = Field(None, description=i18n("Gitee访问令牌(可选)"))
+    gitee_token: str = Field(None, description=i18n("Gitee访问令牌(可选)")),
+    target_path: str = Field(default="", description=i18n("目标仓库路径（默认空则使用 clone_dir 推导）"))
 ) -> str:
     result = run_cvekit('create-pr', {
         'cve_id': cve_id,
@@ -694,7 +722,8 @@ def create_pr(
         'fork_repo_url': fork_repo_url,
         'repo_url': repo_url,
         'clone_dir': clone_dir,
-        'gitee_token': gitee_token
+        'gitee_token': gitee_token,
+        'target_path': target_path,
     })
     if 'error' in result or 'error' in result.get('status'):
         error_msg = result.get('error', '未知错误')
@@ -714,6 +743,65 @@ def create_pr(
     res += i18n("- 目标分支: %s\n") % (branch)
     res += i18n("请确认PR是否创建成功")
     return res
+
+
+@mcp.tool()
+@update_docstring(i18n("""
+    使用 mystique 引擎对指定 commit 生成针对目标分支的回移植补丁。
+    这是 PR 代码迁移流程的第一步，后续需依次调用 apply_patch 和 create_pr。
+
+    参数：
+    - commit_id: 待迁移的 commit SHA
+    - branch: 目标分支名
+    - clone_dir: 本地克隆目录
+    - gitee_token: Gitee 访问令牌（可选）
+"""))
+def run_mystique(
+    commit_id: str = Field(..., description="待迁移的 commit SHA"),
+    branch: str = Field(..., description="目标分支名"),
+    clone_dir: str = Field(..., description="本地克隆目录"),
+    project_dir: str = Field(default="", description="源仓库路径（--project-dir）"),
+    target_path: str = Field(default="", description="目标仓库路径（--target-path）"),
+    fork_repo_url: str = Field(default="", description="fork 仓库地址（可选）"),
+    gitee_token: str = Field(default=None, description="Gitee 访问令牌"),
+) -> str:
+    if not gitee_token:
+        gitee_token = default_gitee_token
+    if not gitee_token:
+        return "[ERROR] 未配置 Gitee 访问令牌"
+
+    params = {
+        "commit_id": commit_id,
+        "branch": branch,
+        "clone_dir": clone_dir,
+        "gitee_token": gitee_token,
+    }
+    if fork_repo_url:
+        params["fork_repo_url"] = fork_repo_url
+    if project_dir:
+        params["project_dir"] = project_dir
+    if target_path:
+        params["target_path"] = target_path
+
+    result = run_cvekit("mystique", params)
+
+    if "error" in result:
+        return f"[ERROR] mystique 失败: {result.get('error')}"
+
+    details = result.get("details", {}) or result
+    patch_path = details.get("backported_patch_path") or result.get("backported_patch_path") or ""
+    diff_path = details.get("diff_path") or result.get("diff_path") or ""
+
+    if not patch_path:
+        return f"[ERROR] mystique 未返回补丁路径，返回内容: {json.dumps(result, ensure_ascii=False)[:500]}"
+
+    return (
+        f"mystique 补丁生成成功！\n"
+        f"- commit: {commit_id}\n"
+        f"- 目标分支: {branch}\n"
+        f"- 补丁路径: {patch_path}\n"
+        f"- 差异文件: {diff_path}"
+    )
 
 def _init_defaults_from_args() -> None:
     """根据命令行参数初始化全局默认配置。"""

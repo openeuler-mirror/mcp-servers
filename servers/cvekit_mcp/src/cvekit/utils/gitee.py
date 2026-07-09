@@ -157,17 +157,18 @@ def _clone_repository(
         raise RuntimeError(i18n("无法克隆仓库: %s") % (str(e)))
 
 
-def setup_repository(fork_repo_url=None, gitee_token=None, clone_dir=None, branch_name=None, force_refresh=False):
+def setup_repository(fork_repo_url=None, gitee_token=None, clone_dir=None, branch_name=None, force_refresh=False, target_path=None):
     """
     设置仓库环境，克隆官方仓库，添加fork远程（可选），如果明确说明要检出某个分支的情况下，检出分支
-    
+
     Args:
         fork_repo_url: fork仓库URL（可选，如果不提供则只克隆官方仓库）
         gitee_token: Gitee访问令牌（可选，用于私有仓库认证）
         clone_dir: 本地克隆目录
         branch_name: 要检出的分支名,默认可以不执行检出分支
         force_refresh: 是否强制刷新（忽略缓存）
-        
+        target_path: 目标仓库本地路径（优先使用，已存在则跳过克隆但仍配置 remote）
+
     Returns:
         repo: git.Repo对象
         repo_path: 仓库本地路径
@@ -178,14 +179,14 @@ def setup_repository(fork_repo_url=None, gitee_token=None, clone_dir=None, branc
         logger.info(f"未提供 fork_repo_url，使用默认值: {fork_repo_url}")
     
     # 使用缓存 key: (fork_repo_url, clone_dir, branch_name)
-    cache_key = (fork_repo_url, clone_dir, branch_name)
+    cache_key = (fork_repo_url, clone_dir, branch_name, target_path)
     
     # 检查缓存
     if not force_refresh and cache_key in _repo_cache:
         cached_repo, cached_repo_path = _repo_cache[cache_key]
         # 验证缓存的 repo 是否仍然有效
         try:
-            if cached_repo_path == os.path.join(clone_dir, "kernel") and os.path.exists(cached_repo_path):
+            if os.path.exists(cached_repo_path):
                 logger.debug(f"使用缓存的仓库设置: {cache_key}")
                 return cached_repo, cached_repo_path
         except Exception:
@@ -193,22 +194,29 @@ def setup_repository(fork_repo_url=None, gitee_token=None, clone_dir=None, branc
             logger.debug(f"缓存无效，重新设置仓库: {cache_key}")
             del _repo_cache[cache_key]
     
-    parts = fork_repo_url.strip().rstrip('/').split('/')
-    fork_org = parts[-2]
-    repo_name = parts[-1].replace('.git', '')
-    repo_is_kernel = repo_name == "kernel"
-    repo_path = os.path.join(clone_dir, "kernel" if repo_is_kernel else repo_name)
-    official_org = "openeuler"
-    
-    # 确保主仓库（官方仓库）已克隆
-    if not os.path.exists(repo_path) or not os.path.exists(os.path.join(repo_path, '.git')):
-        _clone_repository(
-            org_name=official_org if repo_is_kernel else fork_org,
-            repo_name="kernel" if repo_is_kernel else repo_name,
-            clone_dir=clone_dir,
-            fork_repo_url=fork_repo_url,
-            gitee_token=gitee_token
-        )
+    # repo_path：优先使用 target_path，否则从 clone_dir 推导
+    if target_path and os.path.isdir(target_path):
+        repo_path = target_path
+        parts = fork_repo_url.strip().rstrip('/').split('/')
+        fork_org = parts[-2]
+        repo_name = parts[-1].replace('.git', '')
+        logger.info(f"使用 target_path 作为仓库路径（跳过克隆）: {repo_path}")
+    else:
+        parts = fork_repo_url.strip().rstrip('/').split('/')
+        fork_org = parts[-2]
+        repo_name = parts[-1].replace('.git', '')
+        repo_is_kernel = repo_name == "kernel"
+        repo_path = os.path.join(clone_dir, "kernel" if repo_is_kernel else repo_name)
+        official_org = "openeuler"
+
+        if not os.path.exists(repo_path) or not os.path.exists(os.path.join(repo_path, '.git')):
+            _clone_repository(
+                org_name=official_org if repo_is_kernel else fork_org,
+                repo_name="kernel" if repo_is_kernel else repo_name,
+                clone_dir=clone_dir,
+                fork_repo_url=fork_repo_url,
+                gitee_token=gitee_token
+            )
     
     repo = git.Repo(repo_path)
     

@@ -34,3 +34,12 @@ GITEE_API_BASE = os.environ.get("GITEE_API_BASE", "https://gitee.com/api/v5")
 
 # 分支分析结果缓存文件，与 cvekit.utils.cache 中保持一致
 BRANCHES_ANALYSIS_CACHE_FILE = os.path.expanduser("~/.cve_analyzer_cache/branches_analysis_cache.json")
+
+# ---- PR 迁移相关配置 ----
+MIGRATE_WEBHOOK_TOKEN = os.environ.get("MIGRATE_WEBHOOK_TOKEN", "")
+DEFAULT_CLONE_DIR = os.environ.get("DEFAULT_CLONE_DIR", "")
+DEFAULT_BACKPORT_ENGINE = os.environ.get("DEFAULT_BACKPORT_ENGINE", "mystique")
+
+# A2A 服务地址（app_client 通过环境变量 A2A_BASE_URL 读取）
+A2A_BASE_URL = os.environ.get("A2A_BASE_URL", "http://localhost:9991")
+A2A_BASE_URL_MYSTIQUE = os.environ.get("A2A_BASE_URL_MYSTIQUE", "http://localhost:9911")

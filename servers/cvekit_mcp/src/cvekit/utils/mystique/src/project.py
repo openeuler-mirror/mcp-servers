@@ -1152,60 +1152,19 @@ class Method:
         return hunks
 
     def recover_placeholder(self, code: str, slice_lines: set[int], placeholder: str) -> str | None:
-        print("=" * 80)
-        print("🔍 RECOVER_PLACEHOLDER 函数调试信息")
-        print("=" * 80)
-
-        print(f"📥 输入参数:")
-        print(f"  method.name: {self.name}")
-        print(f"  code 长度: {len(code)} 字符")
-        print(f"  slice_lines: {sorted(slice_lines)}")
-        print(f"  placeholder: {repr(placeholder)}")
-        print()
-
-        print(f"🔍 调用 self.reduced_hunks(slice_lines):")
-        print(f"  输入 slice_lines: {sorted(slice_lines)}")
         placeholder_hunks = self.reduced_hunks(slice_lines)
         logging.info("RECOVER_PLACEHOLDER[%s]: reduced_hunks returned %d hunks", self.name, len(placeholder_hunks))
         for i, hunk in enumerate(placeholder_hunks):
             logging.info("RECOVER_PLACEHOLDER[%s]: hunk[%d] content=%r", self.name, i, hunk[:300])
-        print(f"  输出 placeholder_hunks 数量: {len(placeholder_hunks)}")
-        for i, hunk in enumerate(placeholder_hunks):
-            print(f"    hunk[{i}]: {repr(hunk[:100])}{'...' if len(hunk) > 100 else ''}")
-        print()
 
-        print(f"🔍 分析输入代码中的占位符:")
         code_lines = code.split("\n")
-        print(f"  code 行数: {len(code_lines)}")
-        print(f"  code 内容预览:")
-        for i, line in enumerate(code_lines[:10]):  # 显示前10行
-            print(f"    {i+1}: {repr(line)}")
-        if len(code_lines) > 10:
-            print(f"    ... (还有 {len(code_lines)-10} 行)")
-        print()
-
-        print(f"🔍 统计占位符数量:")
         placeholder_text = placeholder.strip()
         placeholder_count = sum(1 for line in code_lines if line.strip() == placeholder_text)
         hunks_count = len(placeholder_hunks)
         logging.info("RECOVER_PLACEHOLDER[%s]: code has %d placeholders, hunks has %d items", self.name, placeholder_count, hunks_count)
         if placeholder_count != hunks_count:
             logging.warning("RECOVER_PLACEHOLDER[%s]: MISMATCH! placeholder=%d hunk=%d -> offset will be wrong", self.name, placeholder_count, hunks_count)
-        print(f"  code 中占位符数量: {placeholder_count}")
-        print(f"  placeholder_hunks 数量: {hunks_count}")
-        print(f"  占位符内容: {repr(placeholder)}")
-        print()
 
-        print(f"🔍 查找代码中的占位符行:")
-        placeholder_lines = []
-        for i, line in enumerate(code_lines):
-            if line.strip() == placeholder_text:
-                placeholder_lines.append((i+1, line))
-                print(f"    第{i+1}行: {repr(line)}")
-        print(f"  找到占位符行数: {len(placeholder_lines)}")
-        print()
-
-        # 检查占位符数量是否一致
         if placeholder_count != hunks_count:
             logging.warning(
                 "RECOVER_PLACEHOLDER[%s]: MISMATCH placeholder=%d hunk=%d — 返回 None 触发安全回退",
@@ -1218,44 +1177,20 @@ class Method:
             # is now rarely reached.
             return None
 
-        print(f"🔧 开始替换占位符:")
         result = ""
-        hunks_copy = placeholder_hunks.copy()  # 保存原始列表用于调试
-        print(f"  初始 hunks_copy: {len(hunks_copy)} 个")
-        print()
+        hunks_copy = placeholder_hunks.copy()
 
-        for i, line in enumerate(code_lines):
-            print(f"  处理第{i+1}行: {repr(line)}")
+        for line in code_lines:
             if line.strip().lower() == placeholder.strip().lower():
                 if hunks_copy:
                     replacement = hunks_copy.pop(0)
-                    logging.info("RECOVER_PLACEHOLDER[%s]: line %d PLACEHOLDER -> hunk[%d/%d] = %r",
-                                 self.name, i+1, len(hunks_copy), len(placeholder_hunks), replacement[:200])
+                    logging.info("RECOVER_PLACEHOLDER[%s]: line PLACEHOLDER -> hunk[%d/%d] = %r",
+                                 self.name, len(hunks_copy), len(placeholder_hunks), replacement[:200])
                     result += replacement
-                    print(f"    ✅ 替换为: {repr(replacement[:100])}{'...' if len(replacement) > 100 else ''}")
-                    print(f"    剩余 hunks: {len(hunks_copy)} 个")
                 else:
-                    # 多余占位符：直接移除（LLM误加的placeholder）
-                    print(f"    ⚠️ 多余占位符，已移除")
+                    logging.debug("RECOVER_PLACEHOLDER[%s]: 多余占位符，已移除", self.name)
             else:
                 result += line + "\n"
-                print(f"    ➡️ 保持原样")
-        print()
-
-        print(f"📤 最终结果:")
-        print(f"  result 长度: {len(result)} 字符")
-        print(f"  result 内容预览:")
-        result_lines = result.split("\n")
-        for i, line in enumerate(result_lines[:10]):  # 显示前10行
-            print(f"    {i+1}: {repr(line)}")
-        if len(result_lines) > 10:
-            print(f"    ... (还有 {len(result_lines)-10} 行)")
-        print()
-
-        print("=" * 80)
-        print("✅ RECOVER_PLACEHOLDER 函数执行完成")
-        print("=" * 80)
-        print()
 
         if self.language == Language.C and not self.is_func_decl:
             from func_parser import parse_functions
