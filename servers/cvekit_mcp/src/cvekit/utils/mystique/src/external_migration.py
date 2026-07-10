@@ -862,6 +862,11 @@ def _resolve_conflict_with_llm(
     node_symbol_hints = _symbol_hints_for_external_node(symbol_compat_hints, expected)
     struct_checklist = _struct_field_migration_checklist(change, target_node)
 
+    compat_section = symbol_compat_hints + "\n" if symbol_compat_hints else ""
+    nl = "\n"
+    struct_checklist_line = struct_checklist + nl if struct_checklist else ""
+    node_symbol_hints_line = node_symbol_hints + nl if node_symbol_hints else ""
+
     prompt = f"""\
 You are adapting one file-level C node during a three-way backport.
 The node may be a true textual conflict, or it may require target-branch
@@ -880,8 +885,8 @@ Patch action: {change.action}
 [TARGET]
 {target_node.text}
 
-{struct_checklist + "\n" if struct_checklist else ""}
-{node_symbol_hints + "\n" if node_symbol_hints else ""}
+{struct_checklist_line}
+{node_symbol_hints_line}
 
 Merge the semantic intent of POST into TARGET while preserving TARGET-only
 adaptations that do not conflict with the patch. This result will be reviewed

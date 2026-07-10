@@ -60,8 +60,21 @@ def validate_request(data: Dict) -> Optional[str]:
         "patch-apply-pr-creation",
         "pipeline",
         "package-pipeline",
+        "pr-migration",
     ]:
-        return "action 参数必须是 'branches-analysis'、'patch-apply-pr-creation'、'pipeline'、'package-pipeline'"
+        return "action 参数必须是 'branches-analysis'、'patch-apply-pr-creation'、'pipeline'、'package-pipeline'、'pr-migration'"
+
+    # pr-migration 不需要 cve_id，其必填参数不同
+    if action == "pr-migration":
+        if not data.get("commit_id"):
+            return "pr-migration 操作必须提供 commit_id 参数"
+        if not data.get("source_pr_url"):
+            return "pr-migration 操作必须提供 source_pr_url 参数"
+        if not data.get("target_repo_url"):
+            return "pr-migration 操作必须提供 target_repo_url 参数"
+        if not (data.get("signer_name") and data.get("signer_email")):
+            return "pr-migration 操作必须提供 signer_name, signer_email 参数"
+        return None
 
     if not data.get("cve_id"):
         return "cve_id 参数缺失"
@@ -140,6 +153,9 @@ def build_config_from_request(data: Dict) -> Dict:
         "llm_base_url": llm_base_url,
         "llm_model_name": llm_model_name,
         "rpmbuild_path": rpmbuild_path,
+        "project_dir": data.get("project_dir") or "",
+        "target_path": data.get("target_path") or "",
+        "backport_engine": data.get("backport_engine") or "portgpt",
     }
 
 
@@ -160,6 +176,9 @@ def build_agent_message(action: str, data: Dict, config: Dict) -> str:
                 "name": data.get("signer_name"),
                 "email": data.get("signer_email"),
             },
+            "project_dir": config.get("project_dir") or "",
+            "target_path": config.get("target_path") or "",
+            "backport_engine": config.get("backport_engine") or "portgpt",
         },
         ensure_ascii=False,
     )
@@ -182,15 +201,25 @@ def build_agent_message(action: str, data: Dict, config: Dict) -> str:
             f"【注意】需按分支列表顺序逐一处理，确保每个分支的补丁应用与PR创建独立完成。"
         )
     elif action == "pipeline":
+        project_dir_hint = ""
+        target_path_hint = ""
+        if config.get("project_dir"):
+            project_dir_hint = f", project_dir: {config['project_dir']}"
+        if config.get("target_path"):
+            target_path_hint = f", target_path: {config['target_path']}"
+        backport_engine = config.get("backport_engine") or "portgpt"
         return (
             f"【任务】CVE修复流程\n"
-            f"【核心指令】1. 分析CVE补丁；2. 适配CVE补丁；3. 应用CVE补丁；4. 创建PR\n"
-            f"【参数】CVE_ID: {data.get('cve_id')}， 全量分支列表{os.getenv('DEFAULT_BRANCHES')}， 待应用补丁和提交pr分支列表{data.get('branches')} \n"
+            f"【核心指令】1. 分析CVE补丁；2. 使用 {backport_engine} 引擎适配CVE补丁；3. 应用CVE补丁；4. 创建PR\n"
+            f"【参数】CVE_ID: {data.get('cve_id')}， 全量分支列表{os.getenv('DEFAULT_BRANCHES')}， 待应用补丁和提交pr分支列表{data.get('branches')}{project_dir_hint}{target_path_hint}, backport_engine: {backport_engine}\n"
             f"【基础配置】{base_config}\n"
-            f"【注意】请依次执行CVE修复流程的所有步骤，直至pr创建完毕\n"
             f"【注意】分支分析（analyze_branches）需覆盖全量分支 {os.getenv('DEFAULT_BRANCHES')}；\n"
-            f"【注意】补丁应用（apply-patch）与PR创建（create-pr）仅针对目标分支列表 {data.get('branches')}；\n"
-            f"【注意】所有步骤自动串联执行，直至PR创建完成，无需中途等待用户确认。"
+            f"【注意】调用 analyze_branches 时必须传入 backport_engine='{backport_engine}'；\n"
+            f"【注意】analyze_branches 内部自动执行 backport，返回结果中查看每个分支的适配状态；\n"
+            f"【关键】适配状态为'需要调整'且包含[ERROR]的分支表示 backport 失败，跳过该分支并报告失败原因，不要继续 apply_patch；\n"
+            f"【关键】适配状态为'成功'或'无需执行（补丁已存在）'的分支才可继续 apply_patch 和 create_pr；\n"
+            f"【注意】补丁应用（apply-patch）与PR创建（create-pr）仅针对目标分支列表 {data.get('branches')} 中 backport 成功的分支；\n"
+            f"【注意】每步完成后检查返回结果，失败则停止并报告错误，不要忽略错误继续下一步。"
         )
     elif action == "package-pipeline":
         return (
@@ -199,6 +228,38 @@ def build_agent_message(action: str, data: Dict, config: Dict) -> str:
             f"【参数】CVE_ID: {data.get('cve_id')}, 软件包名称: {data.get('package_name')}, 目标分支: {data.get('branch')}, rpm构建路径: {config['rpmbuild_path']} \n"
             f"【基础配置】{base_config}\n"
             f"【注意】请依次执行软件包CVE修复流程的所有步骤，直至pr创建完毕\n"
+        )
+    elif action == "pr-migration":
+        params_json = json.dumps(
+            {
+                "commit_id": data.get("commit_id"),
+                "source_pr_url": data.get("source_pr_url"),
+                "target_repo_url": data.get("target_repo_url"),
+                "target_branch": data.get("target_branch", "main"),
+                "project_dir": config.get("project_dir") or "",
+                "target_path": config.get("target_path") or "",
+                "backport_engine": config.get("backport_engine") or "portgpt",
+                "fork_repo_url": config.get("fork_repo_url"),
+                "clone_dir": config.get("clone_dir"),
+                "signer_name": data.get("signer_name"),
+                "signer_email": data.get("signer_email"),
+                "message": data.get("message") or "",
+            },
+            ensure_ascii=False,
+        )
+        return (
+            f"【任务】PR 代码迁移\n"
+            f"【核心指令】1. 调用 run_mystique 生成针对目标分支的回移植补丁，"
+            f"必须传入 commit_id、branch(=target_branch)、project_dir、target_path 参数；"
+            f"2. 调用 apply_patch 将补丁应用到目标分支；"
+            f"3. 调用 create_pr 提交 PR 到目标仓库\n"
+            f"【参数】{params_json}\n"
+            f"【基础配置】{base_config}\n"
+            f"【注意】请严格按 run_mystique → apply_patch → create_pr 顺序执行，"
+            f"run_mystique 的 project_dir 和 target_path 必须从参数中获取传入，"
+            f"apply_patch 的 cve_id 参数用 commit_id 代替，"
+            f"create_pr 的 cve_id 参数用 commit_id 代替、repo_url 使用 target_repo_url。"
+            f"三个步骤全部完成后汇总返回结果。"
         )
 
 
@@ -512,11 +573,13 @@ skills = [
     ),
 ]
 
+port = int(os.getenv("PORT", 9991))
+
 # 创建 agent card
 agent_card = AgentCard(
     name="CVE 处理智能体",
     description="用于处理 CVE 漏洞分析、修复和 PR 创建的智能体",
-    url="http://localhost:9991/",
+    url=f"http://localhost:{port}/",
     version="1.0.0",
     defaultInputModes=["text/plain", "application/json"],
     defaultOutputModes=["text/plain", "application/json"],
@@ -537,5 +600,4 @@ starlette_app = app.build()
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.getenv("PORT", 9991))
     uvicorn.run(starlette_app, host="0.0.0.0", port=port, log_level="debug", workers=1)

@@ -420,7 +420,10 @@ def handle_action(args):
     """路由到不同操作处理器"""
     if args.action == 'setup-env':
         try:
-            repo, repo_path = setup_repository(args.fork_repo_url, args.gitee_token, args.clone_dir)
+            repo, repo_path = setup_repository(
+                args.fork_repo_url, args.gitee_token, args.clone_dir,
+                target_path=getattr(args, 'target_path', '') or None,
+            )
         except Exception as e:
             return {
                 'status': 'failed',
@@ -455,7 +458,8 @@ def handle_action(args):
     if args.action == 'get-commits':
         if not args.cve_id:
             raise ValueError("get-commits 模式需要提供 --cve-id 参数")
-        return handle_get_commits(args.cve_id, not args.no_cache, args.clone_dir)
+        return handle_get_commits(args.cve_id, not args.no_cache, args.clone_dir,
+                                  project_dir=getattr(args, 'project_dir', '') or '')
 
     if args.action == 'backport':
         if not args.cve_id:
@@ -526,6 +530,8 @@ def handle_apply_patch(cve_id, args):
             llm_model_name=getattr(args, 'llm_model_name', None),
             api_key=getattr(args, 'api_key', None),
             llm_confirm=llm_confirm,
+            project_dir=getattr(args, 'project_dir', '') or '',
+            target_path=getattr(args, 'target_path', '') or None,
             )
     finally:
         apply_patch_lock.release()
@@ -543,7 +549,8 @@ def handle_create_pr(cve_id, args):
             repo_url=args.repo_url,
             branch=args.branch,
             clone_dir=args.clone_dir,
-            gitee_token=args.gitee_token
+            gitee_token=args.gitee_token,
+            target_path=getattr(args, 'target_path', '') or None,
         )
     finally:
         create_pr_lock.release()
@@ -555,25 +562,28 @@ def handle_create_pr(cve_id, args):
 def handle_backport(cve_id, args):
     """处理补丁回移植逻辑"""
     # 获取提交信息
+    _project_dir = getattr(args, 'project_dir', '') or ''
+    _target_path = getattr(args, 'target_path', '') or ''
     commits = get_vulnerability_commits(
         cve_id,
         not args.no_cache,
         clone_dir=args.clone_dir,
+        project_dir=_project_dir,
     )
     if not commits or len(commits) != 2:
         raise ValueError(f"无法获取提交信息: {commits}")
-    
+
     introduced_commit, fixed_commit = commits
-    
+
     # 确定目标分支
     target_branch = args.branch
     if not target_branch:
-        # 如果没有指定 --branch，尝试从 --branches 中取第一个
         if args.branches:
             target_branch = args.branches.split(',')[0].strip()
         else:
             raise ValueError("backport模式需要指定目标分支，请使用--branch参数")
-    temp_upstream_commit = branch_commit_from_upstream(fixed_commit, target_branch, args.clone_dir)
+    temp_upstream_commit = branch_commit_from_upstream(fixed_commit, target_branch, args.clone_dir,
+                                                       project_dir=_project_dir)
     if temp_upstream_commit:
         fixed_commit = temp_upstream_commit
 
@@ -581,8 +591,8 @@ def handle_backport(cve_id, args):
     config_dict = {
         "project": "linux",
         "project_url": "",
-        "project_dir": os.path.join(args.clone_dir, "linux"),
-        "target_path": os.path.join(args.clone_dir, "kernel"),
+        "project_dir": _project_dir or os.path.join(args.clone_dir, "linux"),
+        "target_path": _target_path or os.path.join(args.clone_dir, "kernel"),
         "new_patch": fixed_commit,
         "target_release": target_branch,
         # 内部配置字段仍使用 openai_key 以兼容 backporting 逻辑，这里用统一的 api_key 映射过去
@@ -666,6 +676,7 @@ def handle_mystique(cve_id, args):
             cve_id,
             not args.no_cache,
             clone_dir=args.clone_dir,
+            project_dir=getattr(args, 'project_dir', '') or '',
         )
         if commits and len(commits) == 2:
             _, fixed_commit = commits
@@ -756,12 +767,13 @@ def handle_parse_issue(args):
         "data": issue_data
     }
 
-def handle_get_commits(cve_id, use_cache, clone_dir):
+def handle_get_commits(cve_id, use_cache, clone_dir, project_dir=""):
     """处理提交获取逻辑"""
     introduced, fixed = get_vulnerability_commits(
         cve_id,
         use_cache,
         clone_dir=clone_dir,
+        project_dir=project_dir,
     )
     if not fixed:
         return {
@@ -817,6 +829,7 @@ def handle_analyze_branches(args):
         cve_id,
         not args.no_cache,
         clone_dir=args.clone_dir,
+        project_dir=getattr(args, 'project_dir', '') or '',
     )
     if commits and len(commits) == 2:
         issue_info.introduced_commit, issue_info.fixed_commit = commits
@@ -825,7 +838,10 @@ def handle_analyze_branches(args):
         issue_info.introduced_commit = None
         issue_info.fixed_commit = None
 
-    repo, repo_path = setup_repository(args.fork_repo_url, args.gitee_token, args.clone_dir)
+    repo, repo_path = setup_repository(
+        args.fork_repo_url, args.gitee_token, args.clone_dir,
+        target_path=getattr(args, 'target_path', '') or None,
+    )
 
     branch_list = [b.strip() for b in args.branches.split(',')]
     return process_branches(
@@ -835,7 +851,8 @@ def handle_analyze_branches(args):
                 gitee_token=args.gitee_token,
                 clone_dir=args.clone_dir,
                 branchList=branch_list,
-                use_cache=not args.no_cache
+                use_cache=not args.no_cache,
+                project_dir=getattr(args, 'project_dir', '') or '',
             )
 
 def handle_get_commits_package(args) -> Tuple[List[Dict], List[Dict]]:

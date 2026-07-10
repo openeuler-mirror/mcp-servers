@@ -690,7 +690,9 @@ def apply_patch(
         llm_base_url: str = None,
         llm_model_name: str = None,
         api_key: str = None,
-        llm_confirm: bool = False,  # 新增：LLM 解决后是否需要人工确认
+        llm_confirm: bool = False,
+        project_dir: str = "",
+        target_path: str = None,
 ):
     """合并分支并且提交
 
@@ -698,7 +700,7 @@ def apply_patch(
         fork_repo_url: git 仓库地址（可选，如果不提供则只做本地补丁应用，不推送）
         gitee_token: Gitee 访问令牌（可选，用于私有仓库认证）
         branch: 处理的分支
-        clone_dir: 本地克隆目录
+        clone_dir: 本地克隆目录（回退使用）
         patch_path: patch 文件路径
         signer_name: 签名者名称
         signer_email: 签名者邮箱
@@ -711,6 +713,8 @@ def apply_patch(
         llm_model_name: LLM 模型名称
         api_key: LLM API 密钥
         llm_confirm: 是否在 LLM 解决冲突后需要人工确认（默认 False）
+        project_dir: 源仓库路径（用于 commit 查询，默认空则使用 clone_dir/linux）
+        target_path: 目标仓库路径（优先使用，默认空则使用 clone_dir 推导）
 
     Returns:
         patch 应用信息字典
@@ -721,17 +725,18 @@ def apply_patch(
             "cve_id": cve_id,
             "error": i18n("分支: %s, CVE: %s 已修复或不受影响, 补丁应用失败") % (branch, cve_id)
         }
-    linux_repo_path = os.path.join(clone_dir, 'linux')
+    linux_repo_path = project_dir if (project_dir and os.path.exists(project_dir)) else os.path.join(clone_dir, 'linux')
     introduced_commit, fixed_commit = get_vulnerability_commits(
         cve_id,
         clone_dir=clone_dir,
+        project_dir=project_dir,
     )
     logger.info(
         f"apply_patch: introduced_commit={introduced_commit}, fixed_commit={fixed_commit}"
     )
     if not fixed_commit:
         raise RuntimeError(i18n("未能获取修复提交(fixed)，无法继续流程"))
-    branch_commit = branch_commit_from_upstream(fixed_commit, branch, clone_dir)
+    branch_commit = branch_commit_from_upstream(fixed_commit, branch, clone_dir, project_dir=project_dir)
     if branch_commit:
         logger.info(
             "apply_patch: fixed_commit: %s, branch: %s, branch_commit: %s",
@@ -766,7 +771,7 @@ def apply_patch(
         repo_name = parts[-1].replace('.git', '')
 
     logger.info("apply_patch: 准备/更新本地仓库（setup_repository）...")
-    repo, repo_path = setup_repository(fork_repo_url, gitee_token, clone_dir)
+    repo, repo_path = setup_repository(fork_repo_url, gitee_token, clone_dir, target_path=target_path)
     logger.info(f"本地仓库已准备就绪，repo_path={repo_path}")
     try:
         logger.info(f"apply_patch: 配置 Git 签名信息，signer_name={signer_name}, signer_email={signer_email}")

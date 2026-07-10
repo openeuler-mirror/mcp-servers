@@ -344,37 +344,45 @@ def check_cve_patch_apply_status(
 
 @cached(
     BRANCHES_ANALYSIS_CACHE,
-    key_builder=lambda repo, issue_info, fork_repo_url, gitee_token, clone_dir, branchList, use_cache=True: _get_cache_key(
-        issue_info.cve_id, ",".join(sorted(branchList))
+    key_builder=lambda repo, issue_info, fork_repo_url, gitee_token, clone_dir, branchList, use_cache=True, project_dir="": _get_cache_key(
+        issue_info.cve_id, ",".join(sorted(branchList)), project_dir
     ),
     use_cache_kw="use_cache",
 )
-def process_branches(repo, issue_info, fork_repo_url, gitee_token=None, clone_dir=None, branchList=None, use_cache=True):
+def process_branches(repo, issue_info, fork_repo_url, gitee_token=None, clone_dir=None, branchList=None, use_cache=True, project_dir=""):
     """处理所有需要补丁的分支
-    
+
     Args:
-        repo: Git仓库对象
+        repo: Git仓库对象（目标仓库，已由 setup_repository 根据 target_path 解析）
         issue_info: 问题信息对象
         fork_repo_url: Fork仓库URL
         gitee_token: Gitee访问令牌（可选，用于私有仓库认证）
         clone_dir: 克隆目录
         branchList: 分支列表
         use_cache: 是否使用缓存
+        project_dir: 源仓库路径（用于 commit 日期/消息查询，默认空则使用 clone_dir/linux）
     """
     logger.info(f"分析分支: {branchList}")
-    
+
     # 缓存未命中，执行分析
     items = []
-    
-    # 尝试从linux仓库获取commit时间
+
+    # 尝试从linux仓库获取commit时间，优先使用 project_dir
     linux_repo = None
-    linux_repo_path = os.path.join(clone_dir, "linux")
-    if os.path.exists(linux_repo_path):
+    if project_dir and os.path.exists(project_dir):
         try:
-            linux_repo = git.Repo(linux_repo_path)
-            logger.debug(f"使用linux仓库查询commit时间: {linux_repo_path}")
+            linux_repo = git.Repo(project_dir)
+            logger.debug(f"使用 project_dir 作为 linux 仓库查询 commit 时间: {project_dir}")
         except Exception as e:
-            logger.debug(f"无法打开linux仓库: {linux_repo_path}, {str(e)}")
+            logger.debug(f"无法打开 project_dir 作为 linux 仓库: {project_dir}, {str(e)}")
+    if linux_repo is None:
+        linux_repo_path = os.path.join(clone_dir, "linux")
+        if os.path.exists(linux_repo_path):
+            try:
+                linux_repo = git.Repo(linux_repo_path)
+                logger.debug(f"使用linux仓库查询commit时间: {linux_repo_path}")
+            except Exception as e:
+                logger.debug(f"无法打开linux仓库: {linux_repo_path}, {str(e)}")
     
     # 获取修复commit的提交信息，用于展示给用户
     fixed_commit_message = None

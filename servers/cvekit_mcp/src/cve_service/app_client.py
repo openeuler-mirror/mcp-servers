@@ -1,3 +1,4 @@
+import os
 import logging
 from typing import Any
 from uuid import uuid4
@@ -20,7 +21,6 @@ def parse_args():
     parser = argparse.ArgumentParser(description="A2A Client - 支持命令行指定CVE-ID")
     parser.add_argument(
         "--cve-id",
-        required=True,
         type=str,
         help="目标CVE编号（例如：CVE-2025-38051）"
     )
@@ -28,7 +28,7 @@ def parse_args():
     parser.add_argument(
         "--action",
         default="branches-analysis",
-        choices=["branches-analysis", "patch-apply-pr-creation", "pipeline", "package-pipeline"],
+        choices=["branches-analysis", "patch-apply-pr-creation", "pipeline", "package-pipeline", "pr-migration"],
         help="操作类型（默认：branches-analysis）"
     )
     parser.add_argument(
@@ -61,6 +61,52 @@ def parse_args():
         type=str,
         help="软件包分支"
     )
+    parser.add_argument(
+        "--project-dir",
+        type=str,
+        default="",
+        help="源仓库路径（mystique 的 --project-dir）"
+    )
+    parser.add_argument(
+        "--target-path",
+        type=str,
+        default="",
+        help="目标仓库路径（mystique 的 --target-path）"
+    )
+    parser.add_argument(
+        "--backport-engine",
+        type=str,
+        default="portgpt",
+        choices=["portgpt", "mystique"],
+        help="回移植引擎：portgpt 或 mystique（默认 portgpt）"
+    )
+    # pr-migration 专用参数
+    parser.add_argument(
+        "--commit-id",
+        type=str,
+        help="待迁移的 commit SHA（pr-migration 专用）"
+    )
+    parser.add_argument(
+        "--source-pr-url",
+        type=str,
+        help="源 PR URL（pr-migration 专用）"
+    )
+    parser.add_argument(
+        "--target-repo-url",
+        type=str,
+        help="目标仓库地址（pr-migration 专用）"
+    )
+    parser.add_argument(
+        "--target-branch",
+        type=str,
+        default="main",
+        help="目标分支（pr-migration 专用，默认 main）"
+    )
+    parser.add_argument(
+        "--message",
+        type=str,
+        help="自定义提交信息（pr-migration 专用）"
+    )
     return parser.parse_args()
 
 async def main() -> None:
@@ -71,7 +117,7 @@ async def main() -> None:
     logger = logging.getLogger(__name__)  # Get a logger instance
     # --8<-- [start:A2ACardResolver]
 
-    base_url = 'http://localhost:9991'
+    base_url = os.environ.get("A2A_BASE_URL", "http://localhost:9991")
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as httpx_client:
         # Initialize A2ACardResolver
@@ -155,7 +201,7 @@ async def main() -> None:
         logger.info('A2AClient initialized.')
         message_text_dict = {
             "action": args.action,
-            "cve_id": args.cve_id
+            "cve_id": args.cve_id or ""
         }
 
         if args.action == "patch-apply-pr-creation":
@@ -166,11 +212,31 @@ async def main() -> None:
             message_text_dict["branches"] = args.branches
             message_text_dict["signer_name"] = args.signer_name
             message_text_dict["signer_email"] = args.signer_email
+            message_text_dict["backport_engine"] = args.backport_engine
             if args.clone_dir:
                 message_text_dict["clone_dir"] = args.clone_dir
+            if args.project_dir:
+                message_text_dict["project_dir"] = args.project_dir
+            if args.target_path:
+                message_text_dict["target_path"] = args.target_path
         if args.action == "package-pipeline":
             message_text_dict["package_name"] = args.package_name
             message_text_dict["branch"] = args.branch
+        if args.action == "pr-migration":
+            message_text_dict["commit_id"] = args.commit_id or ""
+            message_text_dict["source_pr_url"] = args.source_pr_url or ""
+            message_text_dict["signer_name"] = args.signer_name or ""
+            message_text_dict["signer_email"] = args.signer_email or ""
+            message_text_dict["target_repo_url"] = args.target_repo_url or ""
+            message_text_dict["target_branch"] = args.target_branch or "main"
+            message_text_dict["message"] = args.message or ""
+            if args.project_dir:
+                message_text_dict["project_dir"] = args.project_dir
+            if args.target_path:
+                message_text_dict["target_path"] = args.target_path
+            if args.clone_dir:
+                message_text_dict["clone_dir"] = args.clone_dir
+            message_text_dict["backport_engine"] = args.backport_engine
 
         send_message_payload: dict[str, Any] = {
             'message': {

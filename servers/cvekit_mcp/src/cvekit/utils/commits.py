@@ -48,8 +48,8 @@ def get_upstream_commit_from_message(message):
 
 @cached(
     COMMITS_CACHE,
-    # clone_dir 仅用于本地 fallback，不影响缓存 key，这里忽略即可
-    key_builder=lambda cve_id, use_cache=True, clone_dir=None: _get_cache_key(cve_id),
+    # clone_dir / project_dir 仅用于本地 fallback，不影响缓存 key
+    key_builder=lambda cve_id, use_cache=True, clone_dir=None, project_dir="": _get_cache_key(cve_id),
     use_cache_kw="use_cache",
     # 兼容旧版本缓存结构：{"introduced": "...", "fixed": "..."}
     load_transform=lambda v: (
@@ -62,15 +62,17 @@ def get_vulnerability_commits(
     cve_id: str,
     use_cache: bool = True,
     clone_dir: str | None = None,
+    project_dir: str = "",
 ) -> tuple[str, str]:
     """
     获取漏洞相关的真实上游提交信息
-    
+
     Args:
         cve_id: CVE ID
         use_cache: 是否使用缓存
-        clone_dir: 可选，本地 clone 目录（用于在网络受限时，从 clone_dir/linux 本地仓库中确认 upstream commit）
-    
+        clone_dir: 可选，本地 clone 目录（回退使用）
+        project_dir: 源仓库路径（优先用于确认 upstream commit，默认空则使用 clone_dir/linux）
+
     Returns:
         (introduced_commit, fixed_commit): 真实的上游引入提交和修复提交
     """
@@ -92,29 +94,31 @@ def get_vulnerability_commits(
     introduced_commit = None
     fixed_commit = None
 
-    # 如果提供了 clone_dir，则尝试构造本地 linux 仓库路径，并提前加载仓库对象，
-    # 这样可以在解析出 commit_hash 后先在本地仓库中确认是否存在该提交，避免不必要的网络请求。
+    # 如果提供了 clone_dir 或 project_dir，则尝试构造本地 linux 仓库路径，
+    # 优先使用 project_dir，否则使用 clone_dir/linux
     linux_repo_path = None
     linux_repo = None
-    if clone_dir:
-        from os import path
+    from os import path
 
-        linux_repo_path = path.join(clone_dir, "linux")
-        if path.exists(linux_repo_path):
-            try:
-                import git  # 局部导入，避免循环依赖
+    _linux_path = project_dir if (project_dir and path.exists(project_dir)) else (
+        path.join(clone_dir, "linux") if clone_dir else None
+    )
+    if _linux_path and path.exists(_linux_path):
+        try:
+            import git  # 局部导入，避免循环依赖
 
-                linux_repo = git.Repo(linux_repo_path)
-                logger.debug(
-                    "get_vulnerability_commits: 使用本地 linux 仓库做 upstream 解析: %s",
-                    linux_repo_path,
-                )
-            except Exception as e:
-                logger.warning(
-                    "get_vulnerability_commits: 打开本地 linux 仓库失败，将跳过本地 upstream 解析: %s",
-                    e,
-                )
-                linux_repo = None
+            linux_repo = git.Repo(_linux_path)
+            linux_repo_path = _linux_path
+            logger.debug(
+                "get_vulnerability_commits: 使用本地 linux 仓库做 upstream 解析: %s",
+                linux_repo_path,
+            )
+        except Exception as e:
+            logger.warning(
+                "get_vulnerability_commits: 打开本地 linux 仓库失败，将跳过本地 upstream 解析: %s",
+                e,
+            )
+            linux_repo = None
     
     if cve_detail_link_match:
         detail_url = cve_detail_link_match.group("href")
@@ -303,19 +307,20 @@ def _checkout_local_branch(repo: git.Repo, branch_name: str) -> bool:
     return True
 
 
-def branch_commit_from_upstream(fixed_commit: str, branch_name: str, clone_dir: str):
+def branch_commit_from_upstream(fixed_commit: str, branch_name: str, clone_dir: str, project_dir: str = ""):
     """
     使用upstream版本的commit id找上游对应分支上的commit id
 
     Args:
         fixed_commit: git repo
         branch_name: branch name
-        clone_dir: linux代码克隆目录
+        clone_dir: linux代码克隆目录（回退使用）
+        project_dir: 源仓库路径（优先使用）
 
     Returns:
         commit_id: 分支适配commit id
     """
-    linux_repo_path = os.path.join(clone_dir, "linux")
+    linux_repo_path = project_dir if (project_dir and os.path.exists(project_dir)) else os.path.join(clone_dir, "linux")
     if not os.path.exists(linux_repo_path):
         logger.warning('branch_commit_from_upstream: path %s not exists', linux_repo_path)
         return ''

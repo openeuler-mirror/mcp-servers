@@ -4,19 +4,34 @@ from typing import Dict, Any
 
 from flask import Flask, request, jsonify
 
+import uuid
+
 from config import (
     logger,
     GITEE_WEBHOOK_TOKEN,
     GITCODE_WEBHOOK_TOKEN,
+    MIGRATE_WEBHOOK_TOKEN,
+    DEFAULT_CLONE_DIR,
+    DEFAULT_BACKPORT_ENGINE,
 )
 from common import (
     extract_cve_id,
     _handle_comment_commands,
     build_guide_comment_body,
+    TASK_QUEUE,
 )
 from worker import _start_workers
 from gitee_client import _handle_issue_created_webhook
 from gitcode_client import handle_gitcode_issue_created_webhook
+from migrate_client import (
+    validate_migrate_params,
+    parse_pr_url,
+    parse_target_repo_url,
+    MigrateError,
+)
+from migrate_worker import (
+    get_task_result,
+)
 
 
 app = Flask(__name__)
@@ -131,6 +146,118 @@ def gitee_webhook():
         allow_reply_comment=True,
         platform="gitee",
     )
+
+
+# ---- PR 迁移接口 ----
+
+@app.route("/migrate/pr", methods=["POST"])
+def migrate_pr():
+    """
+    PR 代码迁移接口。
+    接收迁移请求，校验参数后入队，返回 202 及 task_id。
+    后台 Worker 通过 app_client.py --action pr-migration 执行迁移。
+    """
+    # 1. 校验 Token
+    if MIGRATE_WEBHOOK_TOKEN:
+        token = request.headers.get("X-Webhook-Token", "")
+        if token != MIGRATE_WEBHOOK_TOKEN:
+            logger.warning("收到非法迁移请求，X-Webhook-Token 不匹配。")
+            return jsonify({"code": 403, "message": "invalid token"}), 403
+
+    data = request.get_json(silent=True) or {}
+
+    # 2. 参数校验
+    errors = validate_migrate_params(data)
+    if errors:
+        return jsonify({"code": 400, "message": "参数校验失败", "errors": errors}), 400
+
+    source_pr_url = data["source_pr_url"].strip()
+    commit_id = data["commit_id"].strip()
+    signer_name = data["signer_name"].strip()
+    signer_email = data["signer_email"].strip()
+    target_repo_url = data["target_repo_url"].strip()
+    target_branch = (data.get("target_branch") or "main").strip()
+    message = (data.get("message") or "").strip() or None
+    clone_dir = (data.get("clone_dir") or DEFAULT_CLONE_DIR).strip()
+    if not clone_dir.endswith("/"):
+        clone_dir += "/"
+    backport_engine = (data.get("backport_engine") or DEFAULT_BACKPORT_ENGINE).strip().lower()
+    if backport_engine not in ("portgpt", "mystique"):
+        backport_engine = DEFAULT_BACKPORT_ENGINE
+    task_id = str(uuid.uuid4())
+
+    # 3. 从 URL 解析出 project_dir 和 target_path
+    project_dir = ""
+    target_path = ""
+    try:
+        src_info = parse_pr_url(source_pr_url)
+        project_dir = f"{clone_dir}{src_info['owner']}/{src_info['repo']}"
+    except MigrateError:
+        project_dir = clone_dir.rstrip("/")
+    try:
+        tgt_info = parse_target_repo_url(target_repo_url)
+        target_path = f"{clone_dir}{tgt_info['owner']}/{tgt_info['repo']}"
+    except MigrateError:
+        target_path = clone_dir.rstrip("/")
+
+    # 4. 构建任务并入 TASK_QUEUE，由现有 Worker 统一调度
+    task = {
+        "task_id": task_id,
+        "cve_id": "",  # pr-migration 不依赖 cve_id
+        "payload": {},
+        "action": "pr-migration",
+        "commit_id": commit_id,
+        "source_pr_url": source_pr_url,
+        "signer_name": signer_name,
+        "signer_email": signer_email,
+        "target_repo_url": target_repo_url,
+        "target_branch": target_branch,
+        "message": message,
+        "project_dir": project_dir,
+        "target_path": target_path,
+        "clone_dir": clone_dir,
+        "backport_engine": backport_engine,
+    }
+
+    try:
+        TASK_QUEUE.put(task)
+        logger.info(
+            "迁移任务已入队: task_id=%s, commit=%s, engine=%s, project_dir=%s, target_path=%s",
+            task_id, commit_id[:12], backport_engine, project_dir, target_path,
+        )
+    except Exception as e:
+        logger.exception("迁移任务入队失败: %s", e)
+        return jsonify({"code": 500, "message": "任务入队失败", "data": {"error": str(e)}}), 500
+
+    return jsonify({
+        "code": 0,
+        "message": "迁移任务已提交",
+        "data": {
+            "task_id": task_id,
+            "source_pr_url": source_pr_url,
+            "commit_id": commit_id,
+            "target_repo_url": target_repo_url,
+            "target_branch": target_branch,
+            "project_dir": project_dir,
+            "target_path": target_path,
+            "clone_dir": clone_dir,
+            "backport_engine": backport_engine,
+            "status": "pending",
+        },
+    }), 202
+
+
+@app.route("/migrate/pr/<task_id>", methods=["GET"])
+def query_migrate_task(task_id: str):
+    """
+    查询迁移任务状态。
+    GET /migrate/pr/{task_id}
+    """
+    result = get_task_result(task_id)
+    if not result:
+        return jsonify({"code": 404, "message": "任务不存在或已过期"}), 404
+
+    return jsonify({"code": 0, "message": "ok", "data": result}), 200
 
 
 if __name__ == "__main__":

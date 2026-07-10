@@ -11,6 +11,9 @@ from config import (
     APP_WORK_DIR,
     APP_CLIENT_FILENAME,
     VENV_PYTHON,
+    DEFAULT_BACKPORT_ENGINE,
+    A2A_BASE_URL,
+    A2A_BASE_URL_MYSTIQUE,
 )
 from common import (
     TASK_QUEUE,
@@ -25,6 +28,7 @@ from a2a_handlers import (
 )
 from gitee_client import _post_issue_comment
 from gitcode_client import _post_gitcode_issue_comment
+from migrate_worker import store_result
 
 
 def run_app_client(
@@ -34,47 +38,90 @@ def run_app_client(
     branches: List[str] | None = None,
     signer_name: str | None = None,
     signer_email: str | None = None,
+    commit_id: str | None = None,
+    source_pr_url: str | None = None,
+    target_repo_url: str | None = None,
+    target_branch: str | None = None,
+    message: str | None = None,
+    project_dir: str | None = None,
+    target_path: str | None = None,
+    clone_dir: str | None = None,
+    backport_engine: str = DEFAULT_BACKPORT_ENGINE,
 ) -> None:
     """
-    调用本地 app_client.py 脚本，例如：
-      - 分支分析：
+    调用本地 app_client.py 脚本，支持三种 action：
+      - branches-analysis：
           python app_client.py --cve-id CVE-2025-38051 --action branches-analysis
-      - 全流程（pipeline），带多分支和签名信息：
+      - pipeline：
           python app_client.py --cve-id CVE-2025-38051 --action pipeline \\
               --branches OLK-6.6,OLK-6.12 \\
               --signer-name "张三" --signer-email "zhangsan@example.com"
+      - pr-migration：
+          python app_client.py --action pr-migration \\
+              --commit-id a1b2c3d4... --source-pr-url https://gitee.com/... \\
+              --signer-name "张三" --signer-email "zhangsan@example.com" \\
+              --target-repo-url https://gitee.com/... --target-branch master \\
+              --message "cherry-pick: ..."
 
-    注意：
-      - 根据 action 选择不同模式：
-          * branches-analysis：仅做分支分析
-          * pipeline：分支分析 + 自动创建 PR，可携带多分支和签名信息
-      - 通过 branches / signer_name / signer_email 进一步控制行为。
-      - 在 APP_WORK_DIR 目录下、使用虚拟环境执行。
+    在 APP_WORK_DIR 目录下、使用虚拟环境执行。
     """
-    if not cve_id:
-        logger.info("没有解析出任何 CVE-ID，不触发脚本。")
-        return
 
-    # 直接调用虚拟环境中的 python，可避免依赖 shell 和 source
-    cmd = [
-        VENV_PYTHON,
-        APP_CLIENT_FILENAME,
-        "--cve-id",
-        cve_id,
-        "--action",
-        action,
-    ]
-
-    # 对于需要分支和签名信息的 action（目前是 pipeline / patch-apply-pr-creation）
-    if action in {"pipeline", "patch-apply-pr-creation"}:
-        if branches:
-            # app_client.py 使用 --branches 参数，多个分支用逗号拼接
-            branch_arg = ",".join(branches)
-            cmd.extend(["--branches", branch_arg])
+    # pr-migration 不需要 cve_id，其标识符为 commit_id
+    if action == "pr-migration":
+        if not commit_id:
+            logger.info("pr-migration 缺少 commit_id，不触发脚本。")
+            return
+        app_client_file = APP_CLIENT_FILENAME
+        cmd = [
+            VENV_PYTHON,
+            app_client_file,
+            "--action",
+            "pr-migration",
+            "--commit-id", commit_id,
+        ]
+        if source_pr_url:
+            cmd.extend(["--source-pr-url", source_pr_url])
         if signer_name:
             cmd.extend(["--signer-name", signer_name])
         if signer_email:
             cmd.extend(["--signer-email", signer_email])
+        if target_repo_url:
+            cmd.extend(["--target-repo-url", target_repo_url])
+        if target_branch:
+            cmd.extend(["--target-branch", target_branch])
+        if message:
+            cmd.extend(["--message", message])
+        if project_dir:
+            cmd.extend(["--project-dir", project_dir])
+        if target_path:
+            cmd.extend(["--target-path", target_path])
+        if clone_dir:
+            cmd.extend(["--clone-dir", clone_dir])
+        if backport_engine == "mystique":
+            cmd.extend(["--backport-engine", backport_engine])
+    else:
+        if not cve_id:
+            logger.info("没有解析出任何 CVE-ID，不触发脚本。")
+            return
+
+        cmd = [
+            VENV_PYTHON,
+            APP_CLIENT_FILENAME,
+            "--cve-id",
+            cve_id,
+            "--action",
+            action,
+        ]
+
+        # 对于需要分支和签名信息的 action（目前是 pipeline / patch-apply-pr-creation）
+        if action in {"pipeline", "patch-apply-pr-creation"}:
+            if branches:
+                branch_arg = ",".join(branches)
+                cmd.extend(["--branches", branch_arg])
+            if signer_name:
+                cmd.extend(["--signer-name", signer_name])
+            if signer_email:
+                cmd.extend(["--signer-email", signer_email])
 
     logger.info("准备执行命令 (cwd=%s): %s", APP_WORK_DIR, " ".join(cmd))
 
@@ -90,6 +137,8 @@ def run_app_client(
         reported_task_error = False
 
         # 使用 Popen 以便实时读取 stdout
+        env = os.environ.copy()
+        env["A2A_BASE_URL"] = A2A_BASE_URL_MYSTIQUE if backport_engine == "mystique" else A2A_BASE_URL
         with open(APP_CLIENT_LOG, "a", buffering=1) as log_fp:  # 行缓冲
             process = subprocess.Popen(
                 cmd,
@@ -98,6 +147,7 @@ def run_app_client(
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
+                env=env,
             )
 
             assert process.stdout is not None
@@ -188,21 +238,32 @@ def _task_worker_loop(worker_id: int) -> None:
     while True:
         task = TASK_QUEUE.get()
         try:
-            cve_id = task.get("cve_id")
+            cve_id = task.get("cve_id") or ""
             payload = task.get("payload") or {}
             action = task.get("action") or "pipeline"
             branches = task.get("branches") or None
             signer_name = task.get("signer_name") or None
             signer_email = task.get("signer_email") or None
+            commit_id = task.get("commit_id") or None
+            source_pr_url = task.get("source_pr_url") or None
+            target_repo_url = task.get("target_repo_url") or None
+            target_branch = task.get("target_branch") or None
+            message = task.get("message") or None
+            project_dir = task.get("project_dir") or None
+            target_path = task.get("target_path") or None
+            clone_dir = task.get("clone_dir") or None
+            backport_engine = task.get("backport_engine") or DEFAULT_BACKPORT_ENGINE
+            task_id = task.get("task_id") or None
 
             logger.info(
-                "Worker-%d 开始处理任务，CVE-ID: %s, action=%s, branches=%s, signer_name=%s, signer_email=%s",
+                "Worker-%d 开始处理任务，CVE-ID: %s, action=%s, branches=%s, signer_name=%s, signer_email=%s, task_id=%s",
                 worker_id,
-                cve_id,
+                cve_id or (commit_id or "")[:12],
                 action,
                 ",".join(branches) if branches else "",
                 signer_name or "",
                 signer_email or "",
+                task_id or "",
             )
 
             # 执行 app_client，同步等待完成（结果由 run_app_client 内部写入 RESULT_QUEUE）
@@ -214,17 +275,51 @@ def _task_worker_loop(worker_id: int) -> None:
                     branches=branches,
                     signer_name=signer_name,
                     signer_email=signer_email,
+                    commit_id=commit_id,
+                    source_pr_url=source_pr_url,
+                    target_repo_url=target_repo_url,
+                    target_branch=target_branch,
+                    message=message,
+                    project_dir=project_dir,
+                    target_path=target_path,
+                    clone_dir=clone_dir,
+                    backport_engine=backport_engine,
                 )
+                # pr-migration 完成后存储结果供查询接口使用
+                if action == "pr-migration" and task_id:
+                    store_result(task_id, {
+                        "task_id": task_id,
+                        "status": "success",
+                        "source_pr_url": source_pr_url,
+                        "commit_id": commit_id,
+                        "target_repo_url": target_repo_url,
+                        "target_branch": target_branch,
+                        "error_type": None,
+                        "error_message": None,
+                        "conflict_files": [],
+                    })
             except Exception as e:
                 logger.exception(
                     "Worker-%d 执行 app_client 失败，CVE-ID: %s，action=%s，error=%s",
                     worker_id,
-                    cve_id,
+                    cve_id or (commit_id or "")[:12],
                     action,
                     e,
                 )
+                if action == "pr-migration" and task_id:
+                    store_result(task_id, {
+                        "task_id": task_id,
+                        "status": "failed",
+                        "source_pr_url": source_pr_url,
+                        "commit_id": commit_id,
+                        "target_repo_url": target_repo_url,
+                        "target_branch": target_branch,
+                        "error_type": "UNKNOWN",
+                        "error_message": str(e),
+                        "conflict_files": [],
+                    })
                 continue
-            logger.info("Worker-%d 已完成任务执行，CVE-ID: %s, action=%s", worker_id, cve_id, action)
+            logger.info("Worker-%d 已完成任务执行，CVE-ID: %s, action=%s", worker_id, cve_id or (commit_id or "")[:12], action)
         except Exception as e:
             logger.exception("Worker-%d 处理任务时发生未捕获异常: %s", worker_id, e)
         finally:
