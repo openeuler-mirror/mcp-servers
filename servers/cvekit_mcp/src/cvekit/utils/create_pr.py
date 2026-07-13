@@ -16,6 +16,38 @@ from .branches import check_analyse_cache_result
 logger = logging.getLogger(__name__)
 
 
+def _resolve_branch_ref(repo: git.Repo, branch: str) -> str:
+    """Return the best available ref for comparing a target branch."""
+    for ref in (branch, f"origin/{branch}"):
+        try:
+            repo.git.rev_parse("--verify", ref)
+            return ref
+        except git.GitCommandError:
+            continue
+    return branch
+
+
+def _branch_has_pr_changes(repo: git.Repo, base_branch: str, fix_branch: str) -> bool:
+    """Return True only when fix_branch would create a non-empty PR diff."""
+    base_ref = _resolve_branch_ref(repo, base_branch)
+    try:
+        repo.git.rev_parse("--verify", fix_branch)
+    except git.GitCommandError:
+        return False
+
+    try:
+        diff_files = repo.git.diff("--name-only", f"{base_ref}..{fix_branch}").strip()
+    except git.GitCommandError as e:
+        logger.warning(
+            "检查修复分支差异失败: base=%s, fix=%s, error=%s",
+            base_ref,
+            fix_branch,
+            e,
+        )
+        return False
+    return bool(diff_files)
+
+
 def generate_pr_body(cve_id, issue_url, clone_dir: str):
     """读取 PR 标题和内容。
 
@@ -156,6 +188,18 @@ def create_pr(
 
             if repo.is_dirty(index=True, working_tree=True, untracked_files=True):
                 repo.index.commit(f"Fix {cve_id}")
+
+        if not _branch_has_pr_changes(repo, branch, fix_branch):
+            message = i18n("分支: %s, CVE: %s 没有需要提交的修复变更，已跳过创建PR") % (branch, cve_id)
+            logger.info(message)
+            return {
+                "status": "skipped",
+                "action": "create_pr",
+                "cve_id": cve_id,
+                "branch": branch,
+                "fix_branch": fix_branch,
+                "message": message,
+            }
 
         fork_repo_with_token = fork_repo_url.replace(
             "https://", 

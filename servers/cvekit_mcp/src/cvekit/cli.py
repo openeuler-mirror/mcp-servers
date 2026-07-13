@@ -301,6 +301,11 @@ def main():
         help='仅在 backport-batch 下使用：生成/续扫 report 时检测到第一条冲突后停止，后续条目标记为 pending'
     )
     backport_group.add_argument(
+        '--enable-conflict-summary',
+        action='store_true',
+        help='仅在 backport-batch 下使用：对已生成解冲突补丁的冲突条目调用 opencode 生成总结和评分'
+    )
+    backport_group.add_argument(
         '--commit-message-template',
         type=str,
         help='仅在 backport-batch 下使用：覆盖配置文件中的 commit message 模板'

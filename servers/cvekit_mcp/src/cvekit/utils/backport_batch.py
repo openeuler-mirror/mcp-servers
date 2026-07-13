@@ -14,6 +14,7 @@ import yaml
 from dataclasses import dataclass
 
 from .backporting import run_backport_from_config
+from .backport_conflict_summary import summarize_conflict_item
 from .commit_message_template import (
     CommitMessageParser,
     DEFAULT_COMMIT_MESSAGE_TEMPLATE,
@@ -35,6 +36,40 @@ import readline
 
 def _format_profile_seconds(value: float) -> str:
     return f"{max(float(value or 0.0), 0.0):.2f}s"
+
+
+def _add_profile_totals(totals: dict[str, float], profile: dict[str, float] | None) -> None:
+    if not isinstance(profile, dict):
+        return
+    for key, value in profile.items():
+        if not key.endswith("_seconds"):
+            continue
+        totals[key] = float(totals.get(key, 0.0) or 0.0) + float(value or 0.0)
+
+
+def _log_backport_batch_summary_profile(
+    *,
+    processed_count: int,
+    total_items: int,
+    batch_seconds: float,
+    profile_totals: dict[str, float],
+) -> None:
+    logger.info(
+        "[backport-batch] profile-summary processed=%d/%d batch=%s patch_gen=%s "
+        "merged_check=%s reverse_apply=%s conflict_check=%s linux_grep=%s "
+        "linux_index=%s target_index=%s item_total=%s",
+        processed_count,
+        total_items,
+        _format_profile_seconds(batch_seconds),
+        _format_profile_seconds(profile_totals.get("patch_gen_seconds", 0.0)),
+        _format_profile_seconds(profile_totals.get("merged_check_seconds", 0.0)),
+        _format_profile_seconds(profile_totals.get("reverse_apply_seconds", 0.0)),
+        _format_profile_seconds(profile_totals.get("conflict_check_seconds", 0.0)),
+        _format_profile_seconds(profile_totals.get("linux_grep_seconds", 0.0)),
+        _format_profile_seconds(profile_totals.get("linux_index_build_seconds", 0.0)),
+        _format_profile_seconds(profile_totals.get("target_index_build_seconds", 0.0)),
+        _format_profile_seconds(profile_totals.get("total_seconds", 0.0)),
+    )
 
 
 def _log_backport_batch_commit_profile(commit_ref: str, profile: dict[str, float], args) -> None:
@@ -158,6 +193,11 @@ def _resolve_target_config_layout_opts(
         result.update(item_opts)
 
     return result
+def _conflict_summary_enabled(args, base_config: dict) -> bool:
+    return bool(
+        getattr(args, "enable_conflict_summary", False)
+        or base_config.get("enable_conflict_summary") is True
+    )
 
 
 @dataclass
@@ -325,6 +365,7 @@ def _normalize_excel_cell_value(row, idx) -> str:
 
 def handle_backport_batch(args):
     """处理批量补丁回移植逻辑（从 cli 入口拆分到 utils 模块）"""
+    handle_started_at = time.perf_counter()
     if getattr(args, "preview_commit_message", False):
         return _handle_preview_commit_message(args)
     if getattr(args, "apply", None):
@@ -337,7 +378,9 @@ def handle_backport_batch(args):
             "检测到 --execute/-e 但当前配置不是 .report.yml。"
             "请先使用 raw 配置生成 report，再对 .report.yml 执行回移植。"
         )
+    context_started_at = time.perf_counter()
     context = _prepare_backport_batch_context(args)
+    context_seconds = time.perf_counter() - context_started_at
     if context is None:
         logger.info("[backport-batch] 用户在交互模式中选择退出，停止执行")
         return []
@@ -359,16 +402,19 @@ def handle_backport_batch(args):
     sort_errors = context.sort_errors
     report_output_path = context.report_output_path or args.backport_config
     logger.info(
-        "[backport-batch] 上下文准备完成: config_type=%s, sorted_items=%d, sort_errors=%d, project_dir=%s, target_path=%s, report_output=%s",
+        "[backport-batch] 上下文准备完成: config_type=%s, sorted_items=%d, sort_errors=%d, "
+        "elapsed=%s, project_dir=%s, target_path=%s, report_output=%s",
         "report" if is_report_config else "raw",
         len(sorted_items),
         len(sort_errors),
+        _format_profile_seconds(context_seconds),
         base_project_dir,
         base_target_path,
         report_output_path,
     )
 
     default_target_branch = args.branch
+    execute_started_at = time.perf_counter()
     results, report_items = _execute_backport_batch_items(
         sorted_items=sorted_items,
         sort_errors=sort_errors,
@@ -386,7 +432,17 @@ def handle_backport_batch(args):
         prepared_patch_batch_token=context.prepared_patch_batch_token,
         args=args,
     )
+    execute_seconds = time.perf_counter() - execute_started_at
+    if _conflict_summary_enabled(args, base_config):
+        summary_started_at = time.perf_counter()
+        _apply_conflict_summaries(report_items, base_target_path)
+        logger.info(
+            "[backport-batch] conflict summary 完成: items=%d elapsed=%s",
+            len(report_items),
+            _format_profile_seconds(time.perf_counter() - summary_started_at),
+        )
 
+    report_build_started_at = time.perf_counter()
     report = _build_backport_batch_report(
         base_config=base_config,
         base_project_dir=base_project_dir,
@@ -398,16 +454,25 @@ def handle_backport_batch(args):
         backport_engine=_resolve_backport_engine(args, {}, base_config),
         report_items=report_items,
     )
+    report_build_seconds = time.perf_counter() - report_build_started_at
+    report_write_started_at = time.perf_counter()
     _write_backport_batch_report(report_output_path, is_report_config, report)
+    report_write_seconds = time.perf_counter() - report_write_started_at
     if getattr(args, "backport_log_file", None):
         for result in results:
             details = result.get("details")
             if isinstance(details, dict):
                 details.setdefault("batch_logfile", args.backport_log_file)
     logger.info(
-        "[backport-batch] 处理完成: results=%d, report_items=%d, report_path=%s, log_path=%s",
+        "[backport-batch] 处理完成: results=%d, report_items=%d, context=%s, execute=%s, "
+        "report_build=%s, report_write=%s, total=%s, report_path=%s, log_path=%s",
         len(results),
         len(report_items),
+        _format_profile_seconds(context_seconds),
+        _format_profile_seconds(execute_seconds),
+        _format_profile_seconds(report_build_seconds),
+        _format_profile_seconds(report_write_seconds),
+        _format_profile_seconds(time.perf_counter() - handle_started_at),
         report_output_path if is_report_config else report_output_path + ".report.yml",
         getattr(args, "backport_log_file", ""),
     )
@@ -3458,7 +3523,14 @@ def _process_backport_batch_item(
     target_branch = _resolve_target_branch(item_config, base_config, default_target_branch)
     if not target_branch:
         logger.info("[backport-batch] 目标分支缺失: tag=%s", tag or commit_id)
-        return {"skip": True, "did_backport": False}
+        commit_ref = str(commit_id or input_commit or tag or "")
+        _finalize_backport_batch_profile(
+            started_at=total_started_at,
+            commit_ref=commit_ref,
+            profile=profile,
+            args=args,
+        )
+        return {"skip": True, "did_backport": False, "profile": profile}
 
     fixed_commit = commit_id
     patch_path = item_config.get("patch_path") or item_config.get("original_patch_path") or ""
@@ -3486,7 +3558,7 @@ def _process_backport_batch_item(
             profile=profile,
             args=args,
         )
-        return {"skip": True, "did_backport": False}
+        return {"skip": True, "did_backport": False, "profile": profile}
 
     merged_in_target = item_config.get("merged_in_target")
     merged_check_error = item_config.get("merged_check_error")
@@ -3660,6 +3732,7 @@ def _process_backport_batch_item(
             "report_item": report_item,
             "did_backport": did_backport,
             "fatal_error": backport_result.get("fatal_error"),
+            "profile": profile,
         }
     except Exception as e:
         result = _build_backport_batch_failed_result(
@@ -3708,6 +3781,7 @@ def _process_backport_batch_item(
             "report_item": report_item,
             "did_backport": did_backport,
             "fatal_error": f"处理条目时发生异常，中止批量处理: tag={tag or commit_id}, error={e}",
+            "profile": profile,
         }
 
 
@@ -3755,6 +3829,43 @@ def _build_backport_batch_report(
     return report
 
 
+def _apply_conflict_summaries(report_items: list, target_path: str) -> None:
+    for item in report_items:
+        if not isinstance(item, dict) or item.get("has_conflict") is not True:
+            continue
+        original_patch_path = str(item.get("original_patch_path") or "").strip()
+        backported_patch_path = str(item.get("backported_patch_path") or "").strip()
+        if not original_patch_path or not backported_patch_path:
+            item["conflict_summary"] = {
+                "status": "skipped",
+                "provider": "opencode",
+                "score": None,
+                "reason": "",
+                "error": "missing original_patch_path or backported_patch_path",
+            }
+            continue
+        try:
+            item["conflict_summary"] = summarize_conflict_item(
+                target_branch=str(item.get("target_branch") or ""),
+                original_patch_path=original_patch_path,
+                backported_patch_path=backported_patch_path,
+                target_path=target_path,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[backport-conflict-summary] unexpected failure: commit=%s error=%s",
+                item.get("commit") or item.get("input_commit") or "",
+                exc,
+            )
+            item["conflict_summary"] = {
+                "status": "failed",
+                "provider": "opencode",
+                "score": None,
+                "reason": "",
+                "error": str(exc),
+            }
+
+
 def _write_backport_batch_report(config_path, is_report_config, report):
     report_path = config_path if is_report_config else config_path + ".report.yml"
     sanitized_report = _strip_runtime_private_keys(report)
@@ -3793,7 +3904,10 @@ def _resolve_target_title_index_ref_sha(target_path: str, target_branch: str | N
 
 
 def _prepare_backport_batch_context(args):
+    prepare_started_at = time.perf_counter()
+    load_started_at = time.perf_counter()
     config, commit_items = _load_backport_batch_config(args.backport_config)
+    load_seconds = time.perf_counter() - load_started_at
     is_report_config = _is_report_config(args.backport_config, commit_items)
     report_output_path = args.backport_config
     logger.info("[backport-batch] 配置类型: %s", "report" if is_report_config else "raw")
@@ -3822,6 +3936,7 @@ def _prepare_backport_batch_context(args):
     if not base_target_path:
         raise ValueError("backport-batch 必须提供目标仓路径 target_path")
 
+    sort_started_at = time.perf_counter()
     sorted_items, sort_errors = _resolve_sorted_backport_items(
         commit_items,
         is_report_config,
@@ -3829,11 +3944,15 @@ def _prepare_backport_batch_context(args):
         base_config,
         args,
     )
+    sort_seconds = time.perf_counter() - sort_started_at
+    target_allowlist_started_at = time.perf_counter()
     target_title_allowlist = _resolve_complete_target_title_allowlist(
         sorted_items,
         base_project_dir,
     )
+    target_allowlist_seconds = time.perf_counter() - target_allowlist_started_at
     prepared_patch_batch_token = uuid.uuid4().hex
+    linux_allowlist_started_at = time.perf_counter()
     linux_subject_allowlist = _resolve_complete_linux_subject_allowlist(
         sorted_items,
         is_report_config=is_report_config,
@@ -3841,10 +3960,12 @@ def _prepare_backport_batch_context(args):
         prepared_patch_batch_token=prepared_patch_batch_token,
         generate_missing_patch=bool(is_report_config and getattr(args, "stop_at_first_conflict", False)),
     )
+    linux_allowlist_seconds = time.perf_counter() - linux_allowlist_started_at
     target_title_index_ref_branch = (
         getattr(args, "branch", None) or base_config.get("target_branch") or base_config.get("target_release")
     )
     target_title_index_ref_sha = str(base_config.get("target_title_index_ref_sha") or "").strip()
+    baseline_started_at = time.perf_counter()
     if target_title_index_ref_sha:
         logger.info(
             "[backport-batch] 使用 report 固定的 target title index baseline: branch=%s sha=%s",
@@ -3856,11 +3977,22 @@ def _prepare_backport_batch_context(args):
             base_target_path,
             target_title_index_ref_branch,
         )
+    baseline_seconds = time.perf_counter() - baseline_started_at
     logger.info(
-        "[backport-batch] 排序完成: total_items=%d, sorted_items=%d, sort_errors=%d",
+        "[backport-batch] prepare-profile total_items=%d sorted_items=%d sort_errors=%d "
+        "load=%s sort=%s target_allowlist=%s linux_allowlist=%s baseline=%s total=%s "
+        "target_titles=%d linux_subjects=%d",
         len(commit_items),
         len(sorted_items),
         len(sort_errors),
+        _format_profile_seconds(load_seconds),
+        _format_profile_seconds(sort_seconds),
+        _format_profile_seconds(target_allowlist_seconds),
+        _format_profile_seconds(linux_allowlist_seconds),
+        _format_profile_seconds(baseline_seconds),
+        _format_profile_seconds(time.perf_counter() - prepare_started_at),
+        len(target_title_allowlist),
+        len(linux_subject_allowlist),
     )
     return BackportBatchContext(
         config=config,
@@ -3900,6 +4032,9 @@ def _execute_backport_batch_items(
 ):
     results = []
     report_items = []
+    batch_started_at = time.perf_counter()
+    profile_totals: dict[str, float] = {}
+    processed_count = 0
     stop_at_first_conflict = bool(getattr(args, "stop_at_first_conflict", False))
     start_index = 0
     logger.info(
@@ -3936,6 +4071,7 @@ def _execute_backport_batch_items(
             "[backport-batch] 处理第 %d/%d 项: tag=%s, is_report=%s, stop_at_first=%s",
             idx, len(sorted_items), item_tag, is_report_config, stop_at_first_conflict,
         )
+        item_started_at = time.perf_counter()
         processed = _process_backport_batch_item(
             item=item,
             is_report_config=is_report_config,
@@ -3951,6 +4087,28 @@ def _execute_backport_batch_items(
             target_title_index_ref_sha=target_title_index_ref_sha,
             prepared_patch_batch_token=prepared_patch_batch_token,
             args=args,
+        )
+        processed_count += 1
+        processed_profile = processed.get("profile")
+        _add_profile_totals(profile_totals, processed_profile)
+        report_item_status = processed.get("report_item", {}) if isinstance(processed.get("report_item"), dict) else {}
+        logger.info(
+            "[backport-batch] item-profile index=%d/%d tag=%s elapsed=%s status=%s "
+            "merged=%s conflict=%s patch_gen=%s merged_check=%s reverse_apply=%s "
+            "conflict_check=%s linux_grep=%s item_total=%s",
+            idx,
+            len(sorted_items),
+            item_tag,
+            _format_profile_seconds(time.perf_counter() - item_started_at),
+            report_item_status.get("status") or "",
+            report_item_status.get("merged_in_target"),
+            report_item_status.get("has_conflict"),
+            _format_profile_seconds((processed_profile or {}).get("patch_gen_seconds", 0.0)),
+            _format_profile_seconds((processed_profile or {}).get("merged_check_seconds", 0.0)),
+            _format_profile_seconds((processed_profile or {}).get("reverse_apply_seconds", 0.0)),
+            _format_profile_seconds((processed_profile or {}).get("conflict_check_seconds", 0.0)),
+            _format_profile_seconds((processed_profile or {}).get("linux_grep_seconds", 0.0)),
+            _format_profile_seconds((processed_profile or {}).get("total_seconds", 0.0)),
         )
         if processed.get("skip"):
             logger.info("[backport-batch] 条目跳过: index=%d", idx)
@@ -4001,5 +4159,11 @@ def _execute_backport_batch_items(
         "[backport-batch] 批量处理结束: results=%d, report_items=%d",
         len(results),
         len(report_items),
+    )
+    _log_backport_batch_summary_profile(
+        processed_count=processed_count,
+        total_items=len(sorted_items),
+        batch_seconds=time.perf_counter() - batch_started_at,
+        profile_totals=profile_totals,
     )
     return results, report_items

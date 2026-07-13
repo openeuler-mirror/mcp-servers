@@ -14,8 +14,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from cvekit.utils import backport_batch
+from cvekit.utils import backport_sort
 from cvekit.utils import commit_message_template
 from cvekit.utils.config_layout import ConfigError
+from cvekit.utils import git_subject_index_cache
 
 
 def _write_test_patch(path: Path, subject: str) -> None:
@@ -59,6 +61,90 @@ def test_is_report_config_requires_report_suffix_even_with_report_fields():
 
     assert backport_batch._is_report_config("batch.yml", commit_items) is False
     assert backport_batch._is_report_config("batch.report.yml", commit_items) is True
+
+
+def test_conflict_summary_enabled_defaults_to_false():
+    args = Namespace()
+
+    assert backport_batch._conflict_summary_enabled(args, {}) is False
+
+
+def test_conflict_summary_enabled_accepts_cli_or_config():
+    assert backport_batch._conflict_summary_enabled(
+        Namespace(enable_conflict_summary=True),
+        {},
+    ) is True
+    assert backport_batch._conflict_summary_enabled(
+        Namespace(enable_conflict_summary=False),
+        {"enable_conflict_summary": True},
+    ) is True
+
+
+def test_apply_conflict_summaries_only_summarizes_complete_conflict_items(monkeypatch):
+    calls = []
+
+    def fake_summarize(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "success",
+            "provider": "opencode",
+            "score": 5,
+            "reason": "summary",
+            "error": "",
+        }
+
+    monkeypatch.setattr(backport_batch, "summarize_conflict_item", fake_summarize)
+    report_items = [
+        {
+            "commit": "abc123",
+            "commit_title": "Fix A",
+            "target_branch": "OLK-6.6",
+            "has_conflict": True,
+            "original_patch_path": "/tmp/source.patch",
+            "backported_patch_path": "/tmp/resolved.patch",
+        },
+        {
+            "commit": "def456",
+            "has_conflict": True,
+            "original_patch_path": "/tmp/source.patch",
+            "backported_patch_path": "",
+        },
+        {
+            "commit": "ghi789",
+            "has_conflict": False,
+            "original_patch_path": "/tmp/source.patch",
+            "backported_patch_path": "/tmp/resolved.patch",
+        },
+    ]
+
+    backport_batch._apply_conflict_summaries(report_items, "/tmp/target")
+
+    assert len(calls) == 1
+    assert calls[0]["target_branch"] == "OLK-6.6"
+    assert calls[0]["target_path"] == "/tmp/target"
+    assert report_items[0]["conflict_summary"]["status"] == "success"
+    assert report_items[1]["conflict_summary"]["status"] == "skipped"
+    assert "conflict_summary" not in report_items[2]
+
+
+def test_apply_conflict_summaries_records_single_item_failure(monkeypatch):
+    def fake_summarize(**kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(backport_batch, "summarize_conflict_item", fake_summarize)
+    report_items = [
+        {
+            "commit": "abc123",
+            "has_conflict": True,
+            "original_patch_path": "/tmp/source.patch",
+            "backported_patch_path": "/tmp/resolved.patch",
+        }
+    ]
+
+    backport_batch._apply_conflict_summaries(report_items, "/tmp/target")
+
+    assert report_items[0]["conflict_summary"]["status"] == "failed"
+    assert report_items[0]["conflict_summary"]["error"] == "boom"
 
 
 def test_find_commit_title_in_target_ignores_reverted_title_match():
@@ -463,6 +549,370 @@ def test_source_detector_allowlist_hits_filtered_index_without_grep(tmp_path):
     assert matches == ["sha1"]
     index_mock.assert_called_once_with(repo)
     repo.git.log.assert_not_called()
+
+
+def test_git_subject_index_cache_reuses_full_index_for_different_allowlists(tmp_path, monkeypatch):
+    db_path = tmp_path / "backport-index.sqlite"
+    repo_path = tmp_path / "linux"
+    repo_path.mkdir()
+    calls = []
+
+    def fake_git_log_subject_rows(path: str, ref_name: str, *, no_merges: bool = False):
+        calls.append((path, ref_name, no_merges))
+        return [
+            ("sha1", "First subject"),
+            ("sha2", "Second subject"),
+        ]
+
+    monkeypatch.setenv(git_subject_index_cache.ENV_CACHE_DB, str(db_path))
+    monkeypatch.setattr(git_subject_index_cache, "_git_log_subject_rows", fake_git_log_subject_rows)
+
+    stored = git_subject_index_cache.build_and_store_subject_index(
+        repo_path=str(repo_path),
+        ref_name="origin/master",
+        ref_sha="master-a",
+        index_kind=git_subject_index_cache.INDEX_KIND_LINUX_SUBJECT,
+    )
+    first = git_subject_index_cache.load_subject_matches(
+        repo_path=str(repo_path),
+        ref_name="origin/master",
+        ref_sha="master-a",
+        subjects={"First subject"},
+        index_kind=git_subject_index_cache.INDEX_KIND_LINUX_SUBJECT,
+    )
+    second = git_subject_index_cache.load_subject_matches(
+        repo_path=str(repo_path),
+        ref_name="origin/master",
+        ref_sha="master-a",
+        subjects={"Second subject"},
+        index_kind=git_subject_index_cache.INDEX_KIND_LINUX_SUBJECT,
+    )
+    changed_ref = git_subject_index_cache.load_subject_matches(
+        repo_path=str(repo_path),
+        ref_name="origin/master",
+        ref_sha="master-b",
+        subjects={"First subject"},
+        index_kind=git_subject_index_cache.INDEX_KIND_LINUX_SUBJECT,
+    )
+
+    assert stored == 2
+    assert first == {"First subject": ("sha1",)}
+    assert second == {"Second subject": ("sha2",)}
+    assert changed_ref is None
+    assert calls == [(str(repo_path.resolve()), "origin/master", False)]
+
+
+def test_git_subject_index_cache_incrementally_updates_fast_forward_ref(tmp_path, monkeypatch):
+    db_path = tmp_path / "backport-index.sqlite"
+    repo_path = tmp_path / "source"
+    repo_path.mkdir()
+    calls = []
+
+    def fake_git_log_subject_rows(path: str, ref_name: str, *, no_merges: bool = False):
+        calls.append((ref_name, no_merges))
+        if ref_name == "source-a":
+            return [("old-sha", "Old subject")]
+        if ref_name == "source-a..source-b":
+            return [("new-sha", "New subject")]
+        raise AssertionError(f"unexpected git log ref: {ref_name}")
+
+    monkeypatch.setenv(git_subject_index_cache.ENV_CACHE_DB, str(db_path))
+    monkeypatch.setattr(git_subject_index_cache, "_git_log_subject_rows", fake_git_log_subject_rows)
+    monkeypatch.setattr(git_subject_index_cache, "_is_ancestor", lambda repo, old, new: True)
+
+    first_status = git_subject_index_cache.ensure_subject_index(
+        repo_path=str(repo_path),
+        ref_name="source-branch",
+        ref_sha="source-a",
+        index_kind=git_subject_index_cache.INDEX_KIND_SOURCE_SUBJECT_NO_MERGES,
+        no_merges=True,
+    )
+    second_status = git_subject_index_cache.ensure_subject_index(
+        repo_path=str(repo_path),
+        ref_name="source-branch",
+        ref_sha="source-b",
+        index_kind=git_subject_index_cache.INDEX_KIND_SOURCE_SUBJECT_NO_MERGES,
+        no_merges=True,
+    )
+    matches = git_subject_index_cache.load_subject_matches(
+        repo_path=str(repo_path),
+        ref_name="source-branch",
+        ref_sha="source-b",
+        subjects={"Old subject", "New subject"},
+        index_kind=git_subject_index_cache.INDEX_KIND_SOURCE_SUBJECT_NO_MERGES,
+    )
+
+    assert first_status == "built"
+    assert second_status == "incremental"
+    assert matches == {
+        "New subject": ("new-sha",),
+        "Old subject": ("old-sha",),
+    }
+    assert calls == [("source-a", True), ("source-a..source-b", True)]
+
+
+def test_git_subject_index_cache_rebuilds_non_fast_forward_ref(tmp_path, monkeypatch):
+    db_path = tmp_path / "backport-index.sqlite"
+    repo_path = tmp_path / "source"
+    repo_path.mkdir()
+    calls = []
+
+    def fake_git_log_subject_rows(path: str, ref_name: str, *, no_merges: bool = False):
+        calls.append(ref_name)
+        if ref_name == "source-a":
+            return [("old-sha", "Old subject")]
+        if ref_name == "source-c":
+            return [("new-sha", "New subject")]
+        raise AssertionError(f"unexpected git log ref: {ref_name}")
+
+    monkeypatch.setenv(git_subject_index_cache.ENV_CACHE_DB, str(db_path))
+    monkeypatch.setattr(git_subject_index_cache, "_git_log_subject_rows", fake_git_log_subject_rows)
+    monkeypatch.setattr(git_subject_index_cache, "_is_ancestor", lambda repo, old, new: False)
+
+    git_subject_index_cache.ensure_subject_index(
+        repo_path=str(repo_path),
+        ref_name="source-branch",
+        ref_sha="source-a",
+        index_kind=git_subject_index_cache.INDEX_KIND_SOURCE_SUBJECT_NO_MERGES,
+        no_merges=True,
+    )
+    status = git_subject_index_cache.ensure_subject_index(
+        repo_path=str(repo_path),
+        ref_name="source-branch",
+        ref_sha="source-c",
+        index_kind=git_subject_index_cache.INDEX_KIND_SOURCE_SUBJECT_NO_MERGES,
+        no_merges=True,
+    )
+    matches = git_subject_index_cache.load_subject_matches(
+        repo_path=str(repo_path),
+        ref_name="source-branch",
+        ref_sha="source-c",
+        subjects={"Old subject", "New subject"},
+        index_kind=git_subject_index_cache.INDEX_KIND_SOURCE_SUBJECT_NO_MERGES,
+    )
+
+    assert status == "built"
+    assert matches == {
+        "Old subject": (),
+        "New subject": ("new-sha",),
+    }
+    assert calls == ["source-a", "source-c"]
+
+
+def test_source_detector_allowlist_uses_disk_cache_across_instances(tmp_path, monkeypatch):
+    db_path = tmp_path / "backport-index.sqlite"
+    repo_path = tmp_path / "linux"
+    repo_path.mkdir()
+    monkeypatch.setenv(git_subject_index_cache.ENV_CACHE_DB, str(db_path))
+    monkeypatch.setattr(
+        git_subject_index_cache,
+        "_git_log_subject_rows",
+        lambda path, ref_name, *, no_merges=False: [("sha1", "Indexed subject")],
+    )
+    git_subject_index_cache.build_and_store_subject_index(
+        repo_path=str(repo_path),
+        ref_name="origin/master",
+        ref_sha="master-a",
+        index_kind=git_subject_index_cache.INDEX_KIND_LINUX_SUBJECT,
+    )
+    repo = SimpleNamespace(
+        working_tree_dir=str(repo_path),
+        commit=lambda ref: SimpleNamespace(hexsha="master-a"),
+    )
+    detector = commit_message_template.SourceDetector(
+        linux_repo_path=str(repo_path),
+        subject_allowlist=frozenset({"Indexed subject"}),
+        filtered_subject_index_cache=commit_message_template.FilteredSubjectIndexCache(),
+    )
+
+    with mock.patch.object(detector, "_repo", return_value=repo), mock.patch(
+        "cvekit.utils.commit_message_template.subprocess.Popen"
+    ) as popen_mock:
+        matches = detector._find_commits_by_subject("Indexed subject")
+
+    assert matches == ["sha1"]
+    popen_mock.assert_not_called()
+
+
+def test_source_detector_no_cache_skips_disk_cache(tmp_path, monkeypatch):
+    repo_path = tmp_path / "linux"
+    repo_path.mkdir()
+    repo = SimpleNamespace(
+        working_tree_dir=str(repo_path),
+        commit=lambda ref: SimpleNamespace(hexsha="master-a"),
+    )
+
+    class FakeProcess:
+        returncode = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def communicate(self):
+            return "sha-fallback\x00Indexed subject\n", ""
+
+    detector = commit_message_template.SourceDetector(
+        linux_repo_path=str(repo_path),
+        subject_allowlist=frozenset({"Indexed subject"}),
+        filtered_subject_index_cache=commit_message_template.FilteredSubjectIndexCache(),
+        use_disk_subject_index_cache=False,
+    )
+
+    with mock.patch.object(detector, "_repo", return_value=repo), mock.patch(
+        "cvekit.utils.commit_message_template.git_subject_index_cache.load_subject_matches"
+    ) as load_mock, mock.patch(
+        "cvekit.utils.commit_message_template.subprocess.Popen",
+        return_value=FakeProcess(),
+    ) as popen_mock:
+        matches = detector._find_commits_by_subject("Indexed subject")
+
+    assert matches == ["sha-fallback"]
+    load_mock.assert_not_called()
+    popen_mock.assert_called_once()
+
+
+def test_source_sort_subject_index_uses_disk_cache(tmp_path, monkeypatch):
+    db_path = tmp_path / "backport-index.sqlite"
+    repo_path = tmp_path / "source"
+    repo_path.mkdir()
+    monkeypatch.setenv(git_subject_index_cache.ENV_CACHE_DB, str(db_path))
+    monkeypatch.setattr(
+        git_subject_index_cache,
+        "_git_log_subject_rows",
+        lambda path, ref_name, *, no_merges=False: [("sha1", "Source title")],
+    )
+    git_subject_index_cache.build_and_store_subject_index(
+        repo_path=str(repo_path),
+        ref_name="source-branch",
+        ref_sha="source-a",
+        index_kind=git_subject_index_cache.INDEX_KIND_SOURCE_SUBJECT_NO_MERGES,
+        no_merges=True,
+    )
+    repo = SimpleNamespace(
+        working_tree_dir=str(repo_path),
+        working_dir=str(repo_path),
+        commit=lambda ref: SimpleNamespace(hexsha="source-a"),
+        git=SimpleNamespace(log=mock.Mock()),
+    )
+
+    index, error = backport_sort._build_commit_subject_index(
+        repo,
+        "source-branch",
+        {"Source title"},
+    )
+
+    assert error is None
+    assert index == [("sha1", "Source title", "source title")]
+    repo.git.log.assert_not_called()
+
+
+def test_target_title_index_uses_disk_cache_across_cache_instances(tmp_path, monkeypatch):
+    db_path = tmp_path / "backport-index.sqlite"
+    repo_path = tmp_path / "target"
+    repo_path.mkdir()
+    monkeypatch.setenv(git_subject_index_cache.ENV_CACHE_DB, str(db_path))
+    monkeypatch.setattr(
+        git_subject_index_cache,
+        "_git_log_subject_rows",
+        lambda path, ref_name, *, no_merges=False: [
+            ("sha1", "Target title"),
+            ("sha2", 'Revert "Old title"'),
+        ],
+    )
+    git_subject_index_cache.build_and_store_subject_index(
+        repo_path=str(repo_path),
+        ref_name="target-branch",
+        ref_sha="target-a",
+        index_kind=git_subject_index_cache.INDEX_KIND_TARGET_SUBJECT,
+    )
+    target_repo = SimpleNamespace(
+        working_tree_dir=str(repo_path),
+        working_dir=str(repo_path),
+        commit=lambda ref: SimpleNamespace(hexsha="target-a"),
+    )
+
+    with mock.patch("cvekit.utils.backport_batch.subprocess.Popen") as popen_mock:
+        matches = backport_batch._filtered_commit_title_index_in_target(
+            target_repo,
+            "target-branch",
+            {"Target title", "Old title"},
+            backport_batch.FilteredTitleIndexCache(),
+        )
+
+    assert matches == {
+        "Old title": (("revert", "sha2", 'Revert "Old title"'),),
+        "Target title": (("match", "sha1", "Target title"),),
+    }
+    popen_mock.assert_not_called()
+
+
+def test_target_title_index_uses_fixed_baseline_sha(tmp_path, monkeypatch):
+    db_path = tmp_path / "backport-index.sqlite"
+    repo_path = tmp_path / "target"
+    repo_path.mkdir()
+    logged_refs = []
+
+    def fake_git_log_subject_rows(path: str, ref_name: str, *, no_merges: bool = False):
+        logged_refs.append(ref_name)
+        return [("base-sha", "Target title")]
+
+    monkeypatch.setenv(git_subject_index_cache.ENV_CACHE_DB, str(db_path))
+    monkeypatch.setattr(git_subject_index_cache, "_git_log_subject_rows", fake_git_log_subject_rows)
+    monkeypatch.setattr(git_subject_index_cache, "_is_ancestor", lambda repo, old, new: True)
+    target_repo = SimpleNamespace(
+        working_tree_dir=str(repo_path),
+        working_dir=str(repo_path),
+        commit=lambda ref: SimpleNamespace(hexsha="moving-head-sha"),
+    )
+
+    matches = backport_batch._filtered_commit_title_index_in_target(
+        target_repo,
+        "target-branch",
+        {"Target title"},
+        backport_batch.FilteredTitleIndexCache(),
+        index_ref_sha="baseline-sha",
+    )
+
+    assert matches == {"Target title": (("match", "base-sha", "Target title"),)}
+    assert logged_refs == ["baseline-sha"]
+
+
+def test_prepare_context_uses_report_target_title_index_baseline(monkeypatch):
+    args = Namespace(backport_config="batch.report.yml", interactive=False)
+    config = {
+        "project_dir": "/src/project",
+        "target_path": "/src/target",
+        "target_branch": "OLK-6.6",
+        "target_title_index_ref_sha": "pinned-target-sha",
+        "commits": [{"commit": "abc123"}],
+    }
+    sorted_items = [{"commit": "abc123", "status": "pending"}]
+
+    monkeypatch.setattr(backport_batch, "_load_backport_batch_config", lambda path: (config, config["commits"]))
+    monkeypatch.setattr(backport_batch, "_is_report_config", lambda path, items: True)
+    monkeypatch.setattr(
+        backport_batch,
+        "_resolve_sorted_backport_items",
+        lambda commit_items, is_report_config, base_project_dir, base_config, args: (sorted_items, []),
+    )
+    monkeypatch.setattr(backport_batch, "_resolve_complete_target_title_allowlist", lambda items, project_dir: frozenset())
+    monkeypatch.setattr(
+        backport_batch,
+        "_resolve_complete_linux_subject_allowlist",
+        lambda *args, **kwargs: frozenset(),
+    )
+    monkeypatch.setattr(
+        backport_batch,
+        "_resolve_target_title_index_ref_sha",
+        mock.Mock(side_effect=AssertionError("should use pinned baseline")),
+    )
+
+    context = backport_batch._prepare_backport_batch_context(args)
+
+    assert context.target_title_index_ref_sha == "pinned-target-sha"
 
 
 def test_resolve_backport_engine_rejects_unknown_engine():

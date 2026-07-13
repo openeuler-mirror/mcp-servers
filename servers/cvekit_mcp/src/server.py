@@ -732,6 +732,13 @@ def create_pr(
         res += i18n("- 目标仓库: %s\n") % (repo_url)
         res += i18n("- 失败原因: %s\n") % (error_msg)
         return res
+
+    if result.get('status') == 'skipped':
+        res = i18n("该分支无需创建PR。\n")
+        res += i18n("- 目标分支: %s\n") % (branch)
+        res += i18n("- 修复分支: %s\n") % (result.get('fix_branch', ''))
+        res += i18n("- 原因: %s\n") % (result.get('message', i18n("没有需要提交的修复变更")))
+        return res
     
     pr_url = result.get('pr_html_url', '')
     pr_number = result.get('pr_number', '')
