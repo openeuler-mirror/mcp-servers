@@ -305,11 +305,20 @@ cvekit --action backport-batch --backport-config /path/to/backport-batch.yml.rep
 
 ### 应用特定补丁并签名
 
-可以使用 `--apply` 选项指定特定的 commit 进行应用，并使用 `--signer-name` 和 `--signer-email` 选项为提交添加签名。
+可以使用 `--apply` 选项指定特定的 commit 或 patch 进行应用，并使用 `--commit-message-source`、`--commit-message-template`、`--signer-name`、`--signer-email` 等参数覆盖配置文件中的提交信息生成规则。
+
+`--commit-message-source auto` 表示由 cvekit 判断 commit message 来源；也可以显式指定为 `openEuler` 或 `upstream`。如果 report/config 里已经有 `linux_repo_path`，命令行无需重复传 `--linux-repo-path`；只有需要临时覆盖配置文件里的 Linux 仓库路径时才追加该参数。
 
 ```bash
-# 应用特定补丁并签名
-cvekit --action backport-batch --backport-config test.yml.filtered.report.yml --json --debug --apply 71544d0b1de3 --signer-name "dev" --signer-email "dev@xx.com" -i
+# 应用特定补丁，自动判断 commit message 来源，并签名
+cvekit --action backport-batch \
+  --backport-config test.yml.filtered.report.yml \
+  --json --debug \
+  --apply 71544d0b1de3 \
+  --commit-message-source auto \
+  --commit-message-template $'{{subject}}\n\ncommit {{commit_id}} {{source}}\n\n{{body}}\n\n{{trailers}}' \
+  --signer-name "dev" \
+  --signer-email "dev@xx.com"
 ```
 
 ### 完整工作流程
@@ -336,7 +345,14 @@ cvekit --action backport-batch --backport-config test.yml.filtered.report.yml --
 
 5. **应用特定补丁并签名**
    ```bash
-   cvekit --action backport-batch --backport-config test.yml.filtered.report.yml --json --debug --apply 71544d0b1de3 --signer-name "dev" --signer-email "dev@xx.com" -i
+   cvekit --action backport-batch \
+     --backport-config test.yml.filtered.report.yml \
+     --json --debug \
+     --apply 71544d0b1de3 \
+     --commit-message-source auto \
+     --commit-message-template $'{{subject}}\n\ncommit {{commit_id}} {{source}}\n\n{{body}}\n\n{{trailers}}' \
+     --signer-name "dev" \
+     --signer-email "dev@xx.com"
    ```
 
 注意：
