@@ -38,8 +38,19 @@ BRANCHES_ANALYSIS_CACHE_FILE = os.path.expanduser("~/.cve_analyzer_cache/branche
 # ---- PR 迁移相关配置 ----
 MIGRATE_WEBHOOK_TOKEN = os.environ.get("MIGRATE_WEBHOOK_TOKEN", "")
 DEFAULT_CLONE_DIR = os.environ.get("DEFAULT_CLONE_DIR", "")
-DEFAULT_BACKPORT_ENGINE = os.environ.get("DEFAULT_BACKPORT_ENGINE", "mystique")
+DEFAULT_BACKPORT_ENGINE = os.environ.get("DEFAULT_BACKPORT_ENGINE", "backport")
 
-# A2A 服务地址（app_client 通过环境变量 A2A_BASE_URL 读取）
-A2A_BASE_URL = os.environ.get("A2A_BASE_URL", "http://localhost:9991")
-A2A_BASE_URL_MYSTIQUE = os.environ.get("A2A_BASE_URL_MYSTIQUE", "http://localhost:9911")
+# A2A 服务端口（统一在 .env 中配置，修改一处即可）
+A2A_PORT = int(os.environ.get("A2A_PORT", "9991"))
+A2A_PORT_MYSTIQUE = int(os.environ.get("A2A_PORT_MYSTIQUE", "9911"))
+A2A_PORT_MYSTIQUE_PIPELINE = int(os.environ.get("A2A_PORT_MYSTIQUE_PIPELINE", "9111"))
+
+# A2A 服务地址（由端口派生）
+A2A_BASE_URL = os.environ.get("A2A_BASE_URL", f"http://localhost:{A2A_PORT}")
+A2A_BASE_URL_MYSTIQUE = os.environ.get("A2A_BASE_URL_MYSTIQUE", f"http://localhost:{A2A_PORT_MYSTIQUE}")
+A2A_BASE_URL_MYSTIQUE_PIPELINE = os.environ.get("A2A_BASE_URL_MYSTIQUE_PIPELINE", f"http://localhost:{A2A_PORT_MYSTIQUE_PIPELINE}")
+
+# mystique pipeline 专用路径（指定不同的源/目标仓库）
+MYSTIQUE_PIPELINE_CLONE_DIR = os.environ.get("MYSTIQUE_PIPELINE_CLONE_DIR", "")
+MYSTIQUE_PIPELINE_PROJECT_DIR = os.environ.get("MYSTIQUE_PIPELINE_PROJECT_DIR", "")
+MYSTIQUE_PIPELINE_TARGET_PATH = os.environ.get("MYSTIQUE_PIPELINE_TARGET_PATH", "")

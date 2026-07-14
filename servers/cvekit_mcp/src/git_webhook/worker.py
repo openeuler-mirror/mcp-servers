@@ -14,6 +14,10 @@ from config import (
     DEFAULT_BACKPORT_ENGINE,
     A2A_BASE_URL,
     A2A_BASE_URL_MYSTIQUE,
+    A2A_BASE_URL_MYSTIQUE_PIPELINE,
+    MYSTIQUE_PIPELINE_CLONE_DIR,
+    MYSTIQUE_PIPELINE_PROJECT_DIR,
+    MYSTIQUE_PIPELINE_TARGET_PATH,
 )
 from common import (
     TASK_QUEUE,
@@ -123,6 +127,13 @@ def run_app_client(
             if signer_email:
                 cmd.extend(["--signer-email", signer_email])
 
+        # mystique 回移植引擎专用参数
+        if action == "pipeline" and backport_engine == "mystique":
+            cmd.extend(["--backport-engine", "mystique"])
+            cmd.extend(["--clone-dir", MYSTIQUE_PIPELINE_CLONE_DIR])
+            cmd.extend(["--project-dir", MYSTIQUE_PIPELINE_PROJECT_DIR])
+            cmd.extend(["--target-path", MYSTIQUE_PIPELINE_TARGET_PATH])
+
     logger.info("准备执行命令 (cwd=%s): %s", APP_WORK_DIR, " ".join(cmd))
 
     # 注意：此函数会被 Worker 线程同步调用（阻塞直到任务执行完成）
@@ -138,7 +149,13 @@ def run_app_client(
 
         # 使用 Popen 以便实时读取 stdout
         env = os.environ.copy()
-        env["A2A_BASE_URL"] = A2A_BASE_URL_MYSTIQUE if backport_engine == "mystique" else A2A_BASE_URL
+        if backport_engine == "mystique":
+            if action == "pr-migration":
+                env["A2A_BASE_URL"] = A2A_BASE_URL_MYSTIQUE
+            else:
+                env["A2A_BASE_URL"] = A2A_BASE_URL_MYSTIQUE_PIPELINE
+        else:
+            env["A2A_BASE_URL"] = A2A_BASE_URL
         with open(APP_CLIENT_LOG, "a", buffering=1) as log_fp:  # 行缓冲
             process = subprocess.Popen(
                 cmd,

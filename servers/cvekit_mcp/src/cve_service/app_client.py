@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 from typing import Any
 from uuid import uuid4
@@ -6,6 +7,12 @@ import httpx
 import argparse
 import json
 import logging
+
+# 添加 cvekit 模块路径并加载 .env（复用 env_loader 机制）
+cvekit_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, cvekit_path)
+import cvekit.utils.env_loader  # noqa: E402 — 触发 .env 加载
+
 from a2a.client import A2ACardResolver, A2AClient
 from a2a.types import (
     AgentCard,
@@ -117,7 +124,7 @@ async def main() -> None:
     logger = logging.getLogger(__name__)  # Get a logger instance
     # --8<-- [start:A2ACardResolver]
 
-    base_url = os.environ.get("A2A_BASE_URL", "http://localhost:9991")
+    base_url = os.environ.get("A2A_BASE_URL") or f"http://localhost:{os.environ.get('A2A_PORT', '9991')}"
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as httpx_client:
         # Initialize A2ACardResolver

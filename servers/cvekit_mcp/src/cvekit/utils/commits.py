@@ -258,9 +258,11 @@ def fetch_and_update_repo(repo: git.Repo, branch_name: str) -> bool:
     local_branches = {head.name for head in repo.heads}
     try:
         if branch_name in local_branches:
+            logger.debug("fetch_and_update_repo: 本地分支 %s 已存在，执行 checkout", branch_name)
             _ensure_clean_worktree(repo)
             repo.git.checkout(branch_name)
         else:
+            logger.debug("fetch_and_update_repo: 本地分支 %s 不存在，创建并跟踪 %s", branch_name, remote_branch)
             _ensure_clean_worktree(repo)
             repo.git.checkout("-b", branch_name, "--track", remote_branch)
     except Exception as e:
@@ -274,6 +276,7 @@ def fetch_and_update_repo(repo: git.Repo, branch_name: str) -> bool:
     # 使用 --ff-only 避免 rebase 冲突导致流程中断
     try:
         repo.git.pull("origin", branch_name, "--ff-only")
+        logger.info("fetch_and_update_repo: 成功 fetch+checkout+pull 分支 %s", branch_name)
     except Exception as e:
         logger.warning(
             "fetch_and_update_repo: pull --ff-only 失败，将继续使用本地分支状态: %s",
@@ -297,6 +300,7 @@ def _checkout_local_branch(repo: git.Repo, branch_name: str) -> bool:
     try:
         _ensure_clean_worktree(repo)
         repo.git.checkout(branch_name)
+        logger.info("_checkout_local_branch: 成功切换到本地分支 %s", branch_name)
     except Exception as e:
         logger.warning(
             "_checkout_local_branch: 切换分支失败: %s, error: %s",
@@ -324,13 +328,19 @@ def branch_commit_from_upstream(fixed_commit: str, branch_name: str, clone_dir: 
     if not os.path.exists(linux_repo_path):
         logger.warning('branch_commit_from_upstream: path %s not exists', linux_repo_path)
         return ''
+    logger.info(
+        "branch_commit_from_upstream: start, fixed_commit=%s, branch_name=%s",
+        fixed_commit, branch_name,
+    )
     repo_linux = git.Repo(linux_repo_path)
     linux_branch = f"{branch_name.replace('OLK', 'linux')}.y"
+    logger.debug("branch_commit_from_upstream: linux_branch=%s", linux_branch)
     use_cache_only = os.getenv("LINUX_REPO_USE_CACHE_ONLY", "").lower() in (
         "1",
         "true",
         "yes",
     )
+    logger.debug("branch_commit_from_upstream: use_cache_only=%s", use_cache_only)
     ok = False
     if use_cache_only:
         ok = _checkout_local_branch(repo_linux, linux_branch)
@@ -342,38 +352,80 @@ def branch_commit_from_upstream(fixed_commit: str, branch_name: str, clone_dir: 
             return ''
         if not ok:
             # fetch/pull 失败时，尝试使用本地缓存继续
+            logger.info("branch_commit_from_upstream: fetch/pull failed, fallback to local branch")
             ok = _checkout_local_branch(repo_linux, linux_branch)
     if not ok:
+        logger.warning("branch_commit_from_upstream: failed to checkout branch %s", linux_branch)
         return ''
     since_tag = branch_name.replace('OLK-', 'v')
+    logger.debug("branch_commit_from_upstream: since_tag=%s", since_tag)
+    # 使用 origin/<branch> 而非本地分支，因为 fetch 后远端 tracking ref 已是最新，
+    # 即使本地分支 checkout/pull 失败落后，也不影响从远端 ref 搜索 commit
+    remote_branch = f"origin/{linux_branch}"
     try:
         grep_output = repo_linux.git.log(
                         "--since", since_tag,
                         "--grep", fixed_commit,
-                        linux_branch
+                        remote_branch
                     )
         if not grep_output:
+            logger.info(
+                "branch_commit_from_upstream: git log --since returned empty, "
+                "retrying without --since, branch_name=%s, fixed_commit=%s",
+                branch_name, fixed_commit,
+            )
             grep_output = repo_linux.git.log(
                             "--grep", fixed_commit,
-                            linux_branch
+                            remote_branch
                         )
     except Exception as e:
-        logger.warning(f'branch_commit_from_upstream: {str(e)}')
-        return '' 
+        logger.warning(f'branch_commit_from_upstream: git log failed: {str(e)}')
+        return ''
+    if not grep_output:
+        logger.warning(
+            "branch_commit_from_upstream: git log returned empty for fixed_commit=%s, branch=%s",
+            fixed_commit, linux_branch,
+        )
+        return ''
+    logger.debug(
+        "branch_commit_from_upstream: grep_output length=%d, first 500 chars:\n%s",
+        len(grep_output), grep_output[:500],
+    )
     commit_id = ''
     upstream_commit = ''
     for line in grep_output.split('\n'):
-        line = line.strip().lower()
-        if not line:
+        line_stripped = line.strip()
+        line_lower = line_stripped.lower()
+        if not line_lower:
             continue
         if not commit_id:
-            if re.match('commit [a-f0-9]{40}', line):
-                commit_id = line.split()[-1]
+            if re.match('commit [a-f0-9]{40}', line_lower):
+                commit_id = line_lower.split()[-1]
+                logger.debug(
+                    "branch_commit_from_upstream: found commit_id=%s, line=%s",
+                    commit_id, line_stripped[:120],
+                )
         if not upstream_commit:
-            if re.match('\[ upstream commit [a-f0-9]{40} \]', line):
-                upstream_commit = line.split()[-2]
-            if re.match('commit [a-f0-9]{40} upstream.', line):
-                upstream_commit = line.split()[-2]
+            if re.match(r'\[ upstream commit [a-f0-9]{40} \]', line_lower):
+                upstream_commit = line_lower.split()[-2]
+                logger.debug(
+                    "branch_commit_from_upstream: matched [upstream commit] pattern, "
+                    "upstream_commit=%s, line=%s",
+                    upstream_commit, line_stripped[:120],
+                )
+            if re.match(r'commit [a-f0-9]{40} upstream.', line_lower):
+                upstream_commit = line_lower.split()[-2]
+                logger.debug(
+                    "branch_commit_from_upstream: matched 'commit ... upstream' pattern, "
+                    "upstream_commit=%s, line=%s",
+                    upstream_commit, line_stripped[:120],
+                )
+    if not upstream_commit:
+        logger.warning(
+            "branch_commit_from_upstream: upstream_commit is empty! "
+            "fixed_commit=%s, branch_name=%s, commit_id=%s, grep_output first 1000 chars:\n%s",
+            fixed_commit, branch_name, commit_id, grep_output[:1000],
+        )
     logger.info(
         "branch_commit_from_upstream: upstream commit: %s, branch commit: %s, branch name: %s",
         upstream_commit,
@@ -382,4 +434,8 @@ def branch_commit_from_upstream(fixed_commit: str, branch_name: str, clone_dir: 
         )
     if upstream_commit == fixed_commit:
         return commit_id
+    logger.info(
+        "branch_commit_from_upstream: upstream_commit(%s) != fixed_commit(%s), return empty",
+        upstream_commit, fixed_commit,
+    )
     return ''

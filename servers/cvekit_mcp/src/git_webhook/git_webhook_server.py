@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
 
+import os
 from typing import Dict, Any
 
 from flask import Flask, request, jsonify
 
 import uuid
+
+# 加载 .env（容器中通过 -e 传入，本地开发时从 .env 读取）
+try:
+    from dotenv import load_dotenv
+    _env_path = os.path.join(os.path.dirname(__file__), '..', 'cve_service', '.env')
+    if os.path.exists(_env_path):
+        load_dotenv(_env_path, override=False)
+except ImportError:
+    pass
 
 from config import (
     logger,
@@ -181,9 +191,7 @@ def migrate_pr():
     clone_dir = (data.get("clone_dir") or DEFAULT_CLONE_DIR).strip()
     if not clone_dir.endswith("/"):
         clone_dir += "/"
-    backport_engine = (data.get("backport_engine") or DEFAULT_BACKPORT_ENGINE).strip().lower()
-    if backport_engine not in ("portgpt", "mystique"):
-        backport_engine = DEFAULT_BACKPORT_ENGINE
+    backport_engine = "mystique"  # pr-migration 写死使用 mystique 引擎
     task_id = str(uuid.uuid4())
 
     # 3. 从 URL 解析出 project_dir 和 target_path

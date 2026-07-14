@@ -573,7 +573,7 @@ skills = [
     ),
 ]
 
-port = int(os.getenv("PORT", 9991))
+port = int(os.getenv("A2A_PORT", "9991"))
 
 # 创建 agent card
 agent_card = AgentCard(

@@ -64,6 +64,7 @@ def _get_llm_config(provider: str = "openai", custom_base_url: str = None, custo
     """
     custom_base_url = _clean_config_value(custom_base_url)
     custom_model_name = _clean_config_value(custom_model_name)
+    logger.info(f"[DEBUG-GET-LLM-CFG] after clean: custom_model_name={custom_model_name!r}")
     provider = _clean_config_value(provider)
 
     # 只有调用方没有显式 provider 时，才使用环境变量兜底，避免父进程环境覆盖 MCP 参数。
@@ -272,6 +273,8 @@ def initial_agent(
     logger.debug("[initial_agent] 获取 LLM 配置...")
     base_url, model_name = _get_llm_config(provider_lower, custom_base_url, custom_model_name)
     logger.info(f"Using LLM provider: {provider_lower}, model: {model_name}, base_url: {base_url}")
+    # DEBUG: 明确打印模型名称，排查 .7 丢失问题
+    logger.info(f"[DEBUG-INIT-AGENT] _get_llm_config returned model_name={model_name!r}")
     logger.debug(f"[initial_agent] LLM 配置获取完成: base_url={base_url}, model_name={model_name}")
 
     # 创建 LLM 实例
@@ -301,6 +304,7 @@ def initial_agent(
         True,
         model_kwargs,
     )
+    logger.info(f"[DEBUG-INIT-AGENT] Creating ChatOpenAI with model={model_name!r}")
 
     llm = ChatOpenAI(
         temperature=temperature,
