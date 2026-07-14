@@ -21,8 +21,8 @@ from dotenv import load_dotenv
 SRC_DIR = Path(__file__).parent.parent.parent.absolute()
 ENV_PATH = SRC_DIR / "cve_service"/ '.env'
 
-# 加载环境变量（override=True 确保覆盖系统环境变量）
-load_dotenv(ENV_PATH, override=True)
+# 加载环境变量（override=False 确保命令行/env 传入的变量优先于 .env 文件）
+load_dotenv(ENV_PATH, override=False)
 
 
 def get_gitee_token() -> str:

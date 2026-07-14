@@ -13,6 +13,7 @@ import git
 import yaml
 from dataclasses import dataclass
 
+from .apply_patch import extract_commit_message_from_patch
 from .backporting import run_backport_from_config
 from .backport_conflict_summary import summarize_conflict_item
 from .commit_message_template import (

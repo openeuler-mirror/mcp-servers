@@ -811,8 +811,9 @@ def apply_patch(
         else:
             logger.info(f"本地不存在分支 {branch}，从 origin/{branch} 创建")
             repo.git.checkout('-f', '-B', branch, f'origin/{branch}')
-        logger.info(f"同步远程分支: origin/{branch} (--rebase)")
-        repo.git.pull("origin", branch, "--rebase")
+        logger.info(f"同步远程分支: origin/{branch} (fetch + reset --hard)")
+        repo.git.fetch("origin", branch)
+        repo.git.reset("--hard", f"origin/{branch}")
         if fix_branch in branches:
             logger.info(f"删除已存在的修复分支: {fix_branch}")
             repo.git.branch('-D', fix_branch)

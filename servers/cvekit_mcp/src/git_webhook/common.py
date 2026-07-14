@@ -7,6 +7,7 @@ from flask import jsonify
 
 from config import (
     logger,
+    DEFAULT_BACKPORT_ENGINE,
 )
 
 # 简单的单机消息队列：任务队列 & 结果队列
@@ -377,6 +378,7 @@ def _parse_create_pr_command(comment_body: str) -> Optional[Dict[str, Any]]:
     branch_line = None
     name_line = None
     email_line = None
+    backport_engine_line = None
     for ln in lines:
         if re.match(r"^branch\s*:", ln, flags):
             branch_line = ln
@@ -384,6 +386,8 @@ def _parse_create_pr_command(comment_body: str) -> Optional[Dict[str, Any]]:
             name_line = ln
         elif re.match(r"^email\s*:", ln, flags):
             email_line = ln
+        elif re.match(r"^backport[-_]engine\s*:", ln, flags):
+            backport_engine_line = ln
 
     missing_fields: List[str] = []
 
@@ -408,15 +412,22 @@ def _parse_create_pr_command(comment_body: str) -> Optional[Dict[str, Any]]:
     if not signer_email:
         missing_fields.append("email")
 
+    backport_engine = ""
+    if backport_engine_line is not None:
+        backport_engine = re.sub(r"^backport[-_]engine\s*:\s*", "", backport_engine_line, flags).strip()
+
     if missing_fields:
         # 抛出异常，由上层负责在 Issue 下给出详细提示
         raise ValueError(f"缺少必填字段: {', '.join(missing_fields)}")
 
-    return {
+    result = {
         "branches": branches,
         "signer_name": signer_name,
         "signer_email": signer_email,
     }
+    if backport_engine:
+        result["backport_engine"] = backport_engine
+    return result
 
 
 def build_guide_comment_body(cve_id: str) -> str:
@@ -582,6 +593,7 @@ def _handle_comment_commands(
     branches = parsed_cmd.get("branches") or []
     signer_name = parsed_cmd.get("signer_name")
     signer_email = parsed_cmd.get("signer_email")
+    backport_engine = parsed_cmd.get("backport_engine") or DEFAULT_BACKPORT_ENGINE
 
     logger.info("Issue 标题: %s", issue_title)
 
@@ -597,6 +609,7 @@ def _handle_comment_commands(
         "cve_id": cve_id,
         "payload": payload,
         "action": "pipeline",
+        "backport_engine": backport_engine,
     }
     if branches:
         task["branches"] = branches
@@ -608,11 +621,12 @@ def _handle_comment_commands(
     try:
         TASK_QUEUE.put(task)
         logger.info(
-            "已将 pipeline 任务入队，CVE-ID: %s, branches=%s, signer_name=%s, signer_email=%s",
+            "已将 pipeline 任务入队，CVE-ID: %s, branches=%s, signer_name=%s, signer_email=%s, backport_engine=%s",
             cve_id,
             ",".join(branches) if branches else "",
             signer_name or "",
             signer_email or "",
+            backport_engine,
         )
     except Exception as e:
         logger.exception("pipeline 任务入队失败: %s", e)

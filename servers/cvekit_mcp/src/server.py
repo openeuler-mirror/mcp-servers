@@ -86,14 +86,15 @@ def run_cvekit(action: str, params: dict) -> dict:
                 cmd.append(f'--branch={params["branch"]}')
             if 'clone_dir' in params:
                 cmd.append(f'--clone-dir={params["clone_dir"]}')
-            if 'api_key' in params:
+            if params.get('api_key'):
                 cmd.append(f'--api-key={params["api_key"]}')
-            if 'llm_provider' in params:
+            if params.get('llm_provider'):
                 cmd.append(f'--llm-provider={params["llm_provider"]}')
-            if 'llm_base_url' in params:
+            if params.get('llm_base_url'):
                 cmd.append(f'--llm-base-url={params["llm_base_url"]}')
-            if 'llm_model_name' in params:
+            if params.get('llm_model_name'):
                 cmd.append(f'--llm-model-name={params["llm_model_name"]}')
+                logger.info(f"[DEBUG-RUN-CVEKIT] llm_model_name from params: {params['llm_model_name']!r}")
             if action == 'mystique' and (params.get('format_mode') or args.format_mode):
                 cmd.append(f'--format-mode={params.get("format_mode") or args.format_mode}')
             if 'fork_repo_url' in params:
@@ -140,6 +141,8 @@ def run_cvekit(action: str, params: dict) -> dict:
                 cmd.append(f'--clone-dir={params["clone_dir"]}')
             if params.get('target_path'):
                 cmd.append(f'--target-path={params["target_path"]}')
+
+        logger.info(f"[DEBUG-RUN-CVEKIT] CMD: {' '.join(cmd)}")
 
         result = subprocess.run(
             cmd,
@@ -384,9 +387,9 @@ def analyze_branches(
     if llm_model_name is None:
         llm_model_name = default_llm_model_name
     if not project_dir:
-        project_dir = clone_dir or ""
+        project_dir = ""
     if not target_path:
-        target_path = clone_dir or ""
+        target_path = ""
     engine = backport_engine if backport_engine in ("portgpt", "mystique") else args.backport_engine
     
     sorted_branches = sorted([branch.strip() for branch in branches.split(",")])
@@ -652,7 +655,8 @@ def apply_patch(
                 patch_path = res[i18n("冲突点")]
                 break
 
-    if not patch_path:
+    # 哨兵值 "Fixed"/"N/A" 或空值表示该分支已有补丁，无需 apply
+    if not patch_path or patch_path in ("Fixed", "N/A", "") or not os.path.exists(patch_path):
         res = i18n("该分支无需执行第五步：已识别为补丁无需应用（empty_patch）。\n")
         res += i18n("- 目标分支: %s\n") % (branch)
         res += i18n("可直接跳过该分支的 apply_patch/create_pr。")
