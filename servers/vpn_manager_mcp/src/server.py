@@ -358,9 +358,9 @@ def list_tar_contents(tar_path: str) -> str:
             
             for member in members:
                 if member.name.startswith('/') or '..' in member.name.split(os.sep):
-                    dangerous.append(f"⚠️ 路径遍历: {member.name}")
+                    dangerous.append(f"路径遍历: {member.name}")
                 elif member.issym() or member.islnk() or member.isdev():
-                    dangerous.append(f"⚠️ 危险类型: {member.name} (类型: {member.type})")
+                    dangerous.append(f"危险类型: {member.name} (类型: {member.type})")
                 else:
                     size = member.size if member.isfile() else 0
                     safe_members.append(f"{member.name} ({size} bytes)")
@@ -370,7 +370,7 @@ def list_tar_contents(tar_path: str) -> str:
                 result.append("安全内容:")
                 result.extend(safe_members)
             if dangerous:
-                result.append("\n⚠️ 警告: 检测到危险内容:")
+                result.append("\n警告: 检测到危险内容:")
                 result.extend(dangerous)
                 result.append("这些内容将被阻止解压")
             
