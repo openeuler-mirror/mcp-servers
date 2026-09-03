@@ -1,5 +1,7 @@
 # VPN Manager MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It manages VPN connections, including OpenVPN and StrongSwan VPN connections.

@@ -1,5 +1,7 @@
 # Edge Computing Management MCP Service
 
+English | [简体中文](./README.md)
+
 ## Introduction
 
 The edge computing management MCP service provides management capabilities for edge devices and edge applications. It supports device registration, configuration, monitoring, and maintenance, as well as application deployment and management on edge nodes.

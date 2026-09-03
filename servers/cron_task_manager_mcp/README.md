@@ -1,5 +1,7 @@
 # 定时任务管理MCP服务器
 
+简体中文 | [English](./README_EN.md)
+
 ## 功能描述
 提供管理cron定时任务的MCP工具，包括添加、删除、列出和编辑cron任务。
 

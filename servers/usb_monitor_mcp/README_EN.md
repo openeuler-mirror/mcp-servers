@@ -1,5 +1,7 @@
 # USB Device Monitoring MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It monitors the connection status of USB devices, calls the `lsusb` command to obtain USB device information, and returns the standardized result.

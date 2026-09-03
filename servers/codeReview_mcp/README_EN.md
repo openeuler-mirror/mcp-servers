@@ -1,5 +1,7 @@
 # codeReview MCP
 
+English | [简体中文](./README.md)
+
 codeReview MCP provides code-reading capabilities for C-language projects and triggers a large model to perform code inspection, returning detected issues.
 
 ## Tools

@@ -1,5 +1,7 @@
 # File Integrity Check MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It provides the system file integrity check function based on AIDE and Tripwire.

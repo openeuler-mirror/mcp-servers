@@ -1,5 +1,7 @@
 # Software Package Management MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It provides software package management functions, including:

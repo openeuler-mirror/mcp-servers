@@ -1,5 +1,7 @@
 # Unit Test MCP Server
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 功能说明
 
 提供单元测试执行和结果分析功能，支持以下测试框架:

@@ -1,5 +1,7 @@
 # Code Search Tool MCP Server
 
+English | [简体中文](./README.md)
+
 ## Function Description
 
 It provides fast code-search capabilities powered by **ripgrep (rg)**.

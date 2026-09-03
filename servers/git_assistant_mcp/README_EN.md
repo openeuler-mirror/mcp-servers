@@ -1,5 +1,7 @@
 # Git Assistant MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 Git operation assistant tool, which provides the encapsulation and auxiliary functions of common Git commands.
 
 ## Functions and Features

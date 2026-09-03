@@ -1,4 +1,6 @@
 # 构建系统助手 MCP 服务
+ 
+简体中文 | [English](./README_EN.md)
 
 ## 功能描述
 封装CMake和Make构建命令，提供标准化的项目构建接口

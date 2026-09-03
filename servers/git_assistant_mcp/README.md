@@ -1,5 +1,7 @@
 # Git Assistant MCP Server
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 Git操作辅助工具，提供常用Git命令的封装和辅助功能。
 
 ## 功能特性

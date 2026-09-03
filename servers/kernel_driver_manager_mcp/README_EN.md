@@ -1,5 +1,7 @@
 # Kernel Driver Management MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 The MCP server provides the following kernel module management functions:

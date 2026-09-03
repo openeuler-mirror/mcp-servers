@@ -1,5 +1,7 @@
 # Proxy Manager MCP Server
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 功能描述
 提供代理设置管理功能，包括：
 - 配置HTTP/HTTPS代理

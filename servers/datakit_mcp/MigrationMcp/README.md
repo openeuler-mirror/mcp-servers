@@ -1,5 +1,7 @@
 # DataKit Mcp使用说明
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 DataKit Mcp提供了使用DataKit数据迁移功能的MCP服务。DataKit为openGauss数据库的可视化Web平台系统，了解详情：https://gitcode.com/opengauss/openGauss-workbench
 
 ## 环境准备
@@ -10,7 +12,7 @@ DataKit Mcp提供了使用DataKit数据迁移功能的MCP服务。DataKit为open
 
 2. 搭建DataKIt服务
 
-   参考https://gitcode.com/opengauss/openGauss-workbench仓库中的README文档。
+   参考<https://gitcode.com/opengauss/openGauss-workbench>仓库中的README文档。
 
 3. 准备迁移执行机
 

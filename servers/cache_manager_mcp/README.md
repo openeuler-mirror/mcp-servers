@@ -1,4 +1,6 @@
 # 缓存管理工具MCP Server
+ 
+简体中文 | [English](./README_EN.md)
 
 ## 功能描述
 提供Redis和Memcached缓存系统的管理功能，支持执行各种缓存操作命令。

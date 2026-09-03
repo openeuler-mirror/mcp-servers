@@ -1,5 +1,7 @@
 # openEuler mcp-servers Repository
 
+English | [简体中文](./README.md)
+
 <div align="center">
 <strong>openEuler mcp-servers Repository</strong>
 

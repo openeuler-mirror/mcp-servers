@@ -1,5 +1,7 @@
 # Performance Profiling Tool MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 This MCP server provides code performance profiling capabilities, supporting the following tools:

@@ -1,5 +1,7 @@
 # patch-analyzer-mcp
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Introduction
 
 The backporting analysis agent automatically pulls the code from the upstream community to generate patches, analyzes the patch content to generate Excel files, reads the approved Excel files, submits the files to the destination repository by module, and creates web page merge requests (MRs).

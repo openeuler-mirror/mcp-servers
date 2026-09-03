@@ -1,5 +1,7 @@
 # HTTP测试工具MCP服务器
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 功能描述
 封装HTTP请求功能，支持GET/POST/PUT/DELETE等常用HTTP方法，提供简洁的API接口。
 

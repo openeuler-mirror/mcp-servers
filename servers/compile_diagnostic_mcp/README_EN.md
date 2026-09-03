@@ -1,5 +1,7 @@
 # Compile Diagnostic Tool MCP Server
 
+English | [简体中文](./README.md)
+
 ## Function Description
 
 It analyzes **gcc/clang** compilation errors and warnings, providing structured diagnostic information.

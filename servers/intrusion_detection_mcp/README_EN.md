@@ -1,5 +1,7 @@
 # Intrusion Detection System MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 The MCP server of the intrusion detection system based on the Advanced Intrusion Detection Environment (AIDE) tool provides the system file integrity check and intrusion detection functions.
 
 ## Functions

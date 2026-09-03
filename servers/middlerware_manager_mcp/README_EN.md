@@ -1,5 +1,7 @@
 # Middleware Manager MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Introduction
 
 The Middleware Manager MCP Server provides the function of managing common middleware in the system, including status monitoring, service starting/stopping/restarting, and viewing configuration files and logs.

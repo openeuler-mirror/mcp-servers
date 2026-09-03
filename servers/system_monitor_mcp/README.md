@@ -1,5 +1,7 @@
 # 系统监控MCP服务器
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 功能
 监控系统资源使用情况，包括：
 - CPU使用率
@@ -26,4 +28,4 @@
 ```
 
 ## 构建说明
-参见项目根目录下的[MCP-Server-RPM打包指南](../doc/MCP-Server-RPM打包指南.md)
+参见项目根目录下的[MCP-Server-RPM打包指南](../../doc/MCP-Server-RPM打包指南.md)

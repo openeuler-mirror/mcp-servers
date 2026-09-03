@@ -1,5 +1,7 @@
 # System Resource Limit MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It manages system resource limits by modifying the `/etc/security/limits.conf` file.

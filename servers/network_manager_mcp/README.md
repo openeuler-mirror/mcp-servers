@@ -1,5 +1,7 @@
 # Network Manager MCP Server
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 Provides network interface configuration capabilities using NetworkManager and iproute2 commands.
 
 ## Features

@@ -1,5 +1,7 @@
 # Network Performance Analysis MCP Service
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It provides the network bandwidth and throughput test functions, which are implemented based on iperf and netperf.

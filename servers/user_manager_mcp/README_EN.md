@@ -1,5 +1,7 @@
 # User Management MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function
 
 - Adding a user

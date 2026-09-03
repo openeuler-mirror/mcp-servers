@@ -1,5 +1,7 @@
 # Gitcode代码仓CVE补丁处理服务
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 安装指导
 1. 安装依赖
 ```bash

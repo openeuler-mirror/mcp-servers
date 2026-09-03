@@ -1,5 +1,7 @@
 # CMake Testing Tool MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 An MCP server based on the **ctest** command, providing management capabilities for CMake test suites.
 
 ## Features

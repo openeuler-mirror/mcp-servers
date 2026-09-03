@@ -1,5 +1,7 @@
 # DataKit MCP Usage Description
-
+ 
+English | [简体中文](./README.md)
+ 
 DataKit MCP provides the MCP service that uses the DataKit data migration function. DataKit is a visualized web platform system for openGauss databases. For details, visit https://gitcode.com/opengauss/openGauss-workbench.
 
 ## Environment Setup

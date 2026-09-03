@@ -1,5 +1,7 @@
 # Anaconda MCP 服务器
 
+简体中文 | [English](./README_EN.md)
+
 这是一个用于管理Anaconda环境的MCP服务器实现.
 
 ## 功能

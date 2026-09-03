@@ -1,5 +1,7 @@
 # Patch Spec MCP Server 使用说明
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 用于自动提交补丁的MCP服务器，支持将patch文件应用到目标仓库，并自动更新该仓库根目录下的.spec文件
 
 ## 1. 环境准备

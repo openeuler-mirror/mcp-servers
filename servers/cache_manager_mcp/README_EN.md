@@ -1,5 +1,7 @@
 # Cache Management Tool MCP Server
 
+English | [简体中文](./README.md)
+
 ## Function Description
 
 It provides management capabilities for Redis and Memcached cache systems, supporting the execution of various cache operation commands.

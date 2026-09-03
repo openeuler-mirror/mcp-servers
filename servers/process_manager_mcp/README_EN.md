@@ -1,5 +1,7 @@
 # Process Management MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Functions
 
 - Viewing system process lists

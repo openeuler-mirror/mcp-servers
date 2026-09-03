@@ -1,5 +1,7 @@
 # API Documentation Generation MCP Service
 
+English | [简体中文](./README.md)
+
 ## Features
 
 The service provides tools for generating API documentation, supporting the following formats:

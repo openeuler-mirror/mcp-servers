@@ -1,5 +1,7 @@
 # LTO分析工具MCP服务器
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 基于lto-dump命令的MCP服务器，提供LTO(链接时优化)分析功能。
 
 ## 功能

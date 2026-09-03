@@ -1,5 +1,7 @@
 # File System Repair MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It provides the file system repair function and supports the following operations:

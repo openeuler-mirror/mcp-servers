@@ -1,5 +1,7 @@
 # USB设备监控MCP服务器
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 功能描述
 监控USB设备连接状态，通过调用`lsusb`命令获取USB设备信息并返回标准化结果。
 

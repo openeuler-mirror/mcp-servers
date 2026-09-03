@@ -1,5 +1,7 @@
 # 系统资源限制MCP服务器
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 功能描述
 管理系统资源限制配置，通过修改`/etc/security/limits.conf`文件实现对系统资源限制的管理。
 

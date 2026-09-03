@@ -1,5 +1,7 @@
 # Proxy Manager MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It provides proxy management functions, including:

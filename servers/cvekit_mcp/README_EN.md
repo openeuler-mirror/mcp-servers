@@ -1,5 +1,7 @@
 # CVE Patch Processing Service for the Code Repository Gitee
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Installation Guide
 
 1. Install dependencies.

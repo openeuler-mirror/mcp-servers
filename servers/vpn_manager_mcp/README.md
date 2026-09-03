@@ -1,5 +1,7 @@
 # VPN Manager MCP Server
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 功能描述
 提供VPN连接管理功能，支持OpenVPN和StrongSwan VPN的管理操作。
 

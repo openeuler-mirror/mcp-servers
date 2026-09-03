@@ -1,4 +1,6 @@
 # codeReview Mcp使用说明
+ 
+简体中文 | [English](./README_EN.md)
 
 codeReview Mcp提供对C语言项目的代码读取，并触发大模型进行代码检视，返回issue
 

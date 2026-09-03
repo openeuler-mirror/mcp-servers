@@ -1,5 +1,7 @@
 # PCI Device Information MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It provides the MCP tool for querying PCI device information, including:
