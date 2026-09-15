@@ -1,5 +1,7 @@
 # CMake测试工具MCP服务器
 
+简体中文 | [English](./README_EN.md)
+
 基于ctest命令的MCP服务器，提供CMake测试套件管理功能。
 
 ## 功能

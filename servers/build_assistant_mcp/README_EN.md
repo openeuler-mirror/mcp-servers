@@ -1,5 +1,7 @@
 # System Build Assistant MCP Service
 
+English | [简体中文](./README.md)
+
 ## Function Description
 
 This service provides a standardized project-build interface by wrapping CMake and Make build commands.

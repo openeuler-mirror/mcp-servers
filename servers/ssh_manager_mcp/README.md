@@ -1,5 +1,7 @@
 # SSH Manager MCP
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 功能描述
 提供SSH连接管理和SCP文件传输功能的MCP服务器
 

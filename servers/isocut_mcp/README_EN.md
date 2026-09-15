@@ -1,5 +1,7 @@
 # ISO Tailoring Tool MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Introduction to the Project
 
 This is an MCP-based ISO image tailoring tool server that provides the following functions:

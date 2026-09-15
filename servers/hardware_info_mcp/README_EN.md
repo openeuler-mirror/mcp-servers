@@ -1,5 +1,7 @@
 # Hardware Information Query MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It provides the function of querying system hardware information, including:

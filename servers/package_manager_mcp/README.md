@@ -1,5 +1,7 @@
 # 软件包管理MCP服务器
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 功能描述
 提供软件包管理功能，包括：
 - 查询软件包信息 (`dnf list/search`)

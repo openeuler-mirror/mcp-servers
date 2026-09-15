@@ -1,5 +1,7 @@
 # Cron Task Management MCP Server
 
+English | [简体中文](./README.md)
+
 ## Function Description
 
 It provides an MCP tool for managing cron scheduled tasks, including adding, removing, listing, and editing cron jobs.

@@ -1,5 +1,7 @@
 # Memory Analyzer Tool MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 The MCP server provides memory issue detection and analysis functions. The following tools are supported:

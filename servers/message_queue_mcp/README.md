@@ -1,5 +1,7 @@
 # Message Queue MCP Server
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 功能描述
 提供RabbitMQ和Kafka消息队列管理功能，包括：
 - 消息队列连接管理

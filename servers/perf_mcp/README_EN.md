@@ -1,5 +1,7 @@
 # Perf Process Performance Analysis MCP
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Introduction
 
 It provides CPU performance analysis, flame graph generation, and basic functions for obtaining some hardware information, including 14 basic tools:

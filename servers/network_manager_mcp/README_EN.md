@@ -1,5 +1,7 @@
 # Network Monitoring MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It provides the network traffic monitoring function, including:

@@ -1,5 +1,7 @@
 # Gitee Mcp使用说明
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 Gitee Mcp提供对Gitee的基本操作
 
 ## Tools

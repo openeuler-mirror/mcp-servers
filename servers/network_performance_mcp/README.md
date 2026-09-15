@@ -1,5 +1,7 @@
 # 网络性能分析MCP服务
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 功能概述
 提供网络带宽和吞吐量测试功能，基于iperf和netperf实现。
 

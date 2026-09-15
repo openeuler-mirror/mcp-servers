@@ -1,5 +1,7 @@
 # Timezone Manager MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It provides the MCP tool for managing system time zones, including:

@@ -1,5 +1,7 @@
 # 中间件管理MCP服务
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 简介
 
 中间件管理MCP服务（Middleware Manager MCP Server）提供了对系统中常见中间件的管理功能，包括状态监控、启动/停止/重启服务、查看配置文件和日志等功能。

@@ -1,5 +1,7 @@
 # Application Performance Monitoring MCP Server
 
+English | [简体中文](./README.md)
+
 ## Function Description
 
 This MCP server provides application performance monitoring capabilities, integrating Prometheus and Grafana to deliver:

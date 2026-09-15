@@ -1,5 +1,7 @@
 # Gitee MCP Usage Description
-
+ 
+English | [简体中文](./README.md)
+ 
 Gitee MCP provides basic operations on Gitee.
 
 ## Tools

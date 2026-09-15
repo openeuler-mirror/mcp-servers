@@ -1,5 +1,7 @@
 # LTO Analysis Tool MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 The MCP server based on the **lto-dump** command provides the link-time optimization (LTO) analysis function.
 
 ## Functions

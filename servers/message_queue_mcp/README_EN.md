@@ -1,5 +1,7 @@
 # Message Queue MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It provides RabbitMQ and Kafka message queue management functions, including:

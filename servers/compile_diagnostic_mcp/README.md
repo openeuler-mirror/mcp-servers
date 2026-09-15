@@ -1,4 +1,6 @@
 # 编译诊断工具MCP服务器
+ 
+简体中文 | [English](./README_EN.md)
 
 ## 功能
 分析gcc/clang编译错误和警告，提供结构化的诊断信息

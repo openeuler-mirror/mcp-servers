@@ -1,5 +1,7 @@
 # SSH Manager MCP
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 An MCP server providing SSH connection management and SCP file transfer functionalities.

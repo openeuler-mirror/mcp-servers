@@ -1,5 +1,7 @@
 # Container Orchestration Tool MCP Server
 
+English | [简体中文](./README.md)
+
 ## Function Description
 
 It provides container orchestration and management capabilities based on docker-compose, including:

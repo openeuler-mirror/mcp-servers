@@ -1,5 +1,7 @@
 # PCI设备信息MCP服务器
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 功能描述
 提供查询PCI设备信息的MCP工具，包括：
 - 获取详细PCI设备信息

@@ -1,5 +1,7 @@
 # 虚拟机管理MCP Server
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 功能描述
 提供KVM虚拟机的基础管理功能，包括：
 - 虚拟机创建/删除

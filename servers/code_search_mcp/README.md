@@ -1,5 +1,7 @@
 # 代码搜索工具 MCP 服务器
 
+简体中文 | [English](./README_EN.md)
+
 ## 功能
 提供快速代码搜索功能，基于ripgrep(rg)实现。
 

@@ -1,5 +1,7 @@
 # 应用性能监控MCP服务器
 
+简体中文 | [English](./README_EN.md)
+
 ## 功能描述
 本MCP服务器提供应用程序性能指标监控功能，集成Prometheus和Grafana实现：
 - 实时性能指标采集

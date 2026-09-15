@@ -1,5 +1,7 @@
 # openEuler MCP Servers仓库，欢迎大家贡献
 
+简体中文 | [English](./README_EN.md)
+
 <div align="center">
 
 <strong>openEuler MCP Servers 仓库</strong>

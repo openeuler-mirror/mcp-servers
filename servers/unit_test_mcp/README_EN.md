@@ -1,5 +1,7 @@
 # Unit Test MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It provides unit test execution and result analysis functions. The following test frameworks are supported:

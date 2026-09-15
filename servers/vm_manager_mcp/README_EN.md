@@ -1,5 +1,7 @@
 # VM Management MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It provides basic management functions for KVM VMs, including:

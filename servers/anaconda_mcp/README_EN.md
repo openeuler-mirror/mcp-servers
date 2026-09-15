@@ -1,5 +1,7 @@
 # Anaconda MCP Server
 
+English | [简体中文](./README.md)
+
 It is an MCP server implementation for managing Anaconda environments.
 
 ## Features

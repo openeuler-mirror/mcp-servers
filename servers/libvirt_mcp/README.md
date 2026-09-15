@@ -1,7 +1,8 @@
 
-
 # DevStation VM MCP Server 使用说明
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 1. 环境准备
 
 安装 python 依赖。为了更加直观，当前示例使用 `pip` 安装到系统的 python 目录，实际上更加推荐 `uv` 安装到虚拟环境。

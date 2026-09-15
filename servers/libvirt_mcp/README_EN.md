@@ -1,6 +1,8 @@
 
 # DevStation VM MCP Server Usage Description
-
+ 
+English | [简体中文](./README.md)
+ 
 ## 1. Environment Setup
 
 Install the Python dependency. In this example, `pip` is installed in the **python** directory of the system. It is recommended that `uv` be installed in the virtual environment.

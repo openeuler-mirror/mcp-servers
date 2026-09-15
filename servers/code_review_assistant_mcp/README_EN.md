@@ -1,5 +1,7 @@
 # Code Review Assistant MCP Server
 
+English | [简体中文](./README.md)
+
 ## Function Description
 
 It provides automated code review capabilities with static analysis support for the following languages:

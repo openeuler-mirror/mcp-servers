@@ -1,5 +1,7 @@
 # Kernel Tuner MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It provides the capability of adjusting kernel running parameters through the MCP interface based on the **sysctl** command.

@@ -1,5 +1,7 @@
 # Patch Spec MCP Server Usage Description
-
+ 
+English | [简体中文](./README.md)
+ 
 The MCP server used to automatically submit patches can apply patch files to the target repository and automatically update the `.spec` file in the root directory of the repository.
 
 ## 1. Environment Setup

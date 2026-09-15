@@ -1,5 +1,7 @@
 # Dependency Analyzer MCP Server
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 功能说明
 
 提供项目依赖关系分析工具，支持以下功能：

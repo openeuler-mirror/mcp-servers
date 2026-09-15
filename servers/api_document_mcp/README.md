@@ -1,5 +1,7 @@
 # API文档生成MCP服务
 
+简体中文 | [English](./README_EN.md)
+
 ## 功能
 
 提供API文档生成工具，支持以下格式：

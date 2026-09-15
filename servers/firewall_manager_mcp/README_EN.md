@@ -1,5 +1,7 @@
 # Firewall Management MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Overview
 
 It provides the function of viewing and managing firewall rules, including:

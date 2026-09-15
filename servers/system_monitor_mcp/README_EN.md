@@ -1,5 +1,7 @@
 # System Monitoring MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function
 
 It monitors system resource usage, including:
@@ -32,4 +34,4 @@ It monitors system resource usage, including:
 
 ## Building Description
 
-For details, see [MCP-Server-RPM Packaging Guide](../doc/MCP-Server-RPM Packaging Guide.md) in the root directory of the project.
+For details, see [MCP-Server-RPM Packaging Guide](../../doc/MCP-Server-RPM Packaging Guide.md) in the root directory of the project.

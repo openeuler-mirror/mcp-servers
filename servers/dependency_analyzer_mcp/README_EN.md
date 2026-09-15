@@ -1,5 +1,7 @@
 # Dependency Analyzer MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It provides a project dependency analysis tool that supports the following functions:

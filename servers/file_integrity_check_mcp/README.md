@@ -1,5 +1,7 @@
 # File Integrity Check MCP Server
-
+ 
+简体中文 | [English](./README_EN.md)
+ 
 ## 功能描述
 提供系统文件完整性检查功能，基于AIDE和Tripwire实现：
 - 初始化文件完整性数据库

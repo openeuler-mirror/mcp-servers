@@ -1,5 +1,7 @@
 # HTTP Test Tool MCP Server
-
+ 
+English | [简体中文](./README.md)
+ 
 ## Function Description
 
 It encapsulates HTTP request functions, supports common HTTP methods such as GET, POST, PUT, and DELETE, and provides simple APIs.
